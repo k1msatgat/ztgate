@@ -208,7 +208,14 @@ CString DetailText(const tunnel_packet_t &p)
 				(unsigned)p.posture.firewall, (LPCTSTR)PostureStateName(p.posture.firewall),
 				(unsigned)p.posture.antivirus, (LPCTSTR)PostureStateName(p.posture.antivirus));
 		s += t;
-		s += _T("             (뒤의 32바이트는 HMAC-SHA256)\r\n");
+		/* AUTH 의 포스처는 평문이고 기기 키의 mac 이 덮는다. KEEPALIVE 의 것은 세션 키로
+		 * 감싸여 오가고 끝에 GCM tag 가 붙는다 (아래 16진수는 푼 모습). */
+		if (p.msg_type == MSG_TYPE_AUTH) {
+			s += _T("             (평문. 뒤의 32바이트는 기기 키로 만든 mac, HMAC-SHA256)\r\n");
+		}
+		else {
+			s += _T("             (와이어에서는 세션 키로 암호화, 뒤에 GCM tag 16바이트)\r\n");
+		}
 	}
 
 	if (p.msg_type == MSG_TYPE_DENY && p.deny_reason != 0) {
@@ -247,9 +254,16 @@ CString DetailText(const tunnel_packet_t &p)
 		}
 	}
 
-	t.Format(_T("결과         %s  (와이어 %u 바이트)\r\n\r\n"),
+	t.Format(_T("결과         %s  (와이어 %u 바이트)\r\n"),
 			(LPCTSTR)VerdictName(p.verdict), p.wire_len);
 	s += t;
+
+	/* 세션 패킷의 덤프는 헤더 16바이트 뒤가 암호문이 아니라 감싸기 전 / 푼 뒤의 내용이다.
+	 * 그렇다고 적지 않으면 "암호화가 안 된다"로 읽힌다. */
+	if (p.has_counter) {
+		s += _T("16진수       헤더 16바이트 뒤는 암호를 푼(보낼 때는 감싸기 전) 내용\r\n");
+	}
+	s += _T("\r\n");
 
 	/* hex 덤프. 앞 TUNNEL_SNAP_LEN 바이트만 떠 두었다. */
 	for (int off = 0; off < p.snap_len; off += 16) {
