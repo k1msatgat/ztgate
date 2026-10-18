@@ -43,50 +43,40 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 
 ```mermaid
 flowchart LR
-    subgraph CLI["Linux 클라이언트"]
+    subgraph DEV["기기"]
         direction TB
-        VC["vpn_client<br/><i>epoll · 포스처 · 설정 적용</i>"]
-        CT(["tun (ztgate0)<br/>10.0.0.2 — 서버가 준 주소"])
-        ID[("신원 파일<br/>0600")]
-        LG["ztgate_login<br/><i>OIDC 기기 인가</i>"]
-        TK[("토큰 파일<br/>0600")]
-        ID --> VC
-        LG --> TK --> VC
-        VC <--> CT
+        LC["Linux 클라이언트<br/>vpn_client"]
+        WC["Windows 클라이언트<br/>서비스 + GUI"]
     end
 
-    subgraph SRV["Linux 서버"]
+    subgraph SRV["ztgate 서버 (Linux)"]
         direction TB
-        VS["vpn_server<br/><i>epoll 단일 스레드</i><br/>피어 테이블 · 재전송 창 · ACL"]
-        TUN(["tun0<br/>10.0.0.1"])
-        CONF[("devices.conf<br/>acl.conf<br/>enroll.conf<br/>idp.conf · jwks.json")]
-        AUD[("audit.log")]
+        VS["vpn_server<br/>인증 · 암호화 · ACL"]
+        CONF[("정책 파일<br/>기기 · ACL · IdP 공개키")]
         CONF --> VS
-        VS --> AUD
-        VS <--> TUN
     end
 
-    subgraph LAN["보호할 내부망 (들어오는 포트 없음)"]
+    subgraph LAN["보호할 내부망"]
         direction TB
-        CN["vpn_client connector<br/><i>NAT · 답만 들인다</i>"]
-        RES[("내부 자원<br/>10.101.0.0/16")]
+        CN["커넥터"]
+        RES[("내부 자원")]
         CN --> RES
     end
 
-    WIN["Windows 클라이언트<br/><i>같은 프로토콜의 추가 구현</i>"]
-    NET["서버 뒤의 네트워크"]
-    ADMIN["관리자 / AI 에이전트"]
+    IDP["IdP<br/>Keycloak 등"]
+    ADMIN["관리자"]
 
-    VC <==>|"UDP 9000<br/>AES-256-GCM"| VS
-    WIN -.->|"UDP 9000"| VS
-    CN ==>|"밖으로 여는 세션<br/>connector=10.101.0.0/16"| VS
-    TUN -->|"커널 전달 + NAT<br/>규칙으로 연 곳만"| NET
-    ADMIN -->|"ssh + MCP"| CONF
-
-    IDP["IdP (Keycloak 등)<br/><i>로그인 · MFA · 그룹</i>"]
-    LG <-.->|"HTTPS"| IDP
-    IDP -.->|"JWKS (공개키)<br/>관리자가 받아 둔다"| CONF
+    LC <==>|"UDP 9000 · 암호화 터널"| VS
+    WC <==>|"UDP 9000 · 암호화 터널"| VS
+    CN ==>|"커넥터가 밖으로 연 세션"| VS
+    DEV -.->|"사용자 로그인"| IDP
+    IDP -.->|"공개키 (관리자가 복사)"| CONF
+    ADMIN -->|"ssh · MCP"| CONF
 ```
+
+- **기기**는 서버로 암호화된 UDP 터널을 열고, 서버가 허락한 곳으로만 패킷을 보냅니다.
+- **서버**는 기기와 사용자를 확인하고 패킷마다 ACL로 판정합니다. IdP와는 통신하지 않고, 관리자가 받아 둔 공개키로 토큰만 확인합니다.
+- **커넥터**는 내부망 안에서 서버로 "나가는" 세션을 열어, 내부망에 들어오는 포트 없이 자원을 내어 줍니다.
 
 | 조각 | 어디서 도는가 | 하는 일 |
 |---|---|---|
@@ -518,7 +508,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TB
-    UDP(["UDP 소켓"]) --> HDR{"헤더 · 버전"}
+    UDP(["UDP 소켓 (받기)"]) --> HDR{"헤더 · 버전"}
     HDR -->|"REQ / AUTH"| HS["핸드셰이크<br/><i>device.c · enroll.c</i>"]
     HDR -->|"세션 패킷"| IDX["세션 조회<br/><i>peer.c — 배열 인덱싱 한 번</i>"]
     IDX --> OPEN["tag 확인 · 재전송 창<br/><i>secure.c</i>"]
@@ -531,7 +521,7 @@ flowchart TB
     ACL -.-> AUD[("감사 로그<br/><i>audit.c</i>")]
     HS -.-> AUD
     KA -.-> AUD
-    TUN -->|"목적지 주소로 세션 조회"| SEAL["감싸기<br/><i>secure.c</i>"] --> UDP
+    TUN -->|"답장"| SEAL["세션 찾기 · 감싸기<br/><i>peer.c · secure.c</i>"] --> OUT(["UDP 소켓 (보내기)"])
 ```
 
 | 부분 | 설계 | 어디 |
