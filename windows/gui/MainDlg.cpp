@@ -229,8 +229,16 @@ bool CMainDlg::EditSettings(int bad_id, const CString &why)
 	return true;
 }
 
+/* 연결 중에는 바꿔도 반영되지 않는다. 링크를 회색으로 죽여 두면 고장처럼 보이므로,
+ * 누를 수 있게 두고 왜 안 되는지와 할 일을 알려 준다. */
 void CMainDlg::OnSettings()
 {
+	if (m_state != TUNNEL_STATE_STOPPED) {
+		AfxMessageBox(_T("연결 중에는 설정을 바꿀 수 없습니다.\n먼저 [연결 해제] 를 누른 뒤 다시 열어 주세요."),
+				MB_ICONINFORMATION);
+		return;
+	}
+
 	EditSettings(0, CString());
 }
 
@@ -1359,9 +1367,6 @@ void CMainDlg::SetUiState(tunnel_state_t state)
 	 * 가는 BN_CLICKED 는 받는 곳이 없다). */
 	SendMessage(DM_SETDEFID, stopped ? IDC_CONNECT : IDC_NO_DEFAULT);
 
-	/* 연결 중에 설정을 바꿔도 반영되지 않으므로 잠근다. */
-	GetDlgItem(IDC_SETTINGS)->EnableWindow(stopped);
-
 	/* 터널이 닫히면 받았던 주소도 더는 내 것이 아니다. */
 	if (stopped && !m_tun_text.IsEmpty()) {
 		m_tun_text.Empty();
@@ -1414,6 +1419,15 @@ void CMainDlg::UpdateInfo()
 		rows[INFO_DEVICE].value = m_device_id.Left(12) + _T("\x2026");
 	}
 
+	/* 이미 등록된 PC 에서 "기기 등록"이 파란 링크로 서 있으면 아직 할 일이 남은 것처럼
+	 * 읽힌다. 하는 일(새 코드로 신원을 바꾸기)에 맞게 부른다. */
+	CString enrollText = m_device_id.IsEmpty() ? _T("기기 등록") : _T("다시 등록");
+	CString shown;
+	GetDlgItemText(IDC_ENROLL, shown);
+	if (shown != enrollText) {
+		SetDlgItemText(IDC_ENROLL, enrollText);
+	}
+
 	bool changed = false;
 
 	for (int i = 0; i < INFO_COUNT; i++) {
@@ -1442,9 +1456,9 @@ CString CMainDlg::DenyHint() const
 		}
 		return _T("이 PC 가 회사 보안 정책에 맞지 않습니다. 관리자에게 문의하세요.");
 	case DENY_UNKNOWN_DEVICE:
-		return _T("서버에 이 기기가 없습니다. 관리자에게 새 등록 코드를 받아 [기기 등록] 을 해 주세요.");
+		return _T("서버에 이 기기가 없습니다. 관리자에게 새 등록 코드를 받아 아래 [다시 등록] 을 해 주세요.");
 	case DENY_BAD_AUTH:
-		return _T("기기 인증에 실패했습니다. 다시 등록해야 할 수 있습니다. 관리자에게 문의하세요.");
+		return _T("기기 인증에 실패했습니다. 새 등록 코드로 [다시 등록] 해야 할 수 있습니다. 관리자에게 문의하세요.");
 	case DENY_TUN_IP:
 		return _T("서버의 기기 설정이 맞지 않습니다. 관리자에게 문의하세요.");
 	default:
@@ -1483,6 +1497,10 @@ void CMainDlg::UpdateStatus()
 		}
 		icon = ICON_CHECK;
 		color = c.ok;
+		/* 차단 안내가 들어갈 자리가 평소에는 비어 있다. 처음 쓰는 사람이 가장 많이 묻는
+		 * 것("창을 닫으면 끊기나")을 흐리게 둔다. */
+		hint = _T("창을 닫아도 연결은 유지됩니다. 알림 영역의 아이콘으로 다시 열 수 있습니다.");
+		hintColor = c.muted;
 		break;
 	case TUNNEL_STATE_RECONNECTING:
 		title = _T("다시 연결 중");
