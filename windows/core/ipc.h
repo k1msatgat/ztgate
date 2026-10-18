@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	2	/* 2: 사용자 로그인 (LOGIN / LOGOUT) */
+#define IPC_VERSION	3	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -82,9 +82,14 @@ typedef struct ipc_enroll {
 	char code[IPC_CODE_LEN];
 } ipc_enroll_t;
 
+/* connected_ms 는 터널이 연결된 뒤 지난 시간이다. 연결된 때를 아는 것은 서비스뿐이라,
+ * 이것이 없으면 GUI 는 자기가 "연결됨"을 처음 본 때부터 센다 — GUI 를 다시 켜면 몇 시간째
+ * 붙어 있는 터널이 00:00:00 으로 보였다. 시각이 아니라 지난 양으로 보내 두 프로세스의
+ * 시계를 맞출 필요가 없게 한다. */
 typedef struct ipc_state {
 	uint32_t state;		/* tunnel_state_t */
 	uint32_t wanted;	/* 사용자가 연결을 원한 상태인가. 끊겨도 서비스가 다시 시도한다 */
+	uint64_t connected_ms;	/* 연결된 뒤 지난 ms. 재연결 동안은 이어서 세고, 끊기거나 거부되면 0 */
 } ipc_state_t;
 
 typedef struct ipc_device {

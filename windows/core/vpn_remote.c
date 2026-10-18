@@ -22,6 +22,7 @@ struct vpn_session {
 	HANDLE pipe;		/* 붙어 있지 않으면 INVALID_HANDLE_VALUE */
 	int link;		/* vpn_remote_link_t */
 	int active;		/* 터널이 열려 있거나 서비스가 열려고 하는 중이다 */
+	ULONGLONG connected_since;	/* 터널이 연결된 때 (이 PC 의 GetTickCount64). 0 이면 연결되지 않았다 */
 	int enrolled;
 	uint8_t device_id[DEVICE_ID_LEN];
 
@@ -146,6 +147,9 @@ static void on_state(vpn_session_t *s, const uint8_t *body, uint32_t len)
 	EnterCriticalSection(&s->lock);
 	was_active = s->active;
 	s->active = active;
+	/* 받은 지금에서 지난 양을 빼 연결된 때로 바꿔 둔다. 화면이 이것을 읽는 것은 아래의
+	 * WM_VPN_STATE 를 받은 뒤다. */
+	s->connected_since = st.connected_ms ? GetTickCount64() - st.connected_ms : 0;
 	LeaveCriticalSection(&s->lock);
 
 	post(s, WM_VPN_STATE, (WPARAM)st.state);
@@ -533,6 +537,21 @@ uint64_t vpn_session_lost_packets(vpn_session_t *s)
 int vpn_remote_link(const vpn_session_t *s)
 {
 	return s ? s->link : VPN_REMOTE_DOWN;
+}
+
+ULONGLONG vpn_remote_connected_since(vpn_session_t *s)
+{
+	ULONGLONG since;
+
+	if (!s) {
+		return 0;
+	}
+
+	EnterCriticalSection(&s->lock);
+	since = s->link == VPN_REMOTE_UP ? s->connected_since : 0;
+	LeaveCriticalSection(&s->lock);
+
+	return since;
 }
 
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN])

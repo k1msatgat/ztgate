@@ -62,6 +62,7 @@ static tunnel_config_t run_cfg;
 static int wanted;		/* 사용자가 연결을 원한다. 터널이 내려가도 다시 올린다 */
 static ULONGLONG retry_at;	/* 0 이 아니면 그때 다시 올린다 */
 static uint32_t state = TUNNEL_STATE_STOPPED;
+static ULONGLONG connected_at;	/* 처음 연결된 때 (GetTickCount64). 0 이면 연결되지 않았다 */
 static int state_dirty;
 
 /* 기록. GUI 가 붙어 있지 않을 때에도 쌓인다 — 나중에 붙은 GUI 가 그동안의 일을 본다.
@@ -120,6 +121,16 @@ static void set_state(uint32_t s)
 {
 	EnterCriticalSection(&lock);
 	state = s;
+	/* 서버 무응답으로 다시 맺는 동안(RECONNECTING)은 같은 연결로 친다. 거부되면 그때부터는
+	 * 통하지 않으므로, 다시 받아들여지면 새로 센다. */
+	if (s == TUNNEL_STATE_CONNECTED) {
+		if (connected_at == 0) {
+			connected_at = GetTickCount64();
+		}
+	}
+	else if (s == TUNNEL_STATE_STOPPED || s == TUNNEL_STATE_DENIED) {
+		connected_at = 0;
+	}
 	state_dirty = 1;
 	LeaveCriticalSection(&lock);
 	SetEvent(notify);
@@ -406,6 +417,7 @@ static int send_state(void)
 
 	EnterCriticalSection(&lock);
 	s.state = state;
+	s.connected_ms = connected_at ? GetTickCount64() - connected_at : 0;
 	state_dirty = 0;
 	LeaveCriticalSection(&lock);
 	s.wanted = (uint32_t)wanted;
@@ -1185,7 +1197,13 @@ static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 		ipc_state_t s;
 
 		memcpy(&s, body, sizeof(s));
-		printf("state: %s%s\n", state_name(s.state), s.wanted ? " (wanted)" : "");
+		printf("state: %s%s", state_name(s.state), s.wanted ? " (wanted)" : "");
+		if (s.connected_ms) {
+			ULONGLONG sec = s.connected_ms / 1000;
+
+			printf(", connected for %llu:%02llu:%02llu", sec / 3600, (sec / 60) % 60, sec % 60);
+		}
+		printf("\n");
 		break;
 	}
 	case IPC_EVT_DEVICE: {

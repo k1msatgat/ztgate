@@ -1336,8 +1336,19 @@ void CMainDlg::SetUiState(tunnel_state_t state)
 	const tunnel_state_t prev = m_state;
 	const bool userStop = m_stopping;	/* 아래에서 지우기 전에 */
 
-	if (state == TUNNEL_STATE_CONNECTED && m_connected_at == 0) {
-		m_connected_at = GetTickCount64();
+	/* 연결된 때는 서비스가 안다. 이 창을 나중에 켜도 터널이 연결된 때부터 센다. */
+	if (state == TUNNEL_STATE_CONNECTED) {
+		const ULONGLONG since = vpn_remote_connected_since(m_session);
+
+		if (since != 0) {
+			m_connected_at = since;
+		}
+		else if (m_connected_at == 0) {
+			m_connected_at = GetTickCount64();
+		}
+	}
+	else if (state == TUNNEL_STATE_DENIED) {
+		m_connected_at = 0;
 	}
 	else if (state == TUNNEL_STATE_STOPPED) {
 		m_connected_at = 0;

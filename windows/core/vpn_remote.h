@@ -42,6 +42,10 @@ typedef enum vpn_remote_link {
 /* 지금 서비스와의 연결 (vpn_remote_link_t). */
 int vpn_remote_link(const vpn_session_t *s);
 
+/* 서비스가 알려 준, 터널이 연결된 때 (GetTickCount64 기준). 연결되지 않았거나 서비스에
+ * 붙어 있지 않으면 0. 이 프로그램을 나중에 켜도 터널이 연결된 때부터 셀 수 있다. */
+ULONGLONG vpn_remote_connected_since(vpn_session_t *s);
+
 /* 등록된 기기면 1 을 돌려주고 id 를 채운다. 아니면 (또는 서비스에 붙지 못했으면) 0. */
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN]);
 
