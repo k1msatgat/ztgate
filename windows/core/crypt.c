@@ -1,4 +1,4 @@
-/* crypt.h 의 CNG 구현 (Windows 클라이언트). 서버 쪽은 server/src/crypt.c (OpenSSL) 다.
+/* crypt.h 의 CNG 구현 (Windows 클라이언트). Linux 쪽(서버, Linux 클라이언트)은 lib/common/src/crypt_openssl.c (OpenSSL) 다.
  *
  * CNG 의 호출 순서는 어느 알고리즘이나 같다.
  *   알고리즘 공급자 열기  ->  객체 만들기(키를 여기서 준다)  ->  쓰기  ->  역순으로 닫기
