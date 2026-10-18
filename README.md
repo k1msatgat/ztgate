@@ -14,7 +14,7 @@
 ![identity](https://img.shields.io/badge/identity-device%20%2B%20OIDC%20user-6b4fbb)
 ![windows](https://img.shields.io/badge/also-Windows%20client-888)
 
-[한눈에 보기](#한눈에-보기) · [시작하기](#시작하기) · [배포와 운영](#배포와-운영) · [동작 흐름](#동작-흐름--등록부터-차단과-복구까지) · [서버 구조](#서버-구조) · [프로토콜](#프로토콜) · [보안 모델](#보안-모델) · [표준 프로토콜과의 대조](#표준-프로토콜과의-대조) · [알려진 제약](#알려진-제약) · [Windows 클라이언트](#windows-클라이언트)
+[한눈에 보기](#한눈에-보기) · [시작하기](#시작하기) · [배포와 운영](#배포와-운영) · [동작 흐름](#동작-흐름--등록부터-차단과-복구까지) · [서버 구조](#서버-구조) · [프로토콜](#프로토콜) · [보안 모델](#보안-모델) · [표준 프로토콜과의 대조](#표준-프로토콜과의-대조) · [알려진 제약](#알려진-제약) · [Windows 클라이언트](#windows-클라이언트) · [빌드와 의존성](#빌드와-의존성)
 
 </div>
 
@@ -920,6 +920,67 @@ GUI 는 상용 에이전트처럼 나뉘어 있습니다.
 | 알림 영역 | 창을 닫아도 남아 상태를 툴팁으로 보이고, 차단 / 끊김 / 연결, 로그인이 끝나거나 거절됨을 Windows 알림으로 알린다. 메뉴에서 연결, 로그인 / 로그아웃, 진단, [종료] |
 
 CI 는 MSVC `/W4` 빌드와 selftest 까지 확인합니다. 실제 Windows 10 / 11 장비에서 콘솔 클라이언트와 서비스(설치, `ctl` 로 상태 / 거절 확인, 권한 없는 GUI 가 붙는 것)를 확인했고, 2026-10-17 에 실서버로 GUI 의 등록, 연결, 서버 정책에 의한 차단과 자동 복구, 알림 영역으로 숨기고 되돌리기를 확인했습니다. 알림 토스트가 화면에 뜨는 것과 재부팅 뒤 이어서 연결하는 것은 확인하지 않았습니다. 빌드는 Visual Studio 2022로 `windows/ztgate.sln`(x64)이고, Wintun은 저장소에 넣지 않아 [wintun.net](https://www.wintun.net)에서 받아 `windows/third_party`에 풉니다.
+
+## 빌드와 의존성
+
+저장소에는 남의 소스 코드를 넣지 않았습니다. 외부 것은 빌드할 때 OS 의 라이브러리를 링크하거나, 실행 중에 불러오거나, 빌드 전에 받아 둡니다.
+
+### Linux — 서버, 클라이언트, 부하 생성기
+
+| 무엇 | 어떻게 쓰나 | 패키지 |
+|---|---|---|
+| gcc, make | 빌드 | `gcc make` (Rocky) / `build-essential` (Ubuntu) |
+| OpenSSL 3 `libcrypto` | `-lcrypto` 로 동적 링크. 부르는 곳은 `lib/common/src/crypt_openssl.c` 한 파일뿐이다 — 난수, SHA-256, HMAC, ECDH P-256, AES-256-GCM | 빌드 `openssl-devel` / `libssl-dev`, 실행 `libssl3` |
+| pthread | 부하 생성기만 (보내는 스레드와 받는 스레드) | glibc |
+| `nft` 명령 | Linux 클라이언트가 실행 중에 부른다 — 포스처 수집(`nft list ruleset`), 커넥터의 표 넣기(`nft -f -`). 서버는 외부 명령을 부르지 않는다 | `nftables` |
+
+`make` 가 만드는 것과 링크 순서:
+
+```
+lib/common/src/*.c              → lib/common/bin/libcommon.a   정적 라이브러리 (프로토콜, 세션 암호)
+client/src/*.c (client.c 빼고)  → client/bin/libclient.a       클라이언트 쪽 프로토콜 (부하 생성기와 공유)
+
+server/src/*.c       + libcommon.a               + -lcrypto            → server/bin/vpn_server
+client/src/*.c       + libcommon.a               + -lcrypto            → client/bin/vpn_client
+tools/loadgen/*.c    + libclient.a + libcommon.a + -lcrypto -lpthread  → tools/loadgen/bin/loadgen
+```
+
+- 기본 플래그는 디버깅용 `-Wall -Wextra -g -O0` 입니다. CI 는 `-Werror` 를 더해 경고 하나도 실패로 보고, Docker 이미지는 `-Werror -O2` 로 빌드합니다.
+- 결과물은 컴포넌트마다 자기 `bin/` 에 생기고, `-MMD -MP` 로 헤더 의존성을 따라가 헤더만 고쳐도 다시 컴파일됩니다. 새 `.c` 파일은 `src/*.c` 로 저절로 잡힙니다.
+- 서버가 실행 중에 필요로 하는 것은 glibc 와 `libcrypto` 뿐입니다. tun 을 만들므로 root(정확히는 `CAP_NET_ADMIN`)로 실행합니다.
+
+### Windows — 서비스, GUI, 콘솔 클라이언트
+
+Visual Studio(MSBuild)로 `windows/ztgate.sln` 을 x64 로 빌드합니다. 플랫폼 툴셋은 설치된 Visual Studio 의 기본값(없으면 v143)이고, C 는 C17, 경고 수준은 `/W4` 입니다. 세 프로젝트가 `lib/common` 의 `proto.c` · `secure.c` 와 `server/src/json.c` 를 소스째 함께 컴파일합니다.
+
+| 무엇 | 어떻게 쓰나 |
+|---|---|
+| Windows SDK 라이브러리 (빌드할 때 링크) | 세 프로젝트 공통 `bcrypt`(CNG 암호, `windows/core/crypt.c`), `ws2_32`(소켓), `iphlpapi`(어댑터 주소와 경로), `crypt32`(DPAPI). GUI 는 여기에 `winhttp`(IdP 와 HTTPS, `Oidc.cpp`), `wtsapi32`(사용자 전환 알림), `comctl32` · `uxtheme` · `gdiplus` · `dwmapi`(화면) |
+| MFC | GUI 만, 공유 DLL 로 |
+| COM `INetFwPolicy2` | 방화벽 상태 (`ole32`, 기본 링크) |
+| `wscapi.dll` | 백신 상태(보안 센터). Windows Server 에는 없어서 링크하지 않고, 실행 중에 `LoadLibraryExW` 로 System32 에서만 찾는다 |
+| Wintun 0.14.1 (`wintun.dll`) | 아래 |
+
+**Wintun** 은 WireGuard 팀이 만든 Windows 용 tun 드라이버입니다. Linux 는 커널에 tun 이 있지만 Windows 에는 없고, 커널 드라이버를 직접 배포하려면 Microsoft 서명이 필요해서 이미 서명된 Wintun 을 씁니다. 저장소에는 넣지 않습니다(`.gitignore`). 컴파일할 때는 `wintun.h` 만 쓰고, 빌드가 끝나면 프로젝트 파일이 `wintun.dll` 을 실행 파일 옆으로 복사하고, 실행 중에 `tunnel.c` 가 실행 폴더와 System32 에서만 불러옵니다. 라이선스는 WireGuard LLC 의 미리 빌드된 바이너리 라이선스입니다 — dll 을 고치지 않고 공개 API(`wintun.h`)로만 쓰는 소프트웨어와 함께라면 배포할 수 있습니다. CI 산출물에는 `wintun-LICENSE.txt` 를 함께 넣습니다.
+
+```powershell
+# Wintun 을 받아 공개 해시를 확인하고 푼다 (CI 와 같은 단계)
+Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile wintun.zip
+(Get-FileHash wintun.zip -Algorithm SHA256).Hash   # 07C256185D6EE3652E09FA55C0B673E2624B565E02C4B9091C79CA7D2F24EF51
+Expand-Archive wintun.zip -DestinationPath windows\third_party
+
+msbuild windows\ztgate.sln -m -p:Configuration=Release -p:Platform=x64
+# → windows\build\Release\  vpn_service.exe  vpn_gui.exe  vpn_client.exe  wintun.dll
+```
+
+### 도구, 시험, 배포
+
+| 무엇 | 의존 |
+|---|---|
+| Python 시험과 도구 (`auth_check.py`, `intranet.py`, `mint.py`, `mock_oidc.py`, `ztgate_login`) | Python 3 표준 라이브러리만 쓰고 pip 패키지는 없습니다. `auth_check.py` 는 암호를 시스템의 `libcrypto` 를 `ctypes` 로 직접 불러 쓰고, `mint.py` 와 `docker/enroll-code.sh` 는 `openssl` 명령을 씁니다 |
+| MCP 서버 (선택) | Node.js 18 이상, npm 패키지 `@modelcontextprotocol/sdk` 와 `zod` (`mcp/package.json`, 버전은 lock 파일에 고정) |
+| Docker | `debian:bookworm-slim` 두 단계 — 빌드 단계(`gcc make libssl-dev`)에서 만든 실행 파일만 실행 단계(`libssl3 iproute2 nftables openssl` …)로 옮깁니다 |
+| CI (GitHub Actions) | `ubuntu-24.04` 에서 Linux 빌드와 시험(apt 로 `nftables`, perf 용 `linux-tools`, `iperf3`), Keycloak 26.0.7 컨테이너로 IdP 시험, `windows-2022` 에서 MSBuild |
 
 ## 프로젝트 구조
 
