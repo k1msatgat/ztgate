@@ -3,11 +3,18 @@
 
 namespace pkt {
 
+/* 터널을 연 뒤 지난 시간. 분이 60 을 넘으면 "75:12" 가 시각처럼 읽혀서 시를 붙인다. */
 CString TimeText(ULONGLONG t_ms)
 {
 	CString s;
+	ULONGLONG sec = t_ms / 1000;
 
-	s.Format(_T("%llu:%02llu.%03llu"), t_ms / 60000, (t_ms / 1000) % 60, t_ms % 1000);
+	if (sec >= 3600) {
+		s.Format(_T("%llu:%02llu:%02llu.%03llu"), sec / 3600, (sec / 60) % 60, sec % 60, t_ms % 1000);
+	}
+	else {
+		s.Format(_T("%02llu:%02llu.%03llu"), sec / 60, sec % 60, t_ms % 1000);
+	}
 
 	return s;
 }

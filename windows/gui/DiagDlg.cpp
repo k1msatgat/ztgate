@@ -16,7 +16,7 @@ static const struct {
 	int format;
 } COLUMNS[] = {
 	{ _T("#"),        28, LVCFMT_RIGHT },
-	{ _T("시간"),     44, LVCFMT_RIGHT },
+	{ _T("경과"),     44, LVCFMT_RIGHT },
 	{ _T("방향"),     34, LVCFMT_CENTER },
 	{ _T("타입"),     52, LVCFMT_LEFT },
 	{ _T("세션"),     46, LVCFMT_LEFT },
@@ -376,7 +376,13 @@ void CDiagDlg::OnPacketCustomDraw(NMHDR *pNMHDR, LRESULT *pResult)
 			return;
 		}
 
-		if (p->verdict != TUNNEL_PASS) {
+		if (p->verdict == TUNNEL_DROP_NON_UNICAST || p->verdict == TUNNEL_DROP_NON_IPV4) {
+			/* Windows 가 터널 어댑터로도 늘 내보내는 멀티캐스트 / IPv6 를 거른 것이다.
+			 * 정상 동작이라 빨갛게 칠하면 진짜 문제(위조, 재전송, 거부)가 묻힌다. */
+			cd->clrTextBk = c.card;
+			cd->clrText = c.idle;
+		}
+		else if (p->verdict != TUNNEL_PASS) {
 			cd->clrTextBk = c.dangerBg;
 			cd->clrText = c.danger;
 		}
@@ -867,6 +873,17 @@ void CDiagDlg::LayoutChildren(int cx, int cy)
 	}
 
 	EndDeferWindowPos(dwp);
+
+	/* 요약 열이 남는 폭을 가져간다. 창을 넓혀도 오른쪽에 빈 칸만 늘지 않게. */
+	CRect client;
+	m_packets.GetClientRect(&client);
+	int others = 0;
+	for (int i = 0; i < COLUMN_COUNT; i++) {
+		if (i != pkt::COL_SUMMARY) {
+			others += m_packets.GetColumnWidth(i);
+		}
+	}
+	m_packets.SetColumnWidth(pkt::COL_SUMMARY, max(DX(COLUMNS[pkt::COL_SUMMARY].du_width), client.Width() - others));
 
 	/* 판의 자리가 바뀌었으니 바탕을 다시 그린다. */
 	Invalidate(FALSE);
