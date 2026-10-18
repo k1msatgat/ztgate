@@ -198,10 +198,16 @@ jobs:
               exit 1
           }
 
+      # wintun.dll 은 WireGuard LLC 의 바이너리라, 함께 내보낼 때 그 라이선스도 옆에 둔다.
+      - name: Put the Wintun license next to wintun.dll
+        shell: pwsh
+        run: Copy-Item windows\third_party\wintun\LICENSE.txt windows\build\Release\wintun-LICENSE.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: ztgate-windows-x64
           path: |
             windows/build/Release/*.exe
             windows/build/Release/wintun.dll
+            windows/build/Release/wintun-LICENSE.txt
           if-no-files-found: error
