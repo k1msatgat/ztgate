@@ -515,7 +515,7 @@ flowchart TB
     OPEN -->|"KEEPALIVE"| KA["포스처 재평가<br/><i>policy.c</i>"]
     OPEN -->|"ENROLL"| ENR["기기 등록<br/><i>enroll.c</i>"]
     OPEN -->|"DATA"| SRC["inner 출발지 검사"]
-    SRC --> ACL{"ACL<br/><i>alc.c</i>"}
+    SRC --> ACL{"ACL<br/><i>acl.c</i>"}
     ACL -->|"allow"| TUN(["tun"])
     ACL -->|"deny"| DROP["폐기"]
     ACL -.-> AUD[("감사 로그<br/><i>audit.c</i>")]
@@ -529,9 +529,9 @@ flowchart TB
 | **이벤트 루프** | epoll 하나에 UDP 소켓, tun, 상태 소켓을 건다. 스레드 하나라 세션 표와 정책에 잠금이 없다. 1초 타임아웃으로 깨어 세션 만료와 `SIGHUP` 다시 읽기를 처리한다 (시그널 핸들러는 플래그만 세운다) | `server.c` |
 | **피어 테이블** | 32bit 세션 번호 = 상위 24bit 난수(`getrandom`) + 하위 8bit 자리 번호. 받은 패킷의 세션은 **배열 인덱싱 한 번**으로 찾고, 번호 전체를 비교해 같은 자리를 다시 쓴 뒤의 옛 번호는 무효다. `MAX_PEERS`(8) ≤ 2^8 은 `_Static_assert` 로 강제. 송신 쪽(tun → UDP)은 inner 목적지 주소로 찾는다 | `peer.c` |
 | **재전송 창** | 세션 패킷의 64bit `counter` 가 GCM nonce 이자 순번이다. 받아들인 가장 큰 값과 그 아래 64개를 비트맵으로 기억해, 순서가 바뀐 패킷은 받고 같은 값은 버린다. 포스처 보고(keepalive)만은 순서대로만 받는다 | `secure.c`, `server.c` |
-| **ACL** | `src / dst / proto / dport`, 위에서부터 첫 일치, 일치하는 규칙이 없으면 거부. 규칙마다 포스처 조건을 붙일 수 있다. **상태를 추적하지 않는다** (conntrack 없음) — 클라이언트가 보낸 방향에만 걸린다 | `alc.c`, `policy.c` |
+| **ACL** | `src / dst / proto / dport`, 위에서부터 첫 일치, 일치하는 규칙이 없으면 거부. 규칙마다 포스처 조건을 붙일 수 있다. **상태를 추적하지 않는다** (conntrack 없음) — 클라이언트가 보낸 방향에만 걸린다 | `acl.c`, `policy.c` |
 | **시계** | 세션 만료, nonce 수명은 `CLOCK_MONOTONIC` — 시스템 시간을 바꿔도 세션이 한꺼번에 만료되지 않는다 | `peer.c`, `server.c` |
-| **무중단 정책 변경** | `SIGHUP` 으로 기기 목록, ACL, 등록 대기 목록을 임시 표에 읽어 검사가 끝난 뒤에만 바꿔 끼운다. 파일이 깨져 있으면 이전 것을 그대로 쓴다. 열린 세션은 다음 패킷 / 다음 keepalive 부터 새 정책을 따른다 | `server.c`, `device.c`, `alc.c` |
+| **무중단 정책 변경** | `SIGHUP` 으로 기기 목록, ACL, 등록 대기 목록을 임시 표에 읽어 검사가 끝난 뒤에만 바꿔 끼운다. 파일이 깨져 있으면 이전 것을 그대로 쓴다. 열린 세션은 다음 패킷 / 다음 keepalive 부터 새 정책을 따른다 | `server.c`, `device.c`, `acl.c` |
 | **관측** | 읽기 전용 상태 소켓(세션, 포스처, 사유별 거절 수 — JSON), 감사 로그(세션의 시작과 끝, 거절, 목적지별 접근) | `status.c`, `audit.c` |
 
 **열리지 않은 패킷은 세션의 어떤 상태도 바꾸지 못합니다.** 재전송 창에 표시하는 것, 클라이언트의 외부 주소를 갱신하는 것(NAT 뒤에서 포트가 바뀌는 경우), 세션을 내리는 것 모두 tag를 확인한 뒤에 합니다. 위조 패킷 하나로 남의 세션을 끊거나 주소를 돌려놓을 수 없습니다.
@@ -934,7 +934,7 @@ ztgate/
 │       ├── peer.c             # 세션 표, 세션 번호, 만료
 │       ├── device.c           # 등록된 기기 목록, 기기별 포스처 정책, 커넥터의 대역
 │       ├── enroll.c           # 등록 코드의 대기 목록, 기기를 목록에 올리기
-│       ├── alc.c              # ACL 파싱과 매칭, 규칙별 포스처 / 사용자 조건, 경로 뽑기
+│       ├── acl.c              # ACL 파싱과 매칭, 규칙별 포스처 / 사용자 조건, 경로 뽑기
 │       ├── policy.c           # 포스처 조건과 사용자 조건의 문법과 판정
 │       ├── idp.c              # 사용자 토큰(JWT) 검증, IdP 설정과 JWKS
 │       ├── json.c             # JWT / JWKS 를 읽는 만큼의 JSON
@@ -1022,7 +1022,7 @@ ztgate/
 | ZTNA 확장의 Windows 쪽 — `core/posture.c`, `core/device.c`, `core/tunnel.c`의 인증 핸드셰이크와 지속 검증, GUI의 포스처 탭과 기기 등록 창 |
 | ZTNA 확장의 서버 쪽 — `server/src/device.c`, `server.c`의 `handle_request` / `handle_auth` / `handle_keepalive` / `send_deny`와 SIGHUP 처리, `peer.c`의 `peer_drop`, `test/auth_check.py`. 기존 서버 로직(피어 테이블, 데이터 경로, ACL)은 직접 구현한 것 그대로 |
 | `proto.h` / `proto.c`의 인증 · 포스처 메시지 정의. 메시지 흐름은 AI가 제안하고 검토 후 채택 |
-| 서버의 ZTNA 확장 (2차) — `policy.c`, `status.c`, `alc.c`의 다시 읽기와 규칙별 포스처 조건, `server.c`의 nonce 재사용과 상태 소켓, `peer.c`의 단조 시계와 세션별 카운터 |
+| 서버의 ZTNA 확장 (2차) — `policy.c`, `status.c`, `acl.c`의 다시 읽기와 규칙별 포스처 조건, `server.c`의 nonce 재사용과 상태 소켓, `peer.c`의 단조 시계와 세션별 카운터 |
 | 세션 암호화 — `lib/common`의 `crypt.h` / `secure.{h,c}`, OpenSSL 구현(지금의 `lib/common/src/crypt_openssl.c`), `windows/core/crypt.c`(CNG), 핸드셰이크 / 데이터 / keepalive 경로를 세션 키로 감싸도록 고친 것. 키를 어떻게 뽑고 무엇을 tag로 덮을지는 AI가 제안 |
 | 서버가 내려 주는 터널 설정 — `net_config`, `acl_routes`, `netcfg_apply` / `netcfg_refresh`, GUI의 터널 IP 칸을 입력에서 표시로. 경로를 ACL에서 뽑는 방식은 AI가 제안 |
 | 서버 뒤의 네트워크로 전달 — 규칙 파일이 없을 때의 판정, `mcp/service.sh`의 `forward_up` / `forward-down` |
@@ -1039,7 +1039,7 @@ ztgate/
 | Docker — `Dockerfile`, `docker/entrypoint.sh`, `docker/enroll-code.sh`, `docker-compose.yml`, `docker/demo.sh`, CI 의 `docker` 잡 |
 | `docs/experiments.md`의 실험 절차와 해석 초안 (실험 0은 CI 가 돌린 측정, 1~8은 직접 실행) |
 | 이 README — Linux 기준 재구성, "표준 프로토콜과의 대조", 보안 모델의 확인 열 |
-| 사용자 로그인 (프로토콜 v5) — `server/src/idp.c`(JWT 검증, JWKS), `server/src/json.c`, `policy.c` 의 사용자 조건, `alc.c` / `server.c` / `audit.c` / `status.c` 의 연결, `vpn_server verify-token`, 클라이언트의 `-t` 와 `LOGIN`, `client/ztgate_login`(OIDC 기기 인가), `tools/idp/`(시험용 IdP), `auth_check.py` 의 로그인 시험, `linux_e2e.sh` 의 5단계, `test/keycloak_check.sh` 와 CI 의 `idp` 잡, MCP 의 ACL 사용자 조건. 토큰을 세션이 열린 뒤에 싣는 것, 서버가 IdP 와 통신하지 않는 것, 로그인을 세션이 아니라 규칙의 조건으로 두는 것은 AI가 제안하고 검토 후 채택 |
+| 사용자 로그인 (프로토콜 v5) — `server/src/idp.c`(JWT 검증, JWKS), `server/src/json.c`, `policy.c` 의 사용자 조건, `acl.c` / `server.c` / `audit.c` / `status.c` 의 연결, `vpn_server verify-token`, 클라이언트의 `-t` 와 `LOGIN`, `client/ztgate_login`(OIDC 기기 인가), `tools/idp/`(시험용 IdP), `auth_check.py` 의 로그인 시험, `linux_e2e.sh` 의 5단계, `test/keycloak_check.sh` 와 CI 의 `idp` 잡, MCP 의 ACL 사용자 조건. 토큰을 세션이 열린 뒤에 싣는 것, 서버가 IdP 와 통신하지 않는 것, 로그인을 세션이 아니라 규칙의 조건으로 두는 것은 AI가 제안하고 검토 후 채택 |
 | 앱 커넥터 — `server.c` 의 `relay_to_connector` / `relay_from_connector`, `device.c` 의 `connector=`, `client/src/connector.c`, `vpn_client connector`, `auth_check.py` / `linux_e2e.sh` 의 커넥터 시험, MCP 의 `connector`. 커넥터가 없을 때 서버 tun 으로 돌리지 않고 버리는 것, 판정을 서버에만 두는 것은 AI가 제안하고 검토 후 채택 |
 | `linux_e2e.sh` / `iperf.sh` 가 클라이언트를 셸 함수로 띄워 끝난 뒤에도 남기던 것을 고친 것 |
 | `windows/ztgate.sln` 에 빠져 있던 `vpn_service` 프로젝트를 넣은 것 (CI 가 서비스를 빌드하지 않고 있었다) |

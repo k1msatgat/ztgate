@@ -4,7 +4,7 @@
 /* 포스처 조건. "이 상태여야 한다"를 적는 한 가지 문법을 두 곳에서 쓴다.
  *
  *   기기 목록   그 기기를 터널에 들일 것인가        (device.c)
- *   ACL 규칙    들어온 뒤 그 목적지에 가도 되는가   (alc.c)
+ *   ACL 규칙    들어온 뒤 그 목적지에 가도 되는가   (acl.c)
  *
  *   firewall=on   antivirus=on   min-build=N
  *

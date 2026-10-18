@@ -39,7 +39,7 @@ const MAX_RULES = 32;
 const MAX_PENDING = 16;	/* server/include/enroll.h */
 const ENROLL_CODE_LEN = 25;	/* lib/common/include/proto.h */
 const ENROLL_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const LINE_MAX = 255;	/* device.c / alc.c 가 한 줄을 char[256] 으로 읽는다 */
+const LINE_MAX = 255;	/* device.c / acl.c 가 한 줄을 char[256] 으로 읽는다 */
 
 const ENV = { PATH: '/usr/sbin:/usr/bin', LC_ALL: 'C' };
 
@@ -153,7 +153,7 @@ function wantRequirements(v) {
 	return r;
 }
 
-/* 조건을 파일에 쓰는 단어로. device.c / alc.c 가 같은 문법(policy.c)을 읽는다. */
+/* 조건을 파일에 쓰는 단어로. device.c / acl.c 가 같은 문법(policy.c)을 읽는다. */
 function reqTokens(r) {
 	const t = [];
 

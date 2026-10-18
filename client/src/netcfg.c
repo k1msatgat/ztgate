@@ -47,7 +47,7 @@ int netcfg_usable(const net_config_t *c)
 /* 이 대역을 터널로 돌려도 되는가.
  *
  *   /0                모든 트래픽을 터널로 보내라는 뜻이다. 서버가 그런 값을 줄 일은
- *                     없지만(alc.c 의 acl_routes), 준다고 따르지는 않는다.
+ *                     없지만(acl.c 의 acl_routes), 준다고 따르지는 않는다.
  *   서버 주소를 덮는 대역  서버로 가는 UDP 가 터널로 들어간다. 터널 패킷을 싣고 가야
  *                     할 길이 터널 자신이 되어, 넣는 순간 연결이 끊긴다. */
 static int route_usable(const netcfg_t *n, const net_route_t *r)
