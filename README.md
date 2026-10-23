@@ -191,15 +191,18 @@ ping 10.0.0.1
 <br/>
 
 ```
-# devices.conf — id (32 hex)  key (64 hex)  tunnel-ip  [포스처 조건]
-2bd5d6e0610d2b7c07f884d0c5afb043   a24d4c3d…   10.0.0.2   firewall=on min-build=331264
+# devices.conf — id (32 hex)  key (64 hex)  tunnel-ip  [포스처 조건] [tag=역할]
+2bd5d6e0610d2b7c07f884d0c5afb043   a24d4c3d…   10.0.0.2   firewall=on min-build=331264 tag=eng
 
 # acl.conf — 위에서부터 첫 일치, 일치하는 규칙이 없으면 거부
-# src          dst              proto  dport  action  [포스처 조건]
+# src          dst              proto  dport  action  [포스처 조건] [tag=역할]
 10.0.0.0/24    10.101.0.0/16    tcp    443    allow
-10.0.0.0/24    10.101.0.7       tcp    22     allow   firewall=on
+10.0.0.0/24    10.101.0.7       tcp    22     allow   firewall=on tag=eng
 any            any              any    any    deny
 ```
+
+- **태그(`tag=`)는 기기의 역할입니다.** 규칙에 태그를 적으면 그 태그 중 하나를 가진 기기의 규칙이 됩니다. 출발지 주소와 같은 자리라, 태그가 맞지 않는 기기에게는 그 규칙이 없는 것이고 다음 규칙을 봅니다 (조건에 못 미쳐 거부되는 포스처·사용자 조건과 다릅니다). 터널 주소를 하나씩 적지 않고 "엔지니어 노트북"처럼 묶게 됩니다. 영문 소문자, 숫자, `_` `-` 의 32자까지, 기기 하나와 규칙 하나에 넷까지. 등록 코드에 적은 태그는 등록된 기기에 그대로 옮겨집니다. 경로도 그 기기의 태그로 뽑습니다.
+- 한 줄은 510자까지입니다. 더 긴 줄은 잘라 읽지 않고 그 파일을 거부합니다.
 
 | 조건 | Windows 클라이언트 | Linux 클라이언트 |
 |---|---|---|
@@ -924,7 +927,6 @@ sendto(buf, n + 32)     └─────────────────�
 - **IPv4만 터널링합니다.** 멀티캐스트 / 브로드캐스트도 통과하지 못합니다.
 - **ACL 이 막은 패킷에는 ICMP "관리자가 막음"(type 3 code 13)을 돌려줍니다.** 프로그램의 connect() 가 타임아웃을 기다리지 않고 바로 실패합니다. 세션마다 1초에 10개까지라 그보다 빨리 두드리면 나머지는 조용히 버려지고, ICMP 오류와 뒷조각에는 답하지 않습니다. 출발지는 막힌 목적지 주소입니다 (서버는 자기 tun 주소를 모릅니다).
 - **모든 트래픽을 터널로 보내는 구성은 없습니다.** 경로는 대역 단위이고, 도메인 이름으로 접근 대상을 정하는 방법은 없습니다.
-- **ACL 규칙의 출발지는 터널 IP입니다.** 사람은 `group=`으로 묶을 수 있지만, 여러 기기를 역할로 묶어 쓰는 방법(기기 그룹)은 없습니다.
 
 ### 운영
 
@@ -1143,6 +1145,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| 기기 태그 — `policy.c` 의 `tag_parse` / `tag_match`, 기기 목록 · ACL · 경로 · 상태 소켓, `ctl.cjs` / MCP 의 `tags`, 설정 줄 512자와 넘치는 줄 거부, 시험. 태그를 조건이 아닌 출발지처럼 다루는 것은 AI가 제안 |
 | ACL 거부 통지 — `server.c` 의 `send_prohibited`(ICMP 3/13, 세션마다 1초 10개), 시험 |
 | Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계 |
 | 내부 DNS (프로토콜 v7) — `net_config` 의 DNS 칸(`proto.c`), `server/src/dns.c` 와 `-d`, Linux 의 resolvectl, Windows 의 NRPT(`nrpt_*`), 시험. 분할 DNS 로 하고 모든 이름을 회사로 보내지 않는 것은 AI가 제안 |
