@@ -472,13 +472,12 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		peer_drop(peer, "replaced");
 	}
 
-	peer = peer_register(tun_ip, src, srclen);
+	peer = peer_register(tun_ip, dev->id, src, srclen);
 	if (peer == NULL) {
 		printf("[HS] register failed for %s\n", ip_str(tun_ip, ib));
 		return;
 	}
 
-	memcpy(peer->device_id, dev->id, DEVICE_ID_LEN);
 	peer->posture = posture;
 
 	len = open_session(peer, dev, packet, res, sizeof(res));
