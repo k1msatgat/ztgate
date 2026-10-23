@@ -7,7 +7,8 @@
 # 환경 변수
 #   DUR=10           한 번 보내는 시간(초)
 #   SIZES="56 512 1372"   ICMP 페이로드 크기
-#   LOGS="file null" 서버 stdout 을 어디로 보낼지. file = 파일, null = /dev/null
+#   LOGS="quiet file null" 서버를 어떻게 띄울지. quiet = 운영 기본값(통과한 패킷은 찍지 않는다),
+#                    file = -v 로 패킷마다 한 줄을 파일에, null = -v 로 찍되 /dev/null 로
 #   PERF=1           perf 가 있으면 56B 최대 속도 구간을 perf record 로 한 번 더 잰다
 #   PORT=19100
 #
@@ -30,7 +31,7 @@ LOADGEN="$ROOT/tools/loadgen/bin/loadgen"
 OUT=${1:-$ROOT/tools/loadgen/out}
 DUR=${DUR:-10}
 SIZES=${SIZES:-"56 512 1372"}
-LOGS=${LOGS:-"file null"}
+LOGS=${LOGS:-"quiet file null"}
 PERF=${PERF:-0}
 PORT=${PORT:-19100}
 
@@ -73,14 +74,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# $1 = file | null. 새로 생긴 tun 장치를 찾아 주소를 붙인다 — null 이면 서버 로그에서
+# $1 = quiet | file | null. 새로 생긴 tun 장치를 찾아 주소를 붙인다 — null 이면 서버 로그에서
 # 장치 이름을 읽을 수 없어서, 띄우기 전과 뒤의 장치 목록을 비교한다.
 start_server() {
 	local dest before dev i
-	if [ "$1" = file ]; then dest="$OUT/server.log"; else dest=/dev/null; fi
+	local opts=(-v)
+	if [ "$1" = null ]; then dest=/dev/null; else dest="$OUT/server.log"; fi
+	if [ "$1" = quiet ]; then opts=(); fi
 
 	before=$(ip -o link show type tun | awk -F': ' '{print $2}')
-	"${PIN_SERVER[@]}" "$SERVER" "$PORT" "$DEVFILE" > "$dest" 2>&1 &
+	"${PIN_SERVER[@]}" "$SERVER" "${opts[@]}" "$PORT" "$DEVFILE" > "$dest" 2>&1 &
 	SRV_PID=$!
 
 	for i in $(seq 50); do
