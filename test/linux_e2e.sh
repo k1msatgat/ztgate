@@ -198,6 +198,10 @@ in_cli bash -c "echo probe > /dev/udp/$SRV_TUN/22" 2>/dev/null
 check "acl: udp to $SRV_TUN:22 is dropped by the server" \
 	wait_for 3 sh -c "[ \$(grep -c '^\[deny\]' '$SLOG') -gt $denied_before ]"
 check "acl: the session survives a denied packet" ping_ok "$SRV_TUN"
+# 서버가 막힌 패킷에 ICMP '관리자가 막음'을 돌려주므로 connect() 가 타임아웃을 기다리지 않고
+# 바로 실패한다. 돌려주지 않으면 SYN 을 다시 보내며 3초를 다 쓰고 timeout 이 124 로 끝난다.
+check "acl: a denied tcp connect fails at once (icmp prohibited), not by timeout" \
+	sh -c "nsenter -t $NS_PID -n --preserve-credentials timeout 3 bash -c 'echo > /dev/tcp/$SRV_TUN/22' 2>/dev/null; [ \$? -ne 124 ]"
 
 echo "== 4. posture"
 check "posture: client ns has no inbound filter (firewall=off)" \
