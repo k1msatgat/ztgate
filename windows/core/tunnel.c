@@ -70,6 +70,7 @@ typedef struct tunnel {
 	net_config_t applied;	/* 어댑터에 실제로 넣어 둔 것 */
 	int has_applied;
 	int readdress;		/* 서버가 터널 주소를 바꿨다. 다시 핸드셰이크해서 새 주소로 세션을 연다 */
+	int server_closed;	/* 서버가 DISCONNECT 로 세션을 끝냈다. 30초를 기다리지 않고 다시 핸드셰이크한다 */
 	uint32_t login_gen;	/* cfg->login 에서 마지막으로 읽은 gen */
 	int login_has;		/* 보낼 토큰이 있다 */
 	int login_due;		/* 이 세션에 토큰을 보내야 하는데 아직 답을 받지 못했다 */
@@ -1016,6 +1017,42 @@ static void send_keepalive(tunnel_t *t)
 	pkt_emit(t, &pkt);
 }
 
+/* DISCONNECT: 이 세션을 끝낸다고 서버에 알린다 (proto.h). 한 번 보내고 답을 기다리지
+ * 않는다 — 잃어버려도 서버는 만료(60초)로 정리한다. */
+static void send_disconnect(tunnel_t *t, uint8_t reason)
+{
+	session_t *session = &t->session;
+	uint8_t packet[PKT_OVERHEAD + 1];
+	uint8_t plain[PKT_HDR_LEN + 1];
+	tunnel_packet_t pkt;
+	uint64_t counter = session->secure.tx_counter;
+	int n;
+
+	if (session->idx == 0 || session->denied) {
+		return;
+	}
+
+	packet[PKT_HDR_LEN] = reason;
+	plain[PKT_HDR_LEN] = reason;
+	n = secure_seal(&session->secure, MSG_TYPE_DISCONNECT, session->idx, packet, sizeof(packet), 1);
+	if (n < 0) {
+		return;
+	}
+	memcpy(plain, packet, PKT_HDR_LEN);
+
+	udp_send(t, packet, n);
+	tlog(t, "[HS] session closed");
+
+	pkt_init(t, &pkt, TUNNEL_DIR_TX, TUNNEL_PASS);
+	pkt.msg_type = MSG_TYPE_DISCONNECT;
+	pkt.session_idx = session->idx;
+	pkt.has_counter = 1;
+	pkt.counter = counter;
+	pkt.wire_len = (uint32_t)n;
+	pkt_snap(&pkt, plain, sizeof(plain));
+	pkt_emit(t, &pkt);
+}
+
 /* 포스처를 다시 읽어 마지막으로 보고한 값과 달라졌는지 본다. 달라졌으면 세션의
  * 값을 갱신하고 1 을 돌려줘 다음 keepalive 주기를 기다리지 않고 바로 보고하게 한다.
  *
@@ -1494,6 +1531,14 @@ static int pump_udp(tunnel_t *t)
 				login_response(t, ip, n);
 				pkt_emit(t, &pkt);
 				continue;
+			case MSG_TYPE_DISCONNECT:
+				/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 다음 틱에 바로 다시 붙어
+				 * 본다. 거절과 달리 사용자가 고칠 것이 없다. */
+				tlog(t, "[HS] server closed the session (%s), reconnecting",
+						n >= 1 && ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" : "closed");
+				t->server_closed = 1;
+				pkt_emit(t, &pkt);
+				continue;
 			case MSG_TYPE_DATA:
 				break;
 			default:
@@ -1750,6 +1795,9 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 		 * 아래에서 TUN과 소켓을 둘 다 비우므로 한쪽이 굶지 않는다. */
 		w = WaitForMultipleObjects(3, waits, FALSE, LOOP_TICK_MSEC);
 		if (w == WAIT_OBJECT_0) {
+			/* 사용자가 끊었거나 서비스를 멈춘다. 서버가 이 세션을 만료까지 붙잡아 두지
+			 * 않게 알린다. */
+			send_disconnect(t, DISCONNECT_CLIENT_EXIT);
 			break;
 		}
 		if (w == WAIT_FAILED) {
@@ -1766,9 +1814,12 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다
 		 * 다시 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
 		if (now - session->last_rx_ms > SERVER_TIMEOUT_MSEC || t->readdress || t->logout ||
-				(session->denied && posture_changed(t, now))) {
+				t->server_closed || (session->denied && posture_changed(t, now))) {
 			if (session->denied) {
 				tlog(t, "[HS] retry after deny");
+			}
+			else if (t->server_closed) {
+				set_state(t, TUNNEL_STATE_RECONNECTING);
 			}
 			else if (t->logout) {
 				/* 연결은 그대로인 채 사용자만 바뀌는 것이라 재연결 중으로 보이지 않게 한다. */
@@ -1787,6 +1838,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 			 * 주소가 다르다는 것을 다시 알려 준다. 그대로 두면 매 틱마다 핸드셰이크한다. */
 			t->readdress = 0;
 			t->logout = 0;
+			t->server_closed = 0;
 
 			switch (do_handshake(t)) {
 			case HS_OK:
