@@ -31,7 +31,11 @@
 
 typedef struct device {
 	uint8_t id[DEVICE_ID_LEN];
-	uint8_t key[AUTH_KEY_LEN];
+	uint8_t key[AUTH_KEY_LEN];	/* 핸드셰이크에 쓰는 키. 공개키 기기면 pub 과 서버 키에서 뽑은 값이다 */
+
+	/* 공개키 기기 (devices.conf 의 p256:<공개키>, 프로토콜 v8). 0 이면 key 를 목록에 적은 공유 키 기기다. */
+	uint8_t pub[VPN_PUB_LEN_WIRE];
+	uint8_t has_pub;
 	struct in_addr tun_ip;
 
 	/* 이 기기에 요구하는 포스처. 못 미치면 터널에 들이지 않는다. */

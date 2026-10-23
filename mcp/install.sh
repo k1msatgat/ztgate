@@ -54,7 +54,11 @@ if ! sudo test -e "$ETC/server.env"; then
 	printf 'PORT=9000\nTUN_IP=10.0.0.1\nPREFIX=24\nMTU=1400\n# FORWARD_OUT=eth0\n# SESSION_LIFETIME=3600\n' | sudo install -m 600 /dev/stdin "$ETC/server.env"
 fi
 if ! sudo test -e "$ETC/devices.conf"; then
-	printf '# id (32 hex)  key (64 hex)  tunnel-ip  requirements  # label\n' | sudo install -m 600 /dev/stdin "$ETC/devices.conf"
+	printf '# id (32 hex)  key (64 hex 또는 p256:<공개키>)  tunnel-ip  requirements  # label\n' | sudo install -m 600 /dev/stdin "$ETC/devices.conf"
+fi
+# 서버 키. 처음 한 번만 만든다 — 바꾸면 등록 코드로 올라온 기기가 모두 다시 등록해야 한다.
+if ! sudo test -e "$ETC/server.key"; then
+	sudo "$OPT/server/bin/vpn_server" genkey "$ETC/server.key" > /dev/null
 fi
 
 sudo install -m 644 "$MCP_DIR/ztgate.service" /etc/systemd/system/ztgate.service

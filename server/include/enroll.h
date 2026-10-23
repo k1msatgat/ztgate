@@ -35,14 +35,14 @@ int enroll_load(const char *path);
  * 구분하지 않고 같은 길로 돈다 — 필요한 것은 ID, 키, nonce 를 둘 자리이고 그건 같다. */
 device_t *enroll_find(const uint8_t id[DEVICE_ID_LEN]);
 
-/* 그 자리에 기기를 올린다: 기기 목록 파일에 한 줄을 더하고, 기다리던 줄을 지운다. 관리
+/* 그 자리에 기기(id 와 공개키 pub)를 올린다: 기기 목록 파일에 p256: 줄을 더하고, 기다리던 줄을 지운다. 관리
  * 도구와 같은 잠금을 잡고 하며, 잠근 뒤에 지금의 기기 목록을 다시 읽어 겹치는지 본다.
  * 성공 0, 실패 -1, 그 ID 나 터널 주소의 기기가 그 사이에 목록에 올라 있으면
  * ENROLL_COMPLETE_CONFLICT. 성공한 뒤 기기 목록을 다시 읽는 것은 부르는 쪽의 일이다. */
 #define ENROLL_COMPLETE_CONFLICT (-2)
 
 int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const char *device_path);
+		const uint8_t pub[VPN_PUB_LEN_WIRE], const char *device_path);
 
 /* 감사 로그에 남길 이름. 없으면 빈 문자열. 글자, 숫자, 공백, _ . - 뿐이다. */
 const char *enroll_label(const device_t *pending);

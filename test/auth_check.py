@@ -37,7 +37,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "server", "bin", "vpn_server")
 PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
-VERSION = 7
+VERSION = 8
 
 REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
 DISCONNECT_CLIENT_EXIT, DISCONNECT_SERVER_SHUTDOWN = 1, 2
@@ -740,8 +740,11 @@ class Server:
         self.status_path = tempfile.mktemp(prefix="vpn_status.", suffix=".sock")
         self.audit_path = tempfile.mktemp(prefix="vpn_audit.", suffix=".log")
         self.enroll_path = tempfile.mktemp(prefix="vpn_enroll.", suffix=".conf")
+        self.key_path = tempfile.mktemp(prefix="vpn_server.", suffix=".key")
+        out = subprocess.run([SERVER, "genkey", self.key_path], capture_output=True, text=True, check=True)
+        self.server_pub = bytes.fromhex(out.stdout.strip())
         self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-v", "-s", self.status_path, "-a", self.audit_path,
-                                      "-e", self.enroll_path] + list(opts) + [
+                                      "-e", self.enroll_path, "-k", self.key_path] + list(opts) + [
                                       str(PORT)] + list(args),
                                      stdout=self.log, stderr=subprocess.STDOUT)
         time.sleep(0.7)
@@ -784,6 +787,8 @@ class Server:
             os.unlink(self.enroll_path)
         if os.path.exists(self.audit_path):
             os.unlink(self.audit_path)
+        if os.path.exists(self.key_path):
+            os.unlink(self.key_path)
 
 
 def udp_packet(src, dst, dport, ident):
@@ -1195,7 +1200,9 @@ def enroll_identity(code):
 def enroll_tests(srv, dev_path):
     """등록 코드로 기기를 올린다. 관리 도구가 하는 일(대기 목록에 줄을 쓰고 SIGHUP)을 여기서 흉내 낸다."""
     c = Client()
-    new_id, new_key = bytes(range(0x70, 0x80)), bytes(range(0x80, 0xa0))
+    new_id = bytes(range(0x70, 0x80))
+    me = Ecdh()                     # 이 기기의 고정 키 쌍 (v8)
+    new_pub = me.pub
 
     def pending(*entries):
         """entries: (코드, 터널 주소, 지금부터 몇 초 뒤 만료, 포스처 조건, 이름)"""
@@ -1215,8 +1222,8 @@ def enroll_tests(srv, dev_path):
         r = c.auth(r[2], key=ekey, dev_id=eid, post=posture(**post))
         return r[1] if r and r[0] == RES_HANDSHAKE and r[2] is not None else describe(r)
 
-    def enroll(idx, dev_id, dev_key):
-        c.send(seal(ENROLL, idx, dev_id + dev_key))
+    def enroll(idx, dev_id, dev_pub):
+        c.send(seal(ENROLL, idx, dev_id + dev_pub))
         return c.recv()
 
     code = "7K2QF-9XWM4-ABCDE-FGHJK-MNPQR"
@@ -1245,25 +1252,30 @@ def enroll_tests(srv, dev_path):
     other = Client()
     didx = session(other)
     check("enroll: a device session cannot enroll anything",
-          (other.send(seal(ENROLL, didx, new_id + new_key)), other.recv())[1], "no response")
+          (other.send(seal(ENROLL, didx, new_id + new_pub)), other.recv())[1], "no response")
 
     check("enroll: request too short", (c.send(seal(ENROLL, idx, new_id)), c.recv())[1], "no response")
-    check("enroll: an id that is already registered", enroll(idx, DEV_ID, new_key), "ENROLL(2)")
+    check("enroll: an id that is already registered", enroll(idx, DEV_ID, new_pub), "ENROLL(2)")
 
-    check("enroll: the device hands in its id and key", enroll(idx, new_id, new_key), "ENROLL(0)")
+    r = enroll(idx, new_id, new_pub)
+    check("enroll: the device hands in its id and public key", r, "ENROLL(0)")
+    expect("enroll: the answer carries the server's public key", r and r[2] and r[2][1:], srv.server_pub)
+    # 기기 키 = HMAC(ECDH(기기 비밀키, 서버 공개키), "ztgate v8 static" | 기기 공개키 | 서버 공개키). secure.h
+    new_key = hmac.new(me.secret(srv.server_pub), b"ztgate v8 static" + new_pub + srv.server_pub,
+                       hashlib.sha256).digest()
     with open(dev_path) as f:
         added = [line.split("#") for line in f if line.startswith(new_id.hex())]
-    expect("enroll: the device list has the new line, as the admin set it up",
+    expect("enroll: the device list has its public key (not a secret), as the admin set it up",
            added and (added[0][0].split()[1:], added[0][1].strip()),
-           ([new_key.hex(), "10.0.0.9", "firewall=on"], "laptop-kim"))
+           (["p256:" + new_pub.hex(), "10.0.0.9", "firewall=on"], "laptop-kim"))
     expect("enroll: the device list keeps its mode", "%03o" % (os.stat(dev_path).st_mode & 0o777), "600")
     with open(dev_path) as f:
         expect("enroll: the devices that were there are still there",
                sum(line.startswith((DEV_ID.hex(), DEV2_ID.hex())) for line in f), 2)
 
     # 답이 사라져 같은 요청이 다시 가는 경우와, 같은 세션으로 다른 기기를 올리려는 경우
-    check("enroll: the same request again gets the same answer", enroll(idx, new_id, new_key), "ENROLL(0)")
-    check("enroll: a second device on the same code", enroll(idx, bytes(16), new_key), "ENROLL(1)")
+    check("enroll: the same request again gets the same answer", enroll(idx, new_id, new_pub), "ENROLL(0)")
+    check("enroll: a second device on the same code", enroll(idx, bytes(16), new_pub), "ENROLL(1)")
     with open(dev_path) as f:
         expect("enroll: still one line for that device", sum(line.startswith(new_id.hex()) for line in f), 1)
 
@@ -1311,14 +1323,22 @@ def enroll_tests(srv, dev_path):
     os.chmod(srv.enroll_path, 0o600)
     pending(("SSSSS-TTTTT-VVVVV-WWWWW-XXXXX", "10.0.0.12", 600, "", "locked"),
             ("YYYYY-ZZZZZ-00000-11111-22222", "10.0.0.13", 600, "", "lost-update"),
-            ("33333-44444-55555-66666-77777", "10.0.0.15", 600, "", "conflict"))
+            ("33333-44444-55555-66666-77777", "10.0.0.15", 600, "", "conflict"),
+            ("DDDDD-EEEEE-FFFFF-GGGGG-HHHHH", "10.0.0.16", 600, "", "bad-key"))
+
+    # 곡선 위의 점이 아닌 공개키. 그대로 적으면 기기 목록 전체가 다음부터 읽히지 않는다.
+    idx = open_with("DDDDD-EEEEE-FFFFF-GGGGG-HHHHH")
+    check("enroll: a public key that is not a P-256 point is refused (failed)",
+          enroll(idx, bytes([0x95] * 16), bytes([1]) * 64), "ENROLL(3)")
+    with open(dev_path) as f:
+        expect("enroll: ...and nothing was written", bytes([0x95] * 16).hex() in f.read(), False)
 
     idx = open_with("SSSSS-TTTTT-VVVVV-WWWWW-XXXXX")
     with open(lock_path, "a") as lk:
         fcntl.flock(lk, fcntl.LOCK_EX)
         check("enroll: while the admin tool holds the lock, the server gives up (failed)",
-              enroll(idx, a_id, new_key), "ENROLL(3)")
-    check("enroll: ...and the same request goes through once it is released", enroll(idx, a_id, new_key), "ENROLL(0)")
+              enroll(idx, a_id, Ecdh().pub), "ENROLL(3)")
+    check("enroll: ...and the same request goes through once it is released", enroll(idx, a_id, Ecdh().pub), "ENROLL(0)")
 
     # 관리 도구가 코드를 하나 더 적었는데 서버는 아직 다시 읽지 않았다. 서버가 쓰인 코드를 지울
     # 때 그 줄까지 지우면 안 된다.
@@ -1326,7 +1346,7 @@ def enroll_tests(srv, dev_path):
     with open(srv.enroll_path, "a") as f:
         f.write("%s %s 10.0.0.14 %d  # added-later\n" % (late_id.hex(), late_key.hex(), time.time() + 600))
     idx = open_with("YYYYY-ZZZZZ-00000-11111-22222")
-    check("enroll: a code is used while another was just added to the file", enroll(idx, b_id, new_key), "ENROLL(0)")
+    check("enroll: a code is used while another was just added to the file", enroll(idx, b_id, Ecdh().pub), "ENROLL(0)")
     with open(srv.enroll_path) as f:
         text = f.read()
     expect("enroll: the code added meanwhile is still pending",
@@ -1337,7 +1357,7 @@ def enroll_tests(srv, dev_path):
     idx = open_with("33333-44444-55555-66666-77777")
     with open(dev_path, "a") as f:
         f.write("%s %s 10.0.0.15  # by-hand\n" % (bytes([0x94] * 16).hex(), new_key.hex()))
-    check("enroll: an address taken in the file meanwhile is a conflict", enroll(idx, c_id, new_key), "ENROLL(2)")
+    check("enroll: an address taken in the file meanwhile is a conflict", enroll(idx, c_id, Ecdh().pub), "ENROLL(2)")
     srv.reload()
     expect("enroll: ...and the device list still loads", "device: reload failed" in srv.text(), False)
     os.unlink(lock_path)

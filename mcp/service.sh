@@ -73,7 +73,8 @@ run)
 	# -n / -m 은 아래 tun-up 이 tun 에 붙이는 값과 같아야 한다. 서버가 그대로 클라이언트에
 	# 내려 준다.
 	# -e: 등록 코드의 대기 목록. 서버가 그 코드로 온 기기를 devices.conf 에 직접 올린다.
-	args=(-s /run/ztgate/status.sock -a /var/log/ztgate/audit.log -e "$ETC/enroll.conf" -n "$PREFIX" -m "$MTU")
+	# -k: 서버 키. 등록 코드로 올라오는 기기(공개키 기기)의 키를 그것으로 뽑는다. install.sh 가 만든다.
+	args=(-s /run/ztgate/status.sock -a /var/log/ztgate/audit.log -e "$ETC/enroll.conf" -k "$ETC/server.key" -n "$PREFIX" -m "$MTU")
 
 	# 세션 키의 수명. 적지 않으면 서버의 기본값(1시간)이다.
 	if [ -n "${SESSION_LIFETIME:-}" ]; then

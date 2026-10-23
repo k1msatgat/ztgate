@@ -12,6 +12,8 @@
 #include "common.h"
 #include "crypt.h"
 #include "enroll.h"
+#include "secure.h"
+#include "serverkey.h"
 
 #define LABEL_MAX 32
 #define REQS_MAX 256
@@ -444,10 +446,11 @@ static void config_unlock(int fd)
 }
 
 int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const char *device_path)
+		const uint8_t pub[VPN_PUB_LEN_WIRE], const char *device_path)
 {
 	pending_t *p = (pending_t *)pending;
-	char s_id[DEVICE_ID_LEN * 2 + 1], s_key[AUTH_KEY_LEN * 2 + 1];
+	char s_id[DEVICE_ID_LEN * 2 + 1], s_key[5 + VPN_PUB_LEN_WIRE * 2 + 1];
+	uint8_t probe[AUTH_KEY_LEN];
 	char ib[INET_ADDRSTRLEN];
 	char entry[CONF_LINE_MAX];
 	char code_id[DEVICE_ID_LEN * 2 + 1];
@@ -457,8 +460,18 @@ int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
 	int ret;
 
 	hex_str(id, DEVICE_ID_LEN, s_id);
-	hex_str(key, AUTH_KEY_LEN, s_key);
+	memcpy(s_key, "p256:", 5);
+	hex_str(pub, VPN_PUB_LEN_WIRE, s_key + 5);
 	hex_str(p->dev.id, DEVICE_ID_LEN, code_id);
+
+	/* 곡선 위의 점이 아닌 공개키를 적으면 그 목록은 다음부터 읽히지 않는다 (device.c 가 거부한다).
+	 * 코드를 가진 쪽이 아무 바이트나 보내 기기 목록 전체를 막지 못하게, 적기 전에 키를 뽑아 본다. */
+	if (serverkey() == NULL ||
+			secure_static_key(serverkey(), pub, pub, serverkey_pub(), probe) < 0) {
+		crypt_wipe(probe, sizeof(probe));
+		return -1;
+	}
+	crypt_wipe(probe, sizeof(probe));
 
 	/* device.c 가 한 줄을 CONF_LINE_MAX 까지 읽는다. 넘치면 그 목록은 다음에 읽히지 않는다. */
 	if ((size_t)snprintf(entry, sizeof(entry), "%s %s %s%s%s%s%s\n", s_id, s_key,

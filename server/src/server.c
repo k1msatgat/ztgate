@@ -22,6 +22,7 @@
 #include "enroll.h"
 #include "idp.h"
 #include "dns.h"
+#include "serverkey.h"
 
 #define MAX_EVENTS 8
 
@@ -845,7 +846,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
 	char label[64];
-	uint8_t res[PKT_OVERHEAD + 1];
+	uint8_t res[PKT_OVERHEAD + ENROLL_REPLY_LEN];
 	uint8_t status;
 	struct in_addr tun_ip;
 	device_t *pending;
@@ -899,8 +900,11 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 		}
 	}
 
+	/* 답에 서버 공개키를 싣는다. 기기는 그것과 자기 비밀키로 기기 키를 뽑는다 (proto.h). 등록 세션은
+	 * 코드를 아는 서버만 열 수 있으므로 기기는 이 공개키를 따로 확인하지 않아도 된다. */
 	res[PKT_HDR_LEN] = status;
-	n = secure_seal(&peer->secure, MSG_TYPE_ENROLL, peer->session_idx, res, sizeof(res), 1);
+	memcpy(res + PKT_HDR_LEN + 1, serverkey_pub(), VPN_PUB_LEN);
+	n = secure_seal(&peer->secure, MSG_TYPE_ENROLL, peer->session_idx, res, sizeof(res), ENROLL_REPLY_LEN);
 	if (n < 0) {
 		return;
 	}
@@ -1017,6 +1021,7 @@ int main(int argc, char *argv[])
 	const char *enroll_path = NULL;
 	const char *idp_path = NULL;
 	const char *dns_path = NULL;
+	const char *key_path = NULL;
 	int nd;
 	struct epoll_event ev, events[MAX_EVENTS];
 	struct sockaddr_in local_addr;
@@ -1047,7 +1052,12 @@ int main(int argc, char *argv[])
 		return verify_token(argv[2]);
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:L:v")) != -1) {
+	/* 서버의 고정 키 쌍을 만든다 (serverkey.h). 처음 한 번. 있는 파일은 덮지 않는다. */
+	if (argc == 3 && strcmp(argv[1], "genkey") == 0) {
+		return serverkey_generate(argv[2]) == 0 ? 0 : 1;
+	}
+
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:v")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -1059,6 +1069,9 @@ int main(int argc, char *argv[])
 		}
 		else if (opt == 'd') {
 			dns_path = optarg;
+		}
+		else if (opt == 'k') {
+			key_path = optarg;
 		}
 		else if (opt == 'a') {
 			if (audit_open(optarg) < 0) {
@@ -1107,13 +1120,15 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
 		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
 		fprintf(stderr, "       -u: accept user logins (JWT) from the identity provider this file describes\n");
 		fprintf(stderr, "       -d: internal DNS pushed to clients ('server <ip>' and 'domain <name>' lines)\n");
+		fprintf(stderr, "       -k: the server key; needed for p256: devices and for enrollment (-e)\n");
+		fprintf(stderr, "       %s genkey <server-key>   make the server key once\n", argv[0]);
 		fprintf(stderr, "       -n, -m: what the tun device is configured with (default /24, mtu %d);\n", TUN_MTU);
 		fprintf(stderr, "               they are pushed to every client\n");
 		fprintf(stderr, "       %s selftest\n", argv[0]);
@@ -1128,6 +1143,19 @@ int main(int argc, char *argv[])
 	peer_init();
 	acl_init();
 	device_init();
+
+	/* 서버 키는 기기 목록보다 먼저 읽는다. 공개키 기기(p256:)의 키를 그것으로 뽑는다. 등록 코드로
+	 * 올라오는 기기는 모두 공개키 기기이므로 -e 에는 -k 가 있어야 한다. */
+	if (key_path != NULL) {
+		if (serverkey_load(key_path) < 0) {
+			return 1;
+		}
+		printf("server key: %s\n", key_path);
+	}
+	else if (enroll_path != NULL) {
+		fprintf(stderr, "enrollment (-e) needs the server key (-k); make one with: %s genkey <file>\n", argv[0]);
+		return 1;
+	}
 
 	/* 기기 목록은 ACL 과 달리 생략할 수 없다. 없으면 누구도 받아 줄 수 없고,
 	 * "목록이 없으면 모두 허용"으로 두면 설정 실수가 곧 무인증 서버가 된다. */

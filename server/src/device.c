@@ -6,6 +6,8 @@
 
 #include "common.h"
 #include "device.h"
+#include "secure.h"
+#include "serverkey.h"
 
 static device_t devices[MAX_DEVICES];
 static int ndevices;
@@ -239,12 +241,31 @@ const device_t *device_connector_for(struct in_addr dst)
 	return best;
 }
 
+/* 공개키 기기(p256:)의 키를 서버 키와의 ECDH 로 뽑는다 (secure.h 의 secure_static_key). 같은
+ * 기기가 같은 공개키로 이미 읽혀 있으면 그 값을 쓴다 — 기기가 수천 대면 다시 읽을 때마다
+ * ECDH 를 수천 번 하게 된다. */
+static int device_static_key(device_t *d)
+{
+	int32_t i;
+
+	if (serverkey() == NULL) {
+		return -1;
+	}
+	i = index_find_id(&index_live, devices, d->id);
+	if (i >= 0 && devices[i].has_pub && memcmp(devices[i].pub, d->pub, VPN_PUB_LEN) == 0) {
+		memcpy(d->key, devices[i].key, AUTH_KEY_LEN);
+		return 0;
+	}
+
+	return secure_static_key(serverkey(), d->pub, d->pub, serverkey_pub(), d->key);
+}
+
 int device_load(const char *path)
 {
 	FILE *fp;
 	struct stat st;
 	char line[CONF_LINE_MAX];
-	char s_id[80], s_key[80], s_ip[32];
+	char s_id[80], s_key[160], s_ip[32];
 	char *tok;
 	int lineno = 0;
 	int used;
@@ -295,7 +316,7 @@ int device_load(const char *path)
 			continue;
 		}
 
-		if (sscanf(line, "%79s %79s %31s%n", s_id, s_key, s_ip, &used) != 3) {
+		if (sscanf(line, "%79s %159s %31s%n", s_id, s_key, s_ip, &used) != 3) {
 			fprintf(stderr, "device: line %d: expected <id> <key> <tunnel-ip> [requirements]\n", lineno);
 			goto fail;
 		}
@@ -320,8 +341,20 @@ int device_load(const char *path)
 			fprintf(stderr, "device: line %d: id must be %d hex digits\n", lineno, DEVICE_ID_LEN * 2);
 			goto fail;
 		}
-		if (parse_hex(s_key, d->key, AUTH_KEY_LEN) < 0) {
-			fprintf(stderr, "device: line %d: key must be %d hex digits\n", lineno, AUTH_KEY_LEN * 2);
+		if (strncmp(s_key, "p256:", 5) == 0) {
+			if (parse_hex(s_key + 5, d->pub, VPN_PUB_LEN) < 0) {
+				fprintf(stderr, "device: line %d: p256: needs a %d hex digit public key\n", lineno, VPN_PUB_LEN * 2);
+				goto fail;
+			}
+			d->has_pub = 1;
+			if (device_static_key(d) < 0) {
+				fprintf(stderr, "device: line %d: %s\n", lineno, serverkey() == NULL
+						? "a p256: device needs the server key (-k)" : "not a P-256 public key");
+				goto fail;
+			}
+		}
+		else if (parse_hex(s_key, d->key, AUTH_KEY_LEN) < 0) {
+			fprintf(stderr, "device: line %d: key must be %d hex digits, or p256:<public key>\n", lineno, AUTH_KEY_LEN * 2);
 			goto fail;
 		}
 		if (inet_pton(AF_INET, s_ip, &d->tun_ip) != 1) {
