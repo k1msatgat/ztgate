@@ -1532,10 +1532,11 @@ static int pump_udp(tunnel_t *t)
 				pkt_emit(t, &pkt);
 				continue;
 			case MSG_TYPE_DISCONNECT:
-				/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 다음 틱에 바로 다시 붙어
-				 * 본다. 거절과 달리 사용자가 고칠 것이 없다. */
+				/* 서버가 끝나거나(다시 시작하는 중일 수 있다) 세션 키의 수명이 다했다.
+				 * 다음 틱에 바로 다시 핸드셰이크한다. 거절과 달리 사용자가 고칠 것이 없다. */
 				tlog(t, "[HS] server closed the session (%s), reconnecting",
-						n >= 1 && ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" : "closed");
+						n < 1 ? "closed" : ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" :
+						ip[0] == DISCONNECT_REKEY ? "new session key" : "closed");
 				t->server_closed = 1;
 				pkt_emit(t, &pkt);
 				continue;

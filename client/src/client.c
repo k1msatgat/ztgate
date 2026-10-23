@@ -409,10 +409,11 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 			login_response(c, ip, n);
 			return 0;
 		case MSG_TYPE_DISCONNECT:
-			/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 30초를 기다리지 않고 다음 틱에
-			 * 다시 핸드셰이크한다. 거절과 달리 포스처를 바꿀 일이 없다. */
+			/* 서버가 끝나거나(다시 시작하는 중일 수 있다) 세션 키의 수명이 다했다. 30초를
+			 * 기다리지 않고 다음 틱에 다시 핸드셰이크한다. 거절과 달리 포스처를 바꿀 일이 없다. */
 			printf("[HS] server closed the session (%s), reconnecting\n",
-					n >= 1 && ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" : "closed");
+					n < 1 ? "closed" : ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" :
+					ip[0] == DISCONNECT_REKEY ? "new session key" : "closed");
 			c->server_closed = 1;
 			return 0;
 		case MSG_TYPE_DATA:
