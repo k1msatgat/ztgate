@@ -80,6 +80,15 @@ typedef struct tunnel {
 	uint64_t last_login_ms;
 	uint64_t t0_ms;		/* 패킷 타임스탬프 기준점 */
 	uint64_t seq;		/* 패킷 일련번호 */
+
+	/* 이 PC 의 네트워크가 바뀌었다 (net_changed). 알림은 다른 스레드에서 와 net_event 만 세운다. */
+	HANDLE net_event;
+	HANDLE net_notify;
+	uint64_t net_changed_ms;	/* 마지막 알림. 0 이면 처리할 것이 없다 */
+	uint64_t net_probe_ms;		/* 바뀐 뒤 확인하려고 keepalive 를 보낸 때. 0 이면 기다리지 않는다 */
+	int net_lost;			/* 그 keepalive 에 답이 없다. 다시 핸드셰이크한다 */
+	int hs_failed;			/* 마지막 재핸드셰이크가 실패해 30초 뒤를 기다리는 중 */
+
 	session_t session;
 } tunnel_t;
 
@@ -1017,6 +1026,99 @@ static void send_keepalive(tunnel_t *t)
 	pkt_emit(t, &pkt);
 }
 
+/* ---- 네트워크가 바뀔 때 --------------------------------------------------------
+ *
+ * 와이파이를 바꾸거나 랜선을 꽂거나 절전에서 깨어나면 이 PC 의 외부 주소가 바뀐다. 서버는
+ * 세션 키로 열리는 패킷이 새 주소에서 오면 그 주소로 갈아탄다 (peer_touch). 그러니 바뀐
+ * 즉시 keepalive 를 하나 보내 보면 대개 그것으로 이어진다. 답이 없으면 그 길로는 서버에
+ * 닿지 않는 것이라(새 네트워크가 UDP 를 막거나, 서버가 세션을 잃었다) 30초를 기다리지 않고
+ * 다시 핸드셰이크한다.
+ *
+ * 주소가 생기고 DHCP 가 끝나는 동안 알림이 몇 번 몰려 오므로 NET_SETTLE_MSEC 동안 조용해진
+ * 뒤에 한 번만 본다. */
+#define NET_SETTLE_MSEC 1500
+#define NET_PROBE_MSEC 3000
+
+/* IPv4 주소가 생기거나 사라졌다. 알림 스레드에서 불리므로 이벤트만 세운다. 터널 어댑터
+ * 자신의 주소는 netcfg_apply 가 넣는 것이라 보지 않는다. */
+static VOID NETIOAPI_API_ on_address_change(PVOID ctx, PMIB_UNICASTIPADDRESS_ROW row,
+		MIB_NOTIFICATION_TYPE type)
+{
+	tunnel_t *t = ctx;
+
+	if (type == MibInitialNotification) {
+		return;
+	}
+	if (row != NULL && row->InterfaceLuid.Value == t->luid.Value) {
+		return;
+	}
+	SetEvent(t->net_event);
+}
+
+static void net_watch_start(tunnel_t *t)
+{
+	DWORD err;
+
+	t->net_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+	if (!t->net_event) {
+		return;
+	}
+	err = NotifyUnicastIpAddressChange(AF_INET, on_address_change, t, FALSE, &t->net_notify);
+	if (err != NO_ERROR) {
+		/* 없어도 돈다. 그때는 예전처럼 30초 동안 답이 없을 때 다시 핸드셰이크한다. */
+		tlog(t, "[net] cannot watch for network changes: %lu", err);
+		CloseHandle(t->net_event);
+		t->net_event = NULL;
+		t->net_notify = NULL;
+	}
+}
+
+static void net_watch_stop(tunnel_t *t)
+{
+	/* 알림 콜백이 끝날 때까지 기다린 뒤 돌아온다. 그 뒤에 이벤트를 닫아야 한다. */
+	if (t->net_notify) {
+		CancelMibChangeNotify2(t->net_notify);
+		t->net_notify = NULL;
+	}
+	if (t->net_event) {
+		CloseHandle(t->net_event);
+		t->net_event = NULL;
+	}
+}
+
+/* 이벤트 루프가 돌 때마다 부른다. 바뀐 뒤 조용해졌으면 keepalive 를 보내 보고, 그 답을
+ * 기다리다 넘치면 net_lost 를 세운다. */
+static void net_tick(tunnel_t *t, uint64_t now)
+{
+	session_t *session = &t->session;
+
+	if (t->net_changed_ms && now - t->net_changed_ms >= NET_SETTLE_MSEC) {
+		t->net_changed_ms = 0;
+		/* 절전에서 깨어난 직후의 재핸드셰이크는 네트워크가 붙기 전이라 대개 실패한다.
+		 * 그 뒤에 네트워크가 생겼으면 30초를 마저 기다리지 않고 바로 다시 해 본다. */
+		if (t->hs_failed) {
+			tlog(t, "[net] the network changed while reconnecting, trying now");
+			t->net_lost = 1;
+		}
+		else if (!session->denied) {
+			tlog(t, "[net] the network changed, checking the session");
+			send_keepalive(t);
+			t->net_probe_ms = now;
+		}
+	}
+
+	if (t->net_probe_ms) {
+		if (session->last_rx_ms >= t->net_probe_ms) {
+			tlog(t, "[net] the session carried over to the new network");
+			t->net_probe_ms = 0;
+		}
+		else if (now - t->net_probe_ms > NET_PROBE_MSEC) {
+			t->net_probe_ms = 0;
+			t->net_lost = 1;
+		}
+	}
+}
+
 /* DISCONNECT: 이 세션을 끝낸다고 서버에 알린다 (proto.h). 한 번 보내고 답을 기다리지
  * 않는다 — 잃어버려도 서버는 만료(60초)로 정리한다. */
 static void send_disconnect(tunnel_t *t, uint8_t reason)
@@ -1711,7 +1813,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	tunnel_t tunnel;
 	tunnel_t *t = &tunnel;
 	session_t *session = &t->session;
-	HANDLE waits[3];
+	HANDLE waits[4];
+	DWORD nwaits = 3;
 	WSADATA wsa;
 	char server_str[INET_ADDRSTRLEN];
 	uint64_t now;
@@ -1791,10 +1894,15 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	waits[1] = t->tun_event;
 	waits[2] = t->sock_event;
 
+	net_watch_start(t);
+	if (t->net_event) {
+		waits[nwaits++] = t->net_event;
+	}
+
 	for (;;) {
 		/* Linux의 epoll_wait(…, 1000)에 해당. 어느 쪽이 깨웠는지와 관계없이
 		 * 아래에서 TUN과 소켓을 둘 다 비우므로 한쪽이 굶지 않는다. */
-		w = WaitForMultipleObjects(3, waits, FALSE, LOOP_TICK_MSEC);
+		w = WaitForMultipleObjects(nwaits, waits, FALSE, LOOP_TICK_MSEC);
 		if (w == WAIT_OBJECT_0) {
 			/* 사용자가 끊었거나 서비스를 멈춘다. 서버가 이 세션을 만료까지 붙잡아 두지
 			 * 않게 알린다. */
@@ -1808,18 +1916,31 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 		now = GetTickCount64();
 
-		/* 다시 핸드셰이크하는 경우는 둘이다.
-		 *  - 서버가 30초 동안 조용하다 (재시작했거나 세션이 만료됐다).
+		if (nwaits == 4 && w == WAIT_OBJECT_0 + 3) {
+			t->net_changed_ms = now;
+		}
+		net_tick(t, now);
+
+		/* 다시 핸드셰이크하는 경우
+		 *  - 서버가 30초 동안 조용하다 (재시작했거나 세션이 만료됐다). 절전에서 깨어나면
+		 *    시계(GetTickCount64)는 잠든 시간만큼 가 있어 바로 여기에 걸린다.
+		 *  - 서버가 DISCONNECT 로 끝냈다 (다시 시작하는 중, 키 교체).
+		 *  - 네트워크가 바뀐 뒤 보낸 keepalive 에 답이 없다 (net_tick).
+		 *  - 서버가 다른 터널 주소를 주었다, 로그아웃했다.
 		 *  - 거절된 상태에서 포스처가 바뀌었다. 사용자가 방화벽을 다시 켠 것일 수
 		 *    있으니 30초를 기다리지 않고 바로 다시 물어본다.
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다
 		 * 다시 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
 		if (now - session->last_rx_ms > SERVER_TIMEOUT_MSEC || t->readdress || t->logout ||
-				t->server_closed || (session->denied && posture_changed(t, now))) {
+				t->server_closed || t->net_lost || (session->denied && posture_changed(t, now))) {
 			if (session->denied) {
 				tlog(t, "[HS] retry after deny");
 			}
 			else if (t->server_closed) {
+				set_state(t, TUNNEL_STATE_RECONNECTING);
+			}
+			else if (t->net_lost) {
+				tlog(t, "[HS] no answer on the new network, re-handshake");
 				set_state(t, TUNNEL_STATE_RECONNECTING);
 			}
 			else if (t->logout) {
@@ -1840,6 +1961,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 			t->readdress = 0;
 			t->logout = 0;
 			t->server_closed = 0;
+			t->net_lost = 0;
+			t->net_probe_ms = 0;
 
 			switch (do_handshake(t)) {
 			case HS_OK:
@@ -1848,14 +1971,17 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 					goto out;
 				}
 				session->denied = 0;
+				t->hs_failed = 0;
 				login_new_session(t);
 				set_state(t, TUNNEL_STATE_CONNECTED);
 				break;
 			case HS_DENIED:
 				session->denied = 1;
+				t->hs_failed = 0;
 				set_state(t, TUNNEL_STATE_DENIED);
 				break;
 			default:
+				t->hs_failed = 1;
 				tlog(t, "[HS] failed re-handshake[%s][%u], retry in %ds",
 						server_str, cfg->server_port, SERVER_TIMEOUT_SEC);
 				break;
@@ -1888,6 +2014,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	ret = 0;
 
 out:
+	net_watch_stop(t);
 	secure_session_close(&session->secure);
 	if (t->sock != INVALID_SOCKET) {
 		closesocket(t->sock);
