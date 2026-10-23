@@ -1113,6 +1113,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| Windows 네트워크 변화 감지 — `core/tunnel.c` 의 `net_watch_*` / `net_tick`, 절전 복귀 뒤 실패한 재핸드셰이크의 즉시 재시도 |
 | 로그 등급과 속도 제한 — `server.c` 의 `log_ok` / `-v`, `bench.sh` 의 quiet 모드, 시험. 쿠키보다 로그를 먼저 막는 판단(비싼 일은 HMAC 뒤에만 한다)은 AI가 제안 |
 | 서버와 관리 도구 사이의 잠금 — `enroll.c` 의 `config_lock` / `enroll_file_drop` 과 잠근 뒤의 겹침 검사, `ctl.cjs` 의 `withConfigLock`(flock(1)), 시험 |
 
