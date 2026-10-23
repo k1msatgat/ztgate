@@ -9,8 +9,8 @@
 #include "secure.h"
 #include "policy.h"
 
-#define MAX_PEERS 8
-#define IDX_SLOT_BIT 8
+#define MAX_PEERS 4096
+#define IDX_SLOT_BIT 16
 #define IDX_SLOT_MASK ((1u << IDX_SLOT_BIT) -1)
 
 _Static_assert(MAX_PEERS <= (1 << IDX_SLOT_BIT), "MAX_PEERS exceeds slot bits");

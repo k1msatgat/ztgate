@@ -34,9 +34,9 @@ const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 
 const AUDIT_TAIL_BYTES = 4 * 1024 * 1024;
 
 /* server/include 의 값과 같아야 한다. */
-const MAX_DEVICES = 16;
-const MAX_RULES = 32;
-const MAX_PENDING = 16;	/* server/include/enroll.h */
+const MAX_DEVICES = 4096;
+const MAX_RULES = 1024;
+const MAX_PENDING = 256;	/* server/include/enroll.h */
 const ENROLL_CODE_LEN = 25;	/* lib/common/include/proto.h */
 const ENROLL_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const LINE_MAX = 255;	/* device.c / acl.c 가 한 줄을 char[256] 으로 읽는다 */

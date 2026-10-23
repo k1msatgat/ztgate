@@ -21,7 +21,7 @@
 
 #include "device.h"
 
-#define MAX_PENDING 16
+#define MAX_PENDING 256
 
 void enroll_init(void);
 

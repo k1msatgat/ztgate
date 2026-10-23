@@ -22,7 +22,7 @@
 #include "proto.h"
 #include "policy.h"
 
-#define MAX_DEVICES 16
+#define MAX_DEVICES 4096
 #define CONNECTOR_MAX_NETS 4
 
 /* 서버가 준 nonce 에 클라이언트가 답해야 하는 시간. 같은 PC 에서 서명 한 번이면

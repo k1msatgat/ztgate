@@ -1223,6 +1223,61 @@ CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex
 RESOURCE = socket.inet_aton("198.51.100.10")
 
 
+SCALE_DEVICES = 1000
+
+
+def scale_device(i):
+    """규모 시험의 i 번째 기기: (id, key, 터널 주소). 10.0.1.1 부터 250개씩 /16 안에 놓는다."""
+    dev_id = b"scale" + struct.pack("!I", i) + bytes(7)
+    dev_key = hashlib.sha256(b"scale key %d" % i).digest()
+    return dev_id, dev_key, "10.0.%d.%d" % (1 + i // 250, 1 + i % 250)
+
+
+def scale_tests(srv):
+    """기기 SCALE_DEVICES 대가 한꺼번에 붙어도 밀려나는 세션 없이 모두 남는가.
+
+    세션 표, 기기 색인, 상태 소켓이 처음 정한 상한(세션 8, 기기 16, 상태 32KB)보다 훨씬
+    큰 수에서 맞게 도는지 본다. 상태 JSON 은 받는 쪽 소켓 버퍼보다 커서 서버가 여러 번에
+    나눠 써야 한다."""
+    c = Client()
+    idxs = []
+    for i in range(SCALE_DEVICES):
+        dev_id, dev_key, _ = scale_device(i)
+        r = c.request(dev_id)
+        if r is None or r[0] != CHALLENGE:
+            break
+        r = c.auth(r[2], key=dev_key, dev_id=dev_id)
+        if r is None or r[0] != RES_HANDSHAKE or r[2] is None:
+            break
+        idxs.append(r[1])
+
+    expect("scale: every device gets a session", len(idxs), SCALE_DEVICES)
+    expect("scale: session numbers are all different", len(set(idxs)), len(idxs))
+    expect("scale: slots beyond the old 8-bit limit are used", max(i & 0xFFFF for i in idxs) >= 256, True)
+    expect("scale: no session was evicted", "evicting" in srv.text(), False)
+
+    # 가장 먼저 연 세션과 가장 나중에 연 세션이 모두 살아 있다.
+    for name, idx in (("first", idxs[0]), ("last", idxs[-1])):
+        c.drain()
+        c.send(keepalive(idx))
+        r = c.recv()
+        expect("scale: the %s session still answers" % name, r and r[0], KEEPALIVE)
+
+    st = srv.status()
+    expect("scale: the status lists every session", len(st["sessions"]), SCALE_DEVICES)
+    expect("scale: the status counts every device", st["devices"], SCALE_DEVICES)
+    last_ip = scale_device(SCALE_DEVICES - 1)[2]
+    found = [s for s in st["sessions"] if s["tunnel_ip"] == last_ip]
+    expect("scale: the last device is found by its tunnel ip", len(found), 1)
+
+    # 다시 읽어도 색인이 같은 기기를 찾는다. 다음 keepalive 가 목록에 대 본다.
+    srv.reload()
+    c.drain()
+    c.send(keepalive(idxs[SCALE_DEVICES // 2]))
+    r = c.recv()
+    expect("scale: after reload a session in the middle still answers", r and r[0], KEEPALIVE)
+
+
 def connector_tests(srv, acl_path, dev_path):
     """서버가 커넥터의 대역으로 가는 패킷을 그 커넥터의 세션으로 보내고, 커넥터가 보낸 답을
     클라이언트에게 돌려주는지. 커넥터가 맡은 대역 밖을 출발지로 대거나 클라이언트가 아닌
@@ -1500,6 +1555,16 @@ def main():
             srv_idp.stop()
             logs.append(srv_idp.text())
             subprocess.run(["rm", "-rf", idp_dir])
+
+        # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
+        write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)
+                              for d, k, ip in map(scale_device, range(SCALE_DEVICES))))
+        srv_scale = Server(path, opts=["-n", "16"])
+        try:
+            scale_tests(srv_scale)
+        finally:
+            srv_scale.stop()
+            logs.append(srv_scale.text())
 
         global failed
         print("%-4s %-52s %s" % ("FAIL" if srv.socket_left else "ok", "status: socket file removed on exit",
