@@ -34,6 +34,9 @@ struct acl_rule {
 
     /* 이 규칙으로 허용받을 수 있는 사용자 / 그룹. 비어 있으면 기기만으로 된다. */
     user_req_t     users;
+
+    /* 이 규칙이 어느 기기의 것인가 (tag=). 출발지 주소와 함께 규칙을 고른다. 비어 있으면 모든 기기. */
+    tag_set_t      tags;
 };
 
 void acl_init(void);
@@ -41,16 +44,16 @@ void acl_init(void);
  * 읽어 둔 규칙이 그대로 남는다. */
 int  acl_load(const char *path);
 /* posture 는 이 패킷을 보낸 세션이 마지막으로 보고한 값이고, who 는 그 세션에 로그인한
- * 사용자다 (없으면 NULL). */
+ * 사용자다 (없으면 NULL). tags 는 그 세션을 연 기기의 태그 (없으면 NULL). */
 int  acl_check(const unsigned char *pkt, int len, const posture_report_t *posture,
-               const user_identity_t *who);
+               const user_identity_t *who, const tag_set_t *tags);
 void acl_dump(void);
 int  acl_count(void);
 
 /* src 에서 출발하는 패킷을 허용하는 규칙들의 목적지 대역 (터널 대역 안과 any 는 뺀다).
  * 그 기기에 내려 줄 경로 목록이다. 채운 개수를 돌려준다. max 개를 넘어 빠진 규칙의 수는
  * dropped 에 적는다. */
-int  acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
+int  acl_routes(struct in_addr src, const tag_set_t *tags, struct in_addr subnet, int subnet_bits,
 		net_route_t *out, int max, int *dropped);
 
 #endif /* ACL_H */

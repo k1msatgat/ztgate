@@ -37,6 +37,9 @@ typedef struct device {
 	/* 이 기기에 요구하는 포스처. 못 미치면 터널에 들이지 않는다. */
 	posture_req_t require;
 
+	/* 이 기기의 역할 (tag=eng). ACL 규칙이 이것으로 기기를 고른다 (policy.h). */
+	tag_set_t tags;
+
 	/* 커넥터라면 그것이 맡은 내부망 (connector=10.101.0.0/16). 비어 있으면 일반 기기다.
 	 * server.c 의 "커넥터" 주석. */
 	net_route_t connector[CONNECTOR_MAX_NETS];
@@ -63,8 +66,8 @@ device_t *device_find_ip(struct in_addr tun_ip);
 /* 보고된 포스처가 이 기기의 정책을 채우면 1. */
 int device_posture_ok(const device_t *dev, const posture_report_t *posture);
 
-/* 기기 줄의 터널 IP 뒤에 오는 단어 하나 — 포스처 조건 또는 connector=<대역>. 등록 대기
- * 목록(enroll.c)도 같은 단어를 받는다. 모르는 단어거나 대역이 틀리면 -1. */
+/* 기기 줄의 터널 IP 뒤에 오는 단어 하나 — 포스처 조건, tag=<이름>, connector=<대역>. 등록
+ * 대기 목록(enroll.c)도 같은 단어를 받는다. 모르는 단어거나 이름 / 대역이 틀리면 -1. */
 int device_token_parse(const char *tok, device_t *d);
 
 /* dst 를 맡은 커넥터 기기. 없으면 NULL. 대역이 겹치면 더 좁은 쪽이 맡는다. */

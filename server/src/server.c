@@ -130,7 +130,7 @@ static int net_config_for(const device_t *dev, net_config_t *cfg)
 	/* 커넥터에는 경로를 내려 주지 않는다. 그 대역은 커넥터 쪽에서 바로 붙어 있는
 	 * 네트워크이고, 같은 대역을 터널로 보내라고 하면 자기 네트워크로 가는 길을 잃는다. */
 	if (acl_enabled && dev->n_connector == 0) {
-		cfg->n_routes = (uint8_t)acl_routes(dev->tun_ip, tun_subnet_of(dev->tun_ip),
+		cfg->n_routes = (uint8_t)acl_routes(dev->tun_ip, &dev->tags, tun_subnet_of(dev->tun_ip),
 				tun_prefix, cfg->routes, NET_MAX_ROUTES, &dropped);
 	}
 
@@ -1467,7 +1467,8 @@ int main(int argc, char *argv[])
 				 * 터널 밖으로 내보낼 곳은 규칙으로 적어서 연다. */
 				memcpy(&inner_dst, ip + IP_DST_OFF, IP_ADDR_LEN);
 				if (acl_enabled) {
-					verdict = acl_check(ip, n, &peer->posture, peer->logged_in ? &peer->user : NULL);
+					verdict = acl_check(ip, n, &peer->posture, peer->logged_in ? &peer->user : NULL,
+							conn_dev != NULL ? &conn_dev->tags : NULL);
 				}
 				else {
 					verdict = tun_subnet_of(inner_dst).s_addr == tun_subnet_of(peer->inner).s_addr

@@ -201,6 +201,12 @@ static void build(int acl_enabled)
 			put("%s\"%s/%u\"", g == 0 ? "" : ",", ip_str(a, ib), dev->connector[g].prefix_len);
 		}
 		put("],");
+		/* 태그는 policy.c 가 정한 글자(a-z 0-9 _ -)뿐이라 그대로 적어도 된다. */
+		put("\"tags\":[");
+		for (g = 0; dev != NULL && g < dev->tags.n; g++) {
+			put("%s\"%s\"", g == 0 ? "" : ",", dev->tags.name[g]);
+		}
+		put("],");
 		/* 이름과 그룹은 policy.c 가 정한 글자만 들어 있어 따옴표 없이 그대로 적어도 된다. */
 		if (p->logged_in) {
 			put("\"user\":{\"name\":\"%s\",\"expires\":%lld,\"groups\":[", p->user.name,

@@ -924,6 +924,54 @@ def config_tests(srv, acl_path, dev_path):
     srv.reload()
 
 
+def tag_tests(path):
+    """기기 태그(tag=)로 ACL 규칙의 주인을 고르는가. 태그가 맞지 않으면 그 규칙을 건너뛰고 다음
+    규칙을 본다 (출발지 주소와 같다). 경로도 그 기기의 태그로 뽑는다."""
+    fd, acl_path = tempfile.mkstemp(prefix="acl.", suffix=".conf")
+    with os.fdopen(fd, "w") as f:
+        f.write("any 10.0.0.1 udp 7000 allow tag=eng\n"
+                "10.0.0.0/24 10.50.0.0/16 any any allow tag=eng tag=ops\n"
+                "any 10.0.0.1 udp 7000 deny\n"
+                "10.0.0.0/24 10.0.0.1 icmp any allow\n")
+    write_devices(path, LINE1 + " tag=eng tag=laptop", LINE2)
+    srv = Server(path, acl_path)
+    server_ip = socket.inet_aton("10.0.0.1")
+    try:
+        def verdict(c, idx, src, seq):
+            before = len(srv.text())
+            c.send(data(idx, None, udp_packet(src, server_ip, 7000, seq)))
+            time.sleep(0.3)
+            c.drain()
+            new = srv.text()[before:]
+            return "denied" if "[deny]" in new else "passed" if "[udp->tun]" in new else "no trace"
+
+        eng, other = Client(), Client()
+        eidx = session(eng)
+        oidx = session(other, strict_dev=True)
+        expect("tags: the tagged device reaches the tag=eng rule", verdict(eng, eidx, TUN_IP, 1), "passed")
+        expect("tags: an untagged device falls through to the deny", verdict(other, oidx, TUN2_IP, 2), "denied")
+        expect("tags: routes come from the rules of the device's tags",
+               (eng.config, other.config), ("10.0.0.3/24 mtu 1400 routes 10.50.0.0/16", "10.0.0.4/24 mtu 1400 routes -"))
+        st = {s["tunnel_ip"]: s["tags"] for s in srv.status()["sessions"]}
+        expect("tags: the status shows each device's tags", (st.get("10.0.0.3"), st.get("10.0.0.4")), (["eng", "laptop"], []))
+
+        with open(acl_path, "a") as f:
+            f.write("any any any any allow tag=Eng\n")
+        srv.reload()
+        expect("tags: an acl with a bad tag name is refused", "acl: reload failed" in srv.text(), True)
+        write_devices(path, LINE1 + " tag=a tag=b tag=c tag=d tag=e", LINE2)
+        srv.reload()
+        expect("tags: a device with more than 4 tags is refused", "device: reload failed" in srv.text(), True)
+        write_devices(path, LINE1 + " tag=eng  # " + "x" * 600, LINE2)
+        srv.reload()
+        expect("tags: a line longer than 510 characters is refused, not cut", "line 1: longer than 510" in srv.text(), True)
+    finally:
+        srv.stop()
+        os.unlink(acl_path)
+        write_devices(path, LINE1, LINE2)
+    return srv
+
+
 def dns_tests(path):
     """-d 로 준 내부 DNS 가 터널 설정에 실려 가는지 (v7). 이름은 소문자로, 끝의 점 없이."""
     fd, dns_path = tempfile.mkstemp(prefix="dns.", suffix=".conf")
@@ -1798,6 +1846,7 @@ def main():
         logs.append(shutdown_tests(path).text())
         logs.append(rekey_tests(path).text())
         logs.append(dns_tests(path).text())
+        logs.append(tag_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)

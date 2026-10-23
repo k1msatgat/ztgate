@@ -135,3 +135,65 @@ int user_req_empty(const user_req_t *req)
 {
 	return req->n == 0;
 }
+
+static int tag_name_valid(const char *s)
+{
+	size_t i, n = strlen(s);
+
+	if (n == 0 || n > TAG_NAME_MAX) {
+		return 0;
+	}
+	for (i = 0; i < n; i++) {
+		if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '-')) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+int tag_parse(const char *tok, tag_set_t *t)
+{
+	const char *name;
+	int i;
+
+	if (strncmp(tok, "tag=", 4) != 0) {
+		return 1;
+	}
+	name = tok + 4;
+	if (!tag_name_valid(name)) {
+		return -1;
+	}
+	for (i = 0; i < t->n; i++) {
+		if (strcmp(t->name[i], name) == 0) {
+			return 0;
+		}
+	}
+	if (t->n >= TAG_MAX) {
+		return -1;
+	}
+	strcpy(t->name[t->n++], name);
+
+	return 0;
+}
+
+int tag_match(const tag_set_t *want, const tag_set_t *have)
+{
+	int i, k;
+
+	if (want->n == 0) {
+		return 1;
+	}
+	if (have == NULL) {
+		return 0;
+	}
+	for (i = 0; i < want->n; i++) {
+		for (k = 0; k < have->n; k++) {
+			if (strcmp(want->name[i], have->name[k]) == 0) {
+				return 1;
+			}
+		}
+	}
+
+	return 0;
+}
