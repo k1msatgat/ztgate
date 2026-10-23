@@ -931,7 +931,7 @@ sendto(buf, n + 32)     └─────────────────�
 - **설정은 텍스트 파일입니다.** 관리 콘솔이나 데이터베이스는 없고, 파일을 고친 뒤 `SIGHUP`(reload)으로 반영합니다. 관리 헬퍼와 MCP 도구가 그 파일을 대신 고칩니다.
 - **기기 목록과 등록 대기 목록은 서버와 관리 도구가 잠금 파일(`/etc/ztgate/.ztgate.lock`, flock)로 번갈아 고칩니다.** 손으로 고칠 때는 이 잠금을 잡지 않으므로, 등록 코드로 기기가 올라오는 순간과 겹치면 한쪽이 고친 것이 사라질 수 있습니다. 손으로 고칠 때는 `flock /etc/ztgate/.ztgate.lock -c "vi /etc/ztgate/devices.conf"` 처럼 잡고 고칩니다.
 - **서버는 한 대입니다.** 이중화나 장애 넘김이 없고, 서버를 다시 시작하면 모든 세션이 다시 핸드셰이크합니다.
-- **배포 패키지가 없습니다.** 소스에서 빌드하고 설치 스크립트나 Docker 이미지로 올립니다. 서명된 RPM / DEB / MSI 와 자동 업데이트는 없습니다.
+- **서버의 배포 패키지가 없습니다.** 서버는 소스에서 빌드하고 설치 스크립트나 Docker 이미지로 올립니다 (RPM / DEB 없음). Windows 는 MSI 가 있지만 코드 서명을 하지 않아 SmartScreen 경고가 뜹니다. 자동 업데이트는 없습니다.
 
 ## Windows 클라이언트
 
@@ -998,7 +998,13 @@ Expand-Archive wintun.zip -DestinationPath windows\third_party
 
 msbuild windows\ztgate.sln -m -p:Configuration=Release -p:Platform=x64
 # → windows\build\Release\  vpn_service.exe  vpn_gui.exe  vpn_client.exe  wintun.dll
+
+# 설치 파일 (WiX 3). wix314-binaries.zip 을 풀어 둔 폴더를 준다 — 설치하지 않아도 된다
+windows\installer\build.ps1 -Wix <WiX 폴더>
+# → windows\build\Release\ztgate.msi
 ```
+
+**설치 파일(`ztgate.msi`)** 은 세 프로그램과 Wintun 을 `Program Files\ztgate` 에 넣고, 서비스 `ztgate` 를 자동 시작(LocalSystem)으로 등록해 시작하고, 죽으면 5초 뒤 다시 올리게 하고, 시작 메뉴에 GUI 를 둡니다. 새 버전을 설치하면 옛 버전을 갈아 끼우고, 제거하면 서비스와 파일을 지웁니다. 기기 신원(레지스트리, DPAPI)은 남겨 다시 설치해도 같은 기기로 붙습니다. `vpn_service install` 로 설치했던 PC 는 먼저 `vpn_service uninstall` 로 지운 뒤 설치합니다 (같은 이름의 서비스가 있으면 설치가 멈춥니다). CI 가 푸시마다 만들어 산출물에 넣습니다. 코드 서명은 하지 않았습니다.
 
 ### 도구, 시험, 배포
 
@@ -1137,6 +1143,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계 |
 | 내부 DNS (프로토콜 v7) — `net_config` 의 DNS 칸(`proto.c`), `server/src/dns.c` 와 `-d`, Linux 의 resolvectl, Windows 의 NRPT(`nrpt_*`), 시험. 분할 DNS 로 하고 모든 이름을 회사로 보내지 않는 것은 AI가 제안 |
 | Windows 네트워크 변화 감지 — `core/tunnel.c` 의 `net_watch_*` / `net_tick`, 절전 복귀 뒤 실패한 재핸드셰이크의 즉시 재시도 |
 | 로그 등급과 속도 제한 — `server.c` 의 `log_ok` / `-v`, `bench.sh` 의 quiet 모드, 시험. 쿠키보다 로그를 먼저 막는 판단(비싼 일은 HMAC 뒤에만 한다)은 AI가 제안 |
