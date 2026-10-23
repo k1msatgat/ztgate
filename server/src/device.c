@@ -191,8 +191,14 @@ static int parse_connector(const char *s, device_t *d)
 
 int device_token_parse(const char *tok, device_t *d)
 {
+	int r;
+
 	if (strncmp(tok, "connector=", 10) == 0) {
 		return parse_connector(tok + 10, d);
+	}
+	r = tag_parse(tok, &d->tags);
+	if (r <= 0) {
+		return r;
 	}
 
 	return posture_req_parse(tok, &d->require);
@@ -237,7 +243,7 @@ int device_load(const char *path)
 {
 	FILE *fp;
 	struct stat st;
-	char line[256];
+	char line[CONF_LINE_MAX];
 	char s_id[80], s_key[80], s_ip[32];
 	char *tok;
 	int lineno = 0;
@@ -274,6 +280,10 @@ int device_load(const char *path)
 		char *hash;
 
 		lineno++;
+		if (!CONF_LINE_WHOLE(line, fp)) {
+			fprintf(stderr, "device: line %d: longer than %d characters\n", lineno, CONF_LINE_MAX - 2);
+			goto fail;
+		}
 
 		hash = strchr(line, '#');
 		if (hash != NULL) {
@@ -384,6 +394,9 @@ void device_dump(void)
 			struct in_addr a = { .s_addr = devices[i].connector[k].addr };
 			printf("%s%s/%u", k == 0 ? "  connector: " : " ", ip_str(a, ib),
 					devices[i].connector[k].prefix_len);
+		}
+		for (k = 0; k < devices[i].tags.n; k++) {
+			printf("%s%s", k == 0 ? "  tags: " : " ", devices[i].tags.name[k]);
 		}
 		printf("\n");
 	}

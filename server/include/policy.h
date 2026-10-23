@@ -16,6 +16,14 @@
 
 #include "proto.h"
 
+/* 설정 파일(기기 목록, 등록 대기 목록, ACL) 한 줄의 길이, 줄바꿈 포함. 키(64자)에 포스처 조건,
+ * 태그 넷, 커넥터 대역 넷, 이름표까지 적어도 들어간다. 이보다 긴 줄은 잘라 읽지 않고 거부한다 —
+ * 잘린 뒷부분이 다음 줄로 읽히면 엉뚱한 규칙이 된다. */
+#define CONF_LINE_MAX	512
+
+/* fgets 로 읽은 줄이 다 들어왔으면 1 (줄바꿈으로 끝났거나 파일의 마지막 줄). */
+#define CONF_LINE_WHOLE(line, fp)	(strchr((line), '\n') != NULL || feof(fp))
+
 typedef struct posture_req {
 	uint8_t need_firewall;
 	uint8_t need_antivirus;
@@ -77,5 +85,34 @@ int user_req_parse(const char *tok, user_req_t *req);
 int user_req_ok(const user_req_t *req, const user_identity_t *who, int64_t now);
 
 int user_req_empty(const user_req_t *req);
+
+/* ---- 기기 태그 -------------------------------------------------------------------
+ *
+ * 기기를 역할로 묶는다. 기기 목록(과 등록 코드)에 붙이고, ACL 규칙에서 그 규칙이 어느 기기의
+ * 것인지를 고른다.
+ *
+ *   devices.conf   2bd5...  a24d...  10.0.0.3  tag=eng tag=laptop
+ *   acl.conf       any  10.20.0.0/16  tcp  443  allow  tag=eng
+ *
+ * 규칙의 태그는 출발지 주소와 같은 자리다 — 그 기기에 태그가 하나도 맞지 않으면 그 규칙은 그
+ * 기기의 것이 아니고 다음 규칙을 본다. 터널 주소를 하나씩 적지 않고 "엔지니어 노트북"처럼
+ * 적게 된다. 사용자(user= / group=)는 그 기기를 지금 누가 쓰는가이고, 태그는 기기가 무엇인가다.
+ *
+ * 이름은 영문 소문자, 숫자, _ - 의 1..32 자. 기기 하나, 규칙 하나에 TAG_MAX 개까지. */
+#define TAG_MAX		4
+#define TAG_NAME_MAX	32
+
+typedef struct tag_set {
+	uint8_t n;
+	char name[TAG_MAX][TAG_NAME_MAX + 1];
+} tag_set_t;
+
+/* "tag=eng" 를 더한다. 0: 더했다, 1: 태그가 아니다 (다른 파서에 넘긴다), -1: 태그인데 이름이
+ * 틀렸거나 자리가 없다. 같은 이름을 두 번 적으면 한 번으로 친다. */
+int tag_parse(const char *tok, tag_set_t *t);
+
+/* 규칙의 태그(want)를 기기의 태그(have)가 채우면 1. want 가 비었으면 누구나. have 가 NULL 이면
+ * 태그가 없는 기기다. */
+int tag_match(const tag_set_t *want, const tag_set_t *have);
 
 #endif

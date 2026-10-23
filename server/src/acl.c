@@ -115,7 +115,7 @@ static int parse_port(const char *s, unsigned short *lo, unsigned short *hi)
 int acl_load(const char *path)
 {
 	FILE *fp;
-	char  line[256];
+	char  line[CONF_LINE_MAX];
 	char  s_src[64], s_dst[64], s_proto[16], s_port[32], s_act[16];
 	char *tok;
 	int   lineno = 0;
@@ -133,6 +133,11 @@ int acl_load(const char *path)
 		char *hash;
 
 		lineno++;
+		if (!CONF_LINE_WHOLE(line, fp)) {
+			fprintf(stderr, "acl: line %d: longer than %d characters\n", lineno, CONF_LINE_MAX - 2);
+			fclose(fp);
+			return -1;
+		}
 
 		hash = strchr(line, '#');
 		if (hash != NULL) {
@@ -185,6 +190,16 @@ int acl_load(const char *path)
 		/* action 뒤에 남은 단어들이 조건이다. 포스처 조건은 기기 목록과 같은 문법이고,
 		 * user= / group= 은 그 규칙을 쓸 수 있는 사용자다. */
 		for (tok = strtok(line + used, " \t\r\n"); tok != NULL; tok = strtok(NULL, " \t\r\n")) {
+			ur = tag_parse(tok, &r->tags);
+			if (ur == 0) {
+				continue;
+			}
+			if (ur < 0) {
+				fprintf(stderr, "acl: line %d: bad tag '%s' (a-z 0-9 _ -, at most %d per rule)\n",
+						lineno, tok, TAG_MAX);
+				fclose(fp);
+				return -1;
+			}
 			ur = user_req_parse(tok, &r->users);
 			if (ur == 0) {
 				continue;
@@ -222,7 +237,7 @@ int acl_load(const char *path)
 }
 
 int acl_check(const unsigned char *pkt, int len, const posture_report_t *posture,
-		const user_identity_t *who)
+		const user_identity_t *who, const tag_set_t *tags)
 {
 	struct in_addr src, dst;
 	unsigned char  proto;
@@ -256,6 +271,9 @@ int acl_check(const unsigned char *pkt, int len, const posture_report_t *posture
 		struct acl_rule *r = &rules[i];
 
 		if ((src.s_addr & r->src_mask.s_addr) != r->src_addr.s_addr) {
+			continue;
+		}
+		if (!tag_match(&r->tags, tags)) {
 			continue;
 		}
 		if ((dst.s_addr & r->dst_mask.s_addr) != r->dst_addr.s_addr) {
@@ -355,7 +373,7 @@ void acl_dump(void)
  * 채운 개수를 돌려준다. 한 번에 내려 줄 수 있는 경로는 프로토콜이 정한 NET_MAX_ROUTES
  * 개라 규칙보다 적다. 자리가 모자라 빠진 규칙의 수는 dropped 에 적는다 — 빠진 대역은
  * 클라이언트가 터널로 보내지 않으므로 규칙이 있어도 닿지 않는다. */
-int acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
+int acl_routes(struct in_addr src, const tag_set_t *tags, struct in_addr subnet, int subnet_bits,
 		net_route_t *out, int max, int *dropped)
 {
 	struct in_addr subnet_mask;
@@ -372,6 +390,7 @@ int acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
 
 		if (r->action != ACL_ALLOW ||
 				(src.s_addr & r->src_mask.s_addr) != r->src_addr.s_addr ||
+				!tag_match(&r->tags, tags) ||
 				r->dst_mask.s_addr == 0) {
 			continue;
 		}

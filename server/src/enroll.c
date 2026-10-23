@@ -14,7 +14,7 @@
 #include "enroll.h"
 
 #define LABEL_MAX 32
-#define REQS_MAX 64
+#define REQS_MAX 256
 
 typedef struct pending {
 	device_t dev;			/* 맨 앞에 둔다. enroll_find 가 내준 포인터로 이 줄을 되찾는다 */
@@ -124,7 +124,7 @@ int enroll_load(const char *path)
 {
 	FILE *fp;
 	struct stat st;
-	char line[256];
+	char line[CONF_LINE_MAX];
 	char s_id[80], s_key[80], s_ip[32];
 	char reqs_copy[REQS_MAX];
 	long long expires;
@@ -165,6 +165,10 @@ int enroll_load(const char *path)
 		pending_t *p;
 
 		lineno++;
+		if (!CONF_LINE_WHOLE(line, fp)) {
+			fprintf(stderr, "enroll: line %d: longer than %d characters\n", lineno, CONF_LINE_MAX - 2);
+			goto fail;
+		}
 
 		if (nstaged < MAX_PENDING) {
 			memset(&staged[nstaged], 0, sizeof(staged[nstaged]));
@@ -445,7 +449,7 @@ int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
 	pending_t *p = (pending_t *)pending;
 	char s_id[DEVICE_ID_LEN * 2 + 1], s_key[AUTH_KEY_LEN * 2 + 1];
 	char ib[INET_ADDRSTRLEN];
-	char entry[256];
+	char entry[CONF_LINE_MAX];
 	char code_id[DEVICE_ID_LEN * 2 + 1];
 	struct in_addr tun_ip = p->dev.tun_ip;
 	int idx = (int)(p - table);
@@ -456,7 +460,7 @@ int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
 	hex_str(key, AUTH_KEY_LEN, s_key);
 	hex_str(p->dev.id, DEVICE_ID_LEN, code_id);
 
-	/* device.c 가 한 줄을 char[256] 으로 읽는다. 넘치면 그 목록은 다음에 읽히지 않는다. */
+	/* device.c 가 한 줄을 CONF_LINE_MAX 까지 읽는다. 넘치면 그 목록은 다음에 읽히지 않는다. */
 	if ((size_t)snprintf(entry, sizeof(entry), "%s %s %s%s%s%s%s\n", s_id, s_key,
 				ip_str(tun_ip, ib),
 				p->reqs[0] ? " " : "", p->reqs,
