@@ -64,9 +64,13 @@ static struct in_addr tun_subnet_of(struct in_addr ip)
 
 /* 이 기기에 내려 줄 터널 설정을 지금의 기기 목록과 ACL 에서 만든다. 저장해 두지 않고
  * 보낼 때마다 다시 만든다 — SIGHUP 으로 정책이 바뀌면 다음 keepalive 응답에 새 값이
- * 실리고, 무엇이 바뀌었는지 따로 추적할 것이 없다. */
-static void net_config_for(const device_t *dev, net_config_t *cfg)
+ * 실리고, 무엇이 바뀌었는지 따로 추적할 것이 없다.
+ *
+ * 자리가 모자라 빠진 규칙의 수를 돌려준다. 그 대역은 이 기기에서 닿지 않는다. */
+static int net_config_for(const device_t *dev, net_config_t *cfg)
 {
+	int dropped = 0;
+
 	memset(cfg, 0, sizeof(*cfg));
 	cfg->tun_ip = dev->tun_ip.s_addr;
 	cfg->prefix_len = (uint8_t)tun_prefix;
@@ -76,8 +80,10 @@ static void net_config_for(const device_t *dev, net_config_t *cfg)
 	 * 네트워크이고, 같은 대역을 터널로 보내라고 하면 자기 네트워크로 가는 길을 잃는다. */
 	if (acl_enabled && dev->n_connector == 0) {
 		cfg->n_routes = (uint8_t)acl_routes(dev->tun_ip, tun_subnet_of(dev->tun_ip),
-				tun_prefix, cfg->routes, NET_MAX_ROUTES);
+				tun_prefix, cfg->routes, NET_MAX_ROUTES, &dropped);
 	}
+
+	return dropped;
 }
 
 /* ---- 커넥터 ------------------------------------------------------------------
@@ -317,6 +323,8 @@ static int open_session(peer_t *peer, const device_t *dev, const uint8_t *auth, 
 	msg_header_t msg_header;
 	net_config_t cfg;
 	crypt_ecdh_t *ecdh;
+	char ib[INET_ADDRSTRLEN];
+	int dropped;
 	int cfg_len;
 	int len = -1;
 
@@ -327,7 +335,12 @@ static int open_session(peer_t *peer, const device_t *dev, const uint8_t *auth, 
 	/* 터널 설정은 수락과 한 통에 실어 보낸다. 따로 보내면 세션은 열렸는데 주소를 모르는
 	 * 순간이 생기고, 그 한 통이 사라졌을 때를 처리해야 한다. 세션 키로 감싸므로 이 기기
 	 * 말고는 읽을 수 없고, 도중에 경로를 끼워 넣을 수도 없다. */
-	net_config_for(dev, &cfg);
+	/* keepalive 마다 같은 말을 찍지 않게 세션을 열 때만 알린다. */
+	dropped = net_config_for(dev, &cfg);
+	if (dropped > 0) {
+		printf("[HS] %s: %d allow rules not pushed as routes (at most %d per device)\n",
+				ip_str(dev->tun_ip, ib), dropped, NET_MAX_ROUTES);
+	}
 	cfg_len = net_config_encode(res + RES_HS_HEAD_LEN, cap - RES_HS_MIN_LEN, &cfg);
 	if (cfg_len < 0) {
 		return -1;

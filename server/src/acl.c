@@ -352,10 +352,11 @@ void acl_dump(void)
  * 위쪽의 deny 가 allow 의 일부를 가리고 있어도 그 대역은 그대로 내려간다. 경로는 "어디를
  * 터널로 보낼 것인가"이고, 보낸 뒤 통과시킬지는 패킷마다 acl_check 가 정한다.
  *
- * 채운 개수를 돌려준다. 규칙 하나가 대역 하나를 내므로 규칙 수(MAX_RULES)만큼의 자리를
- * 주면 넘치지 않는다. */
+ * 채운 개수를 돌려준다. 한 번에 내려 줄 수 있는 경로는 프로토콜이 정한 NET_MAX_ROUTES
+ * 개라 규칙보다 적다. 자리가 모자라 빠진 규칙의 수는 dropped 에 적는다 — 빠진 대역은
+ * 클라이언트가 터널로 보내지 않으므로 규칙이 있어도 닿지 않는다. */
 int acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
-		net_route_t *out, int max)
+		net_route_t *out, int max, int *dropped)
 {
 	struct in_addr subnet_mask;
 	const struct acl_rule *r;
@@ -363,6 +364,7 @@ int acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
 	int n = 0;
 	int i, k;
 
+	*dropped = 0;
 	subnet_mask.s_addr = subnet_bits == 0 ? 0 : htonl(0xFFFFFFFFu << (32 - subnet_bits));
 
 	for (i = 0; i < nrules; i++) {
@@ -389,7 +391,8 @@ int acl_routes(struct in_addr src, struct in_addr subnet, int subnet_bits,
 		}
 
 		if (n == max) {
-			break;
+			(*dropped)++;
+			continue;
 		}
 
 		out[n].addr = r->dst_addr.s_addr;
