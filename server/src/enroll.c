@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -348,38 +349,94 @@ static int device_file_append(const char *path, const char *entry)
 	return replace_end(out, tmp, path);
 }
 
-/* 기다리는 줄들을 파일에 다시 쓴다. 쓰인 줄과 만료된 줄은 여기서 빠진다. */
-static int enroll_file_rewrite(void)
+/* 등록 대기 파일에서 쓰인 코드(id)의 줄과 만료된 줄을 뺀다. 이 서버가 읽어 둔 표가 아니라
+ * 지금의 파일에서 뺀다 — 마지막으로 다시 읽은 뒤에 관리 도구가 더한 코드가 있을 수 있고, 표로
+ * 다시 쓰면 그 코드가 사라진다. 주석과 형식이 틀린 줄은 그대로 옮긴다 (판단은 다시 읽을 때). */
+static int enroll_file_drop(const char *id_hex)
 {
-	char id[DEVICE_ID_LEN * 2 + 1], key[AUTH_KEY_LEN * 2 + 1];
-	char ib[INET_ADDRSTRLEN];
+	char line[512], first[80];
 	char tmp[300];
 	time_t now = time(NULL);
-	FILE *out;
-	int i;
+	long long expires;
+	FILE *in, *out;
+
+	in = fopen(file_path, "r");
+	if (in == NULL) {
+		return errno == ENOENT ? 0 : -1;
+	}
 
 	out = replace_begin(file_path, tmp, sizeof(tmp));
 	if (out == NULL) {
+		fclose(in);
 		return -1;
 	}
 
-	fputs("# ztgate 등록 대기 목록. 관리 도구가 줄을 더하고 서버가 쓰인 줄을 지운다.\n"
-	      "# id (32 hex)  key (64 hex)  tunnel-ip  expires (unix)  requirements  # label\n", out);
-
-	for (i = 0; i < count; i++) {
-		if (table[i].expires <= now) {
+	while (fgets(line, sizeof(line), in) != NULL) {
+		if (sscanf(line, "%79s %*s %*s %lld", first, &expires) == 2 && first[0] != '#' &&
+				(strcmp(first, id_hex) == 0 || expires <= now)) {
 			continue;
 		}
-		hex_str(table[i].dev.id, DEVICE_ID_LEN, id);
-		hex_str(table[i].dev.key, AUTH_KEY_LEN, key);
-		fprintf(out, "%s %s %s %lld%s%s%s%s\n", id, key, ip_str(table[i].dev.tun_ip, ib),
-				(long long)table[i].expires,
-				table[i].reqs[0] ? " " : "", table[i].reqs,
-				table[i].label[0] ? "  # " : "", table[i].label);
+		fputs(line, out);
 	}
-	crypt_wipe(key, sizeof(key));
+	crypt_wipe(line, sizeof(line));	/* 다른 코드의 키가 지나갔다 */
+	fclose(in);
 
 	return replace_end(out, tmp, file_path);
+}
+
+/* ---- 서버와 관리 도구 사이의 잠금 --------------------------------------------
+ *
+ * 기기 목록과 등록 대기 목록은 서버와 관리 도구(ztgate_ctl)가 함께 고친다. 둘 다 읽고 →
+ * 고치고 → 새 파일로 바꾸므로, 한쪽이 읽고 쓰는 사이에 다른 쪽이 끼면 먼저 쓴 쪽이 고친
+ * 것이 사라진다 (등록된 기기가 목록에서 빠지거나, 방금 만든 코드가 지워진다). 두 쪽 모두
+ * 기기 목록과 같은 디렉터리의 .ztgate.lock 에 flock 을 잡고 고친다. 관리 도구는 Node 에
+ * flock 이 없어 flock(1) 로 같은 파일을 잡는다. 프로세스가 죽으면 커널이 풀어 준다.
+ *
+ * 서버는 패킷을 나르는 루프라 오래 기다리지 않는다. LOCK_WAIT_MSEC 안에 못 잡으면 이번
+ * 등록은 실패로 답한다. 관리 도구가 잠그는 동안은 파일 하나를 읽고 쓰는 동안뿐이다. */
+#define LOCK_WAIT_MSEC 200
+
+static int config_lock(const char *device_path)
+{
+	char path[300];
+	const char *slash = strrchr(device_path, '/');
+	struct timespec pause = { 0, 5 * 1000 * 1000 };
+	int fd;
+	int i;
+
+	if (slash == NULL) {
+		snprintf(path, sizeof(path), ".ztgate.lock");
+	}
+	else if ((size_t)snprintf(path, sizeof(path), "%.*s/.ztgate.lock",
+				(int)(slash - device_path), device_path) >= sizeof(path)) {
+		return -1;
+	}
+
+	fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	if (fd < 0) {
+		perror(path);
+		return -1;
+	}
+
+	for (i = 0; i < LOCK_WAIT_MSEC / 5; i++) {
+		if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+			return fd;
+		}
+		if (errno != EWOULDBLOCK && errno != EINTR) {
+			break;
+		}
+		nanosleep(&pause, NULL);
+	}
+
+	fprintf(stderr, "enroll: %s is held by another writer\n", path);
+	close(fd);
+	return -1;
+}
+
+/* 닫으면 풀린다. */
+static void config_unlock(int fd)
+{
+	close(fd);
 }
 
 int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
@@ -389,40 +446,62 @@ int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
 	char s_id[DEVICE_ID_LEN * 2 + 1], s_key[AUTH_KEY_LEN * 2 + 1];
 	char ib[INET_ADDRSTRLEN];
 	char entry[256];
+	char code_id[DEVICE_ID_LEN * 2 + 1];
+	struct in_addr tun_ip = p->dev.tun_ip;
 	int idx = (int)(p - table);
+	int lock;
 	int ret;
 
 	hex_str(id, DEVICE_ID_LEN, s_id);
 	hex_str(key, AUTH_KEY_LEN, s_key);
+	hex_str(p->dev.id, DEVICE_ID_LEN, code_id);
 
 	/* device.c 가 한 줄을 char[256] 으로 읽는다. 넘치면 그 목록은 다음에 읽히지 않는다. */
 	if ((size_t)snprintf(entry, sizeof(entry), "%s %s %s%s%s%s%s\n", s_id, s_key,
-				ip_str(p->dev.tun_ip, ib),
+				ip_str(tun_ip, ib),
 				p->reqs[0] ? " " : "", p->reqs,
 				p->label[0] ? "  # " : "", p->label) >= sizeof(entry) - 1) {
 		ret = -1;
+		goto out;
+	}
+
+	lock = config_lock(device_path);
+	if (lock < 0) {
+		ret = -1;
+		goto out;
+	}
+
+	/* 잠근 뒤에 지금의 기기 목록을 다시 읽고 겹치는지 본다. 이 서버가 마지막으로 읽은 뒤에
+	 * 관리 도구가 같은 ID 나 같은 터널 주소의 기기를 올렸을 수 있다. 겹친 채로 더하면 그
+	 * 목록은 다음부터 읽히지 않는다 (device_load 가 중복을 거부한다). */
+	if (device_load(device_path) < 0) {
+		ret = -1;
+	}
+	else if (device_find(id) != NULL || device_find_ip(tun_ip) != NULL) {
+		ret = ENROLL_COMPLETE_CONFLICT;
 	}
 	else {
 		ret = device_file_append(device_path, entry);
+		if (ret == 0 && enroll_file_drop(code_id) < 0) {
+			fprintf(stderr, "enroll: could not rewrite %s; the used code is still listed there\n", file_path);
+		}
 	}
+	config_unlock(lock);
 
+out:
 	crypt_wipe(s_key, sizeof(s_key));
 	crypt_wipe(entry, sizeof(entry));
 
 	if (ret < 0) {
-		return -1;
+		return ret;
 	}
 
-	/* 기기는 목록에 올랐다. 이제 코드는 쓰인 것이다 — 표에서 먼저 지운다. 아래에서
-	 * 파일을 다시 쓰지 못해도 이 서버는 그 코드를 다시 받지 않는다. 파일에 줄이 남아
-	 * 다음에 다시 읽히더라도, 같은 터널 주소가 이미 기기 목록에 있어 쓸 수 없다. */
+	/* 기기는 목록에 올랐다. 이제 코드는 쓰인 것이다 — 표에서도 지운다. 위에서 파일의
+	 * 줄을 지우지 못했어도 이 서버는 그 코드를 다시 받지 않는다. 파일에 줄이 남아 다음에
+	 * 다시 읽히더라도, 같은 터널 주소가 이미 기기 목록에 있어 쓸 수 없다. */
 	crypt_wipe(&table[idx], sizeof(table[idx]));
 	memmove(&table[idx], &table[idx + 1], sizeof(table[0]) * (size_t)(count - idx - 1));
 	count--;
-
-	if (enroll_file_rewrite() < 0) {
-		fprintf(stderr, "enroll: could not rewrite %s; the used code is still listed there\n", file_path);
-	}
 
 	return 0;
 }

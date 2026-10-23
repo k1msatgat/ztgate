@@ -744,6 +744,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 	uint8_t status;
 	struct in_addr tun_ip;
 	device_t *pending;
+	int done;
 
 	if (n < (int32_t)ENROLL_PAYLOAD_LEN) {
 		LOG_LIMITED(LOG_DROP, "[enroll] short request (%d bytes)\n", n);
@@ -769,8 +770,13 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 			/* 파일에 적은 뒤 그 파일을 다시 읽어서 올린다. 표에 직접 끼워 넣으면 파일과
 			 * 표가 다른 길로 만들어져, 다음에 다시 읽었을 때 달라질 수 있다. 읽고 나서
 			 * 그 기기가 정말 있는지까지 본다. */
-			if (enroll_complete(pending, body, body + DEVICE_ID_LEN, device_path) < 0 ||
-					device_load(device_path) < 0 || device_find(body) == NULL) {
+			done = enroll_complete(pending, body, body + DEVICE_ID_LEN, device_path);
+			if (done == ENROLL_COMPLETE_CONFLICT) {
+				printf("[enroll] device %s: its id or tunnel ip was added to %s meanwhile\n",
+						device_id_str(body, ids), device_path);
+				status = ENROLL_CONFLICT;
+			}
+			else if (done < 0 || device_load(device_path) < 0 || device_find(body) == NULL) {
 				printf("[enroll] could not add device %s to %s\n",
 						device_id_str(body, ids), device_path);
 				status = ENROLL_FAILED;

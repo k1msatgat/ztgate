@@ -21,6 +21,7 @@ ctypes 로 직접 부른다. 패키지를 따로 설치하지 않아도 되고, 
 import base64
 import ctypes
 import ctypes.util
+import fcntl
 import hashlib
 import json
 import hmac
@@ -1192,6 +1193,44 @@ def enroll_tests(srv, dev_path):
     expect("enroll: a pending list readable by others is refused, the previous one stays",
            ("enroll: reload failed" in srv.text(), isinstance(open_with("MMMMM-NNNNN-PPPPP-QQQQQ-RRRRR"), int)),
            (True, True))
+
+    # 서버와 관리 도구가 같은 파일을 고치는 경우. 관리 도구는 기기 목록 옆의 .ztgate.lock 에
+    # flock 을 잡고 고친다 (mcp/ctl.cjs). 여기서는 그 잠금을 직접 쥔다.
+    lock_path = os.path.join(os.path.dirname(dev_path), ".ztgate.lock")
+    a_id, b_id, c_id = bytes([0x91] * 16), bytes([0x92] * 16), bytes([0x93] * 16)
+    os.chmod(srv.enroll_path, 0o600)
+    pending(("SSSSS-TTTTT-VVVVV-WWWWW-XXXXX", "10.0.0.12", 600, "", "locked"),
+            ("YYYYY-ZZZZZ-00000-11111-22222", "10.0.0.13", 600, "", "lost-update"),
+            ("33333-44444-55555-66666-77777", "10.0.0.15", 600, "", "conflict"))
+
+    idx = open_with("SSSSS-TTTTT-VVVVV-WWWWW-XXXXX")
+    with open(lock_path, "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        check("enroll: while the admin tool holds the lock, the server gives up (failed)",
+              enroll(idx, a_id, new_key), "ENROLL(3)")
+    check("enroll: ...and the same request goes through once it is released", enroll(idx, a_id, new_key), "ENROLL(0)")
+
+    # 관리 도구가 코드를 하나 더 적었는데 서버는 아직 다시 읽지 않았다. 서버가 쓰인 코드를 지울
+    # 때 그 줄까지 지우면 안 된다.
+    late_id, late_key = enroll_identity("88888-99999-AAAAA-BBBBB-CCCCC")
+    with open(srv.enroll_path, "a") as f:
+        f.write("%s %s 10.0.0.14 %d  # added-later\n" % (late_id.hex(), late_key.hex(), time.time() + 600))
+    idx = open_with("YYYYY-ZZZZZ-00000-11111-22222")
+    check("enroll: a code is used while another was just added to the file", enroll(idx, b_id, new_key), "ENROLL(0)")
+    with open(srv.enroll_path) as f:
+        text = f.read()
+    expect("enroll: the code added meanwhile is still pending",
+           (late_id.hex() in text, enroll_identity("YYYYY-ZZZZZ-00000-11111-22222")[0].hex() in text), (True, False))
+
+    # 관리 도구가 그 코드의 주소에 기기를 손으로 올렸는데 서버는 아직 다시 읽지 않았다. 그대로
+    # 더하면 기기 목록에 같은 주소가 두 줄이 되어 다음부터 읽히지 않는다.
+    idx = open_with("33333-44444-55555-66666-77777")
+    with open(dev_path, "a") as f:
+        f.write("%s %s 10.0.0.15  # by-hand\n" % (bytes([0x94] * 16).hex(), new_key.hex()))
+    check("enroll: an address taken in the file meanwhile is a conflict", enroll(idx, c_id, new_key), "ENROLL(2)")
+    srv.reload()
+    expect("enroll: ...and the device list still loads", "device: reload failed" in srv.text(), False)
+    os.unlink(lock_path)
 
     os.unlink(srv.enroll_path)
     write_devices(dev_path, LINE1, LINE2)
