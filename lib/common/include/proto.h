@@ -76,6 +76,13 @@ extern "C" {
  *   DENY       S  -> C   암호문 = reason(1)        세션 중의 거절. 헤더의 session_idx 는 그 세션
  *   LOGIN      C  -> S   암호문 = 사용자의 토큰     아래 "사용자 로그인"
  *              S  -> C   암호문 = status(1) | expires(8) | 사용자 이름
+ *   DISCONNECT C <-> S   암호문 = reason(1)        세션을 끝낸다 (disconnect_reason_t)
+ *
+ * DISCONNECT 는 끝내는 쪽이 한 번 보내고 답을 기다리지 않는다. 받은 쪽은 그 세션을 바로
+ * 닫는다 — 클라이언트가 끝났는데 서버가 60초 동안 세션을 붙잡아 두거나, 서버가 다시
+ * 시작하는데 클라이언트가 30초 동안 죽은 세션으로 보내는 일이 없어진다. 잃어버려도 지금처럼
+ * 만료로 정리된다. 세션 키로 감싸므로 세션 번호를 엿본 제3자가 남의 세션을 끝낼 수 없다.
+ * 프로토콜 v6 그대로 더한 종류라, 모르는 쪽(이전 빌드)은 모르는 종류로 버린다.
  *
  * AES-256-GCM 이고, 앞의 16B(헤더와 counter)는 암호화하지 않지만 tag 가 함께 덮는다.
  * 방향마다 키가 다르고 counter 가 그대로 nonce 가 된다. */
@@ -88,8 +95,14 @@ typedef enum MSG_TYPE {
 	MSG_TYPE_AUTH,
 	MSG_TYPE_DENY,
 	MSG_TYPE_ENROLL,
-	MSG_TYPE_LOGIN
+	MSG_TYPE_LOGIN,
+	MSG_TYPE_DISCONNECT
 } msg_type_t;
+
+typedef enum DISCONNECT_REASON {
+	DISCONNECT_CLIENT_EXIT = 1,	/* 클라이언트가 끝난다 (사용자가 끊었다, 서비스를 멈췄다) */
+	DISCONNECT_SERVER_SHUTDOWN	/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 바로 다시 붙어 본다 */
+} disconnect_reason_t;
 
 #define DEVICE_ID_LEN	16
 #define AUTH_KEY_LEN	32

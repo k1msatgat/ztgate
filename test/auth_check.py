@@ -38,11 +38,13 @@ SERVER = os.path.join(ROOT, "server", "bin", "vpn_server")
 PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
 VERSION = 6
 
-REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN = range(1, 10)
+REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
+DISCONNECT_CLIENT_EXIT, DISCONNECT_SERVER_SHUTDOWN = 1, 2
 DENY_UNKNOWN_DEVICE, DENY_BAD_AUTH, DENY_TUN_IP, DENY_POSTURE = range(1, 5)
 STATE_UNKNOWN, STATE_OFF, STATE_ON = range(3)
 TYPE_NAME = {RES_HANDSHAKE: "RES_HANDSHAKE", DATA: "DATA", KEEPALIVE: "KEEPALIVE",
-             CHALLENGE: "CHALLENGE", DENY: "DENY", ENROLL: "ENROLL", LOGIN: "LOGIN"}
+             CHALLENGE: "CHALLENGE", DENY: "DENY", ENROLL: "ENROLL", LOGIN: "LOGIN",
+             DISCONNECT: "DISCONNECT"}
 
 HDR_LEN, PUB_LEN, TAG_LEN, MAC_LEN = 8, 64, 16, 32
 
@@ -275,7 +277,7 @@ class Client:
         except socket.timeout:
             return None
         version, msg_type, _, idx = struct.unpack("!BBHI", self.raw[:HDR_LEN])
-        if idx != 0 and msg_type in (DATA, KEEPALIVE, DENY, ENROLL, LOGIN):
+        if idx != 0 and msg_type in (DATA, KEEPALIVE, DENY, ENROLL, LOGIN, DISCONNECT):
             return msg_type, idx, unseal(self.raw)
         return msg_type, idx, self.raw[HDR_LEN:]
 
@@ -1223,6 +1225,43 @@ CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex
 RESOURCE = socket.inet_aton("198.51.100.10")
 
 
+def disconnect_tests(srv):
+    """DISCONNECT 로 세션이 바로 닫히는가. 세션 키로 열리지 않는 것으로는 닫히지 않는가."""
+    c = Client()
+    start = len(srv.events())
+    idx = session(c)
+
+    c.send(seal(DISCONNECT, idx, bytes([DISCONNECT_CLIENT_EXIT]), key=bytes(32)))
+    time.sleep(0.2)
+    c.drain()
+    c.send(keepalive(idx))
+    r = c.recv()
+    expect("disconnect: a forged one does not close the session", r and r[0], KEEPALIVE)
+
+    c.send(seal(DISCONNECT, idx, bytes([DISCONNECT_CLIENT_EXIT])))
+    time.sleep(0.2)
+    c.drain()
+    c.send(keepalive(idx))
+    expect("disconnect: the session is gone right away", describe(c.recv()), "no response")
+    closed = [e["reason"] for e in srv.events()[start:]
+              if e["event"] == "session_close" and e.get("session") == "%08x" % idx]
+    expect("disconnect: audited as closed", closed, ["closed"])
+
+
+def shutdown_tests(path):
+    """서버가 끝날 때 열린 세션에 DISCONNECT 를 보내는가. 클라이언트는 그것을 보고 30초를
+    기다리지 않고 바로 다시 붙는다."""
+    srv = Server(path)
+    c = Client()
+    idx = session(c)
+    c.drain()
+    srv.stop()
+    r = c.recv()
+    expect("shutdown: the server tells the session it is leaving",
+           r and (r[0], r[1] == idx, r[2]), (DISCONNECT, True, bytes([DISCONNECT_SERVER_SHUTDOWN])))
+    return srv
+
+
 SCALE_DEVICES = 1000
 
 
@@ -1539,6 +1578,7 @@ def main():
             config_tests(srv, acl_path, path)
             status_tests(srv)
             audit_tests(srv)
+            disconnect_tests(srv)
             enroll_tests(srv, path)
             connector_tests(srv, acl_path, path)
         finally:
@@ -1555,6 +1595,9 @@ def main():
             srv_idp.stop()
             logs.append(srv_idp.text())
             subprocess.run(["rm", "-rf", idp_dir])
+
+        write_devices(path, LINE1, LINE2)
+        logs.append(shutdown_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)

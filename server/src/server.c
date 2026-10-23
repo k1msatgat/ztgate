@@ -223,6 +223,24 @@ static void send_deny(int32_t sock, const struct sockaddr_in *dst, socklen_t dst
 	}
 }
 
+/* 서버가 끝난다고 세션에 알린다 (DISCONNECT). 등록용 세션에도 보낸다 — 등록 중인 쪽도
+ * 답을 기다리지 않게 된다. arg 는 UDP 소켓. */
+static void send_disconnect(peer_t *peer, void *arg)
+{
+	uint8_t res[PKT_OVERHEAD + 1];
+	int sock = *(int *)arg;
+	int n;
+
+	res[PKT_HDR_LEN] = DISCONNECT_SERVER_SHUTDOWN;
+	n = secure_seal(&peer->secure, MSG_TYPE_DISCONNECT, peer->session_idx, res, sizeof(res), 1);
+	if (n < 0) {
+		return;
+	}
+	if (sendto(sock, res, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+		perror("sendto disconnect");
+	}
+}
+
 /* 열려 있는 세션을 거절한다. 세션 키로 감싸므로 서버만 만들 수 있다 — 세션 번호를
  * 엿본 제3자가 가짜 거절로 남의 접속을 끊을 수 없다. 보낸 뒤 세션을 내리는 것은
  * 부르는 쪽의 일이다. */
@@ -1169,6 +1187,11 @@ int main(int argc, char *argv[])
 					case MSG_TYPE_LOGIN:
 						handle_login(sock, peer, ip, n, &src, srclen);
 						continue;
+					case MSG_TYPE_DISCONNECT:
+						printf("[peer] %s closed its session idx=%08x\n",
+								ip_str(peer->inner, ib), peer->session_idx);
+						peer_drop(peer, "closed");
+						continue;
 					default:
 						printf("[drop] unknown type %u\n", msg_header.type);
 						continue;
@@ -1302,6 +1325,10 @@ int main(int argc, char *argv[])
 		}
 	}
 	ret = 0;
+
+	/* 끝난다고 알린다. 다시 시작하는 중이면 클라이언트는 30초를 기다리지 않고 바로 다시
+	 * 붙는다. 세션도 감사 로그에 "shutdown" 으로 닫힌다. */
+	peer_drop_all(send_disconnect, &sock, "shutdown");
 
 out:
 	if (epfd >= 0) {

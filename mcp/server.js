@@ -116,7 +116,7 @@ server.registerTool('server_logs', {
 }, (a) => call('logs', a));
 
 server.registerTool('audit_log', {
-	description: 'Read the audit log, oldest first: one JSON event per thing that happened. session_open (device, tunnel ip, endpoint, posture), session_close (reason: expired / posture / device_removed / replaced / evicted, with packet and byte counts), auth_denied (reason: unknown_device / bad_auth / posture), access (the first packet a session sends to each destination: dst, proto, dport, allow or deny and why), reload, enrolled (a device registered itself with an enrollment code). Use it to answer "who connected, what did they reach, why were they refused". Unlike server_logs it is per event rather than per packet and it survives server restarts.',
+	description: 'Read the audit log, oldest first: one JSON event per thing that happened. session_open (device, tunnel ip, endpoint, posture), session_close (reason: expired / posture / device_removed / replaced / evicted / closed (the client said it was leaving) / shutdown (the server stopped), with packet and byte counts), auth_denied (reason: unknown_device / bad_auth / posture), access (the first packet a session sends to each destination: dst, proto, dport, allow or deny and why), reload, enrolled (a device registered itself with an enrollment code). Use it to answer "who connected, what did they reach, why were they refused". Unlike server_logs it is per event rather than per packet and it survives server restarts.',
 	inputSchema: {
 		lines: z.number().int().min(1).max(500).optional().describe('how many events to return (default 50)'),
 		event: z.enum(['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled']).optional().describe('only this kind of event'),
