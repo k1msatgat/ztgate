@@ -101,8 +101,22 @@ typedef enum MSG_TYPE {
 
 typedef enum DISCONNECT_REASON {
 	DISCONNECT_CLIENT_EXIT = 1,	/* 클라이언트가 끝난다 (사용자가 끊었다, 서비스를 멈췄다) */
-	DISCONNECT_SERVER_SHUTDOWN	/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 바로 다시 붙어 본다 */
+	DISCONNECT_SERVER_SHUTDOWN,	/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 바로 다시 붙어 본다 */
+	DISCONNECT_REKEY		/* 세션의 수명이 다했다. 바로 다시 핸드셰이크해 새 키로 연다 */
 } disconnect_reason_t;
+
+/* 세션 키의 수명. 키는 핸드셰이크에서만 바뀌므로 오래 열린 세션은 같은 키로 계속 감싼다.
+ * 서버가 세션을 연 지 SESSION_LIFETIME_SEC (vpn_server -L 로 바꾼다) 가 지났거나 한쪽
+ * 방향의 counter 가 REKEY_AFTER_PACKETS 에 닿으면 DISCONNECT(REKEY) 를 보내고 세션을 내린다.
+ * 클라이언트는 그것을 받고 바로 다시 핸드셰이크하므로 새 일회용 키 쌍으로 새 키를 뽑는다.
+ * 그 사이(왕복 두 번)의 패킷만 잃는다. IPsec 의 Child SA 수명(보통 1시간)과 같은 자리다.
+ *
+ * counter 는 GCM nonce 이므로 같은 키로 같은 값을 두 번 쓰면 안 된다. 64bit 라 다 쓸 일은
+ * 없지만, 같은 키로 감싼 양이 많을수록 안전 여유가 준다. SECURE_COUNTER_LIMIT 은 서버가
+ * 세션을 내리지 못했을 때의 마지막 선이다 — secure_seal / secure_open 이 그 뒤로는 거부한다. */
+#define SESSION_LIFETIME_SEC	3600
+#define REKEY_AFTER_PACKETS	(1ull << 36)
+#define SECURE_COUNTER_LIMIT	(1ull << 40)
 
 #define DEVICE_ID_LEN	16
 #define AUTH_KEY_LEN	32

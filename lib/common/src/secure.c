@@ -259,6 +259,10 @@ int secure_seal(secure_session_t *s, uint8_t type, uint32_t session_idx,
 	if (!secure_session_ready(s) || cap < PKT_OVERHEAD || payload_len > cap - PKT_OVERHEAD) {
 		return -1;
 	}
+	/* 이 키로 감쌀 수 있는 양을 다 썼다. 새 핸드셰이크로 새 키를 받아야 한다 (proto.h). */
+	if (s->tx_counter >= SECURE_COUNTER_LIMIT) {
+		return -1;
+	}
 
 	memset(&h, 0, sizeof(h));
 	h.version = PROTOCOL_VERSION;
@@ -330,6 +334,9 @@ int secure_open(secure_session_t *s, uint8_t *pkt, size_t len, uint64_t *counter
 
 	/* 싼 검사를 먼저 한다. 다만 창에 표시하는 것은 tag 가 맞은 뒤다. 순서가 반대면
 	 * 아무 counter 나 적은 위조 패킷이 그 값을 "받은 것"으로 만들어 진짜 패킷을 막는다. */
+	if (d.counter >= SECURE_COUNTER_LIMIT) {
+		return SECURE_BAD;
+	}
 	if (!window_fresh(s, d.counter)) {
 		return SECURE_REPLAY;
 	}
