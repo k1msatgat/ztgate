@@ -21,6 +21,7 @@
 #include "audit.h"
 #include "enroll.h"
 #include "idp.h"
+#include "dns.h"
 
 #define MAX_EVENTS 8
 
@@ -131,6 +132,11 @@ static int net_config_for(const device_t *dev, net_config_t *cfg)
 	if (acl_enabled && dev->n_connector == 0) {
 		cfg->n_routes = (uint8_t)acl_routes(dev->tun_ip, tun_subnet_of(dev->tun_ip),
 				tun_prefix, cfg->routes, NET_MAX_ROUTES, &dropped);
+	}
+
+	/* 내부 DNS 도 같다. 커넥터는 그 내부망 안에 있어 자기 DNS 를 이미 쓴다. */
+	if (dev->n_connector == 0) {
+		dns_fill(cfg);
 	}
 
 	return dropped;
@@ -911,6 +917,7 @@ int main(int argc, char *argv[])
 	const char *status_path = NULL;
 	const char *enroll_path = NULL;
 	const char *idp_path = NULL;
+	const char *dns_path = NULL;
 	int nd;
 	struct epoll_event ev, events[MAX_EVENTS];
 	struct sockaddr_in local_addr;
@@ -941,7 +948,7 @@ int main(int argc, char *argv[])
 		return verify_token(argv[2]);
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:L:v")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:L:v")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -950,6 +957,9 @@ int main(int argc, char *argv[])
 		}
 		else if (opt == 'u') {
 			idp_path = optarg;
+		}
+		else if (opt == 'd') {
+			dns_path = optarg;
 		}
 		else if (opt == 'a') {
 			if (audit_open(optarg) < 0) {
@@ -998,12 +1008,13 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
 		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
 		fprintf(stderr, "       -u: accept user logins (JWT) from the identity provider this file describes\n");
+		fprintf(stderr, "       -d: internal DNS pushed to clients ('server <ip>' and 'domain <name>' lines)\n");
 		fprintf(stderr, "       -n, -m: what the tun device is configured with (default /24, mtu %d);\n", TUN_MTU);
 		fprintf(stderr, "               they are pushed to every client\n");
 		fprintf(stderr, "       %s selftest\n", argv[0]);
@@ -1065,6 +1076,15 @@ int main(int argc, char *argv[])
 		}
 		printf("idp: %d signing keys loaded from %s\n", nk, idp_path);
 		idp_dump();
+	}
+
+	if (dns_path != NULL) {
+		int nn = dns_load(dns_path);
+		if (nn < 0) {
+			fprintf(stderr, "dns_load failed: %s\n", dns_path);
+			return 1;
+		}
+		printf("dns: %d domains from %s\n", nn, dns_path);
 	}
 
 	signal(SIGINT, on_signal);
@@ -1181,6 +1201,19 @@ int main(int argc, char *argv[])
 				else {
 					printf("idp: reloaded, %d signing keys\n", nk);
 					audit_reload("idp", 1, nk);
+				}
+			}
+
+			/* 붙어 있는 기기는 다음 keepalive 응답에서 새 DNS 를 받는다. */
+			if (dns_path != NULL) {
+				int nn = dns_load(dns_path);
+				if (nn < 0) {
+					printf("dns: reload failed, keeping the previous servers\n");
+					audit_reload("dns", 0, 0);
+				}
+				else {
+					printf("dns: reloaded, %d domains\n", nn);
+					audit_reload("dns", 1, nn);
 				}
 			}
 

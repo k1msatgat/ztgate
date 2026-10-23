@@ -80,6 +80,11 @@ run)
 		args+=(-L "$SESSION_LIFETIME")
 	fi
 
+	# 내부 DNS 는 dns.conf 가 있을 때만 내려 준다 (README 의 "내부 DNS").
+	if [ -f "$ETC/dns.conf" ]; then
+		args+=(-d "$ETC/dns.conf")
+	fi
+
 	# 사용자 로그인은 IdP 설정이 있을 때만 받는다 (README 의 "사용자 로그인").
 	if [ -f "$ETC/idp.conf" ]; then
 		args+=(-u "$ETC/idp.conf")

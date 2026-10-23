@@ -922,6 +922,47 @@ def config_tests(srv, acl_path, dev_path):
     srv.reload()
 
 
+def dns_tests(path):
+    """-d 로 준 내부 DNS 가 터널 설정에 실려 가는지 (v7). 이름은 소문자로, 끝의 점 없이."""
+    fd, dns_path = tempfile.mkstemp(prefix="dns.", suffix=".conf")
+    with os.fdopen(fd, "w") as f:
+        f.write("# internal dns\nserver 10.0.0.53\nserver 10.0.0.54\ndomain Corp.Example.\ndomain lab.internal\n")
+    srv = Server(path, opts=["-d", dns_path])
+    c = Client()
+    try:
+        idx = session(c)
+        expect("dns: the handshake carries the internal dns",
+               c.config, "10.0.0.3/24 mtu 1400 routes - dns corp.example,lab.internal@10.0.0.53,10.0.0.54")
+
+        def refreshed():
+            c.send(keepalive(idx))
+            r = c.recv()
+            return config(r[2]) if r and r[0] == KEEPALIVE else describe(r)
+
+        with open(dns_path, "w") as f:
+            f.write("server 10.0.0.53\ndomain corp.example\n")
+        srv.reload()
+        expect("dns: a reload reaches the open session", refreshed(), "10.0.0.3/24 mtu 1400 routes - dns corp.example@10.0.0.53")
+
+        for bad in ("server 10.0.0.53\ndomain bad_name.example\n",     # _ 는 받지 않는다
+                    "domain corp.example\n",                           # 물을 서버가 없다
+                    "server 10.0.0.53\nserver 10.0.0.54\nserver 10.0.0.55\ndomain a\n"):
+            with open(dns_path, "w") as f:
+                f.write(bad)
+            srv.reload()
+        expect("dns: broken files are refused, the last good one stays",
+               (srv.text().count("dns: reload failed"), refreshed()), (3, "10.0.0.3/24 mtu 1400 routes - dns corp.example@10.0.0.53"))
+
+        with open(dns_path, "w") as f:
+            f.write("server 10.0.0.53\n")
+        srv.reload()
+        expect("dns: a server without domains is not pushed", refreshed(), "10.0.0.3/24 mtu 1400 routes -")
+    finally:
+        srv.stop()
+        os.unlink(dns_path)
+    return srv
+
+
 def status_tests(srv):
     """상태 소켓이 서버의 피어 테이블과 판정 횟수를 그대로 보여 주는지. ACL 을 켠 서버로 돌린다."""
     c = Client()
@@ -1710,6 +1751,7 @@ def main():
         write_devices(path, LINE1, LINE2)
         logs.append(shutdown_tests(path).text())
         logs.append(rekey_tests(path).text())
+        logs.append(dns_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)
