@@ -132,6 +132,11 @@ j["preferred_username"] = "admin"
 print(h + "." + base64.urlsafe_b64encode(json.dumps(j).encode()).rstrip(b"=").decode() + "." + s)')
 check "keycloak: alice's token with the user changed" "$(echo "$TAMPERED" | verify)" "rejected: untrusted"
 
+# JWKS 갱신 도구가 같은 키를 받아 오는가. 파일을 비워 두고 받게 한 뒤 그 파일로 alice 의 토큰을 다시 본다.
+echo '{"keys": []}' > "$WORK/jwks.json"
+python3 "$ROOT_DIR/tools/idp/ztgate_jwks.py" "$WORK/idp.conf" --reload none > /dev/null
+check "keycloak: tools/idp/ztgate_jwks.py fetches the signing keys" "$(echo "$TOK" | verify)" "ok user=alice groups=ops"
+
 # ---- 6. 기기 인가의 첫 단계 -------------------------------------------------------------
 DEVICE=$(json 'j.get("device_authorization_endpoint", "")' < "$WORK/discovery.json")
 check "keycloak: discovery offers device authorization" "$([ -n "$DEVICE" ] && echo yes || echo no)" yes

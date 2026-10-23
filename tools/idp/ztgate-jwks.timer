@@ -1,0 +1,11 @@
+# IdP 가 서명 키를 바꾸면 새 키는 보통 미리 묶음에 올라온다. 15분마다 받으면 그 사이에 따라간다.
+[Unit]
+Description=Refresh the ztgate IdP signing keys every 15 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=15min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

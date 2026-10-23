@@ -1,0 +1,20 @@
+# IdP 의 공개키 묶음을 받아 /etc/ztgate/jwks.json 을 갈아 끼운다 (tools/idp/ztgate_jwks.py).
+# ztgate-jwks.timer 가 15분마다 띄운다.
+#
+#   sudo install -m 755 tools/idp/ztgate_jwks.py /opt/ztgate/tools/ztgate_jwks.py
+#   sudo install -m 644 tools/idp/ztgate-jwks.service tools/idp/ztgate-jwks.timer /etc/systemd/system/
+#   sudo systemctl enable --now ztgate-jwks.timer
+[Unit]
+Description=Refresh the ztgate IdP signing keys (JWKS)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/ztgate/idp.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/ztgate/tools/ztgate_jwks.py /etc/ztgate/idp.conf --reload systemd
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ReadWritePaths=/etc/ztgate

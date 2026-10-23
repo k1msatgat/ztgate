@@ -1374,6 +1374,59 @@ CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex
 RESOURCE = socket.inet_aton("198.51.100.10")
 
 
+def jwks_refresh_tests(idp_dir):
+    """tools/idp/ztgate_jwks.py 가 IdP 의 설정 문서에서 jwks_uri 를 찾아 묶음을 받아 갈아 끼우는가.
+    받지 못하거나 서명 키가 없는 묶음이면 지금 파일을 그대로 두는가."""
+    tool = os.path.join(ROOT, "tools", "idp", "ztgate_jwks.py")
+    mock = os.path.join(ROOT, "tools", "idp", "mock_oidc.py")
+    port = 18450
+    issuer = "http://127.0.0.1:%d" % port
+    work = tempfile.mkdtemp(prefix="jwks.")
+    conf, path = os.path.join(work, "idp.conf"), os.path.join(work, "jwks.json")
+    with open(conf, "w") as f:
+        f.write("issuer %s\naudience %s\njwks jwks.json\n" % (issuer, mint.AUDIENCE))
+    stale = {"keys": [{"kty": "RSA", "kid": "old-1", "n": "AQAB", "e": "AQAB"}]}
+    with open(path, "w") as f:
+        json.dump(stale, f)
+
+    def run():
+        p = subprocess.run([sys.executable, tool, conf, "--reload", "none"], capture_output=True, text=True)
+        with open(path) as f:
+            return p.returncode, (p.stdout + p.stderr).strip(), json.load(f)
+
+    code, out, now = run()
+    expect("jwks refresh: without the IdP the file stays", (code, now == stale), (1, True))
+
+    srv = subprocess.Popen([sys.executable, mock, idp_dir, str(port), "alice", "--issuer", issuer],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(0.8)
+        with open(os.path.join(idp_dir, "jwks.json")) as f:
+            want = json.load(f)
+        code, out, now = run()
+        expect("jwks refresh: a changed key set is fetched and installed", (code, now == want, "updated" in out), (0, True, True))
+        expect("jwks refresh: ...readable by the server (mode 644)", "%03o" % (os.stat(path).st_mode & 0o777), "644")
+        code, out, now = run()
+        expect("jwks refresh: the same set again changes nothing", (code, "unchanged" in out), (0, True))
+    finally:
+        srv.terminate()
+        srv.wait()
+
+    # 설정 문서의 issuer 가 다르면 (다른 IdP 를 가리키고 있다) 받지 않는다.
+    srv = subprocess.Popen([sys.executable, mock, idp_dir, str(port), "alice", "--issuer", "https://someone.else"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(0.8)
+        with open(path, "w") as f:
+            json.dump(stale, f)
+        code, out, now = run()
+        expect("jwks refresh: a discovery document for another issuer is refused", (code, now == stale), (1, True))
+    finally:
+        srv.terminate()
+        srv.wait()
+        subprocess.run(["rm", "-rf", work])
+
+
 def metrics_tests(srv):
     """tools/metrics/ztgate_exporter.py 가 상태 소켓을 Prometheus 지표로 내주는가."""
     import urllib.request
@@ -1874,6 +1927,7 @@ def main():
         srv_idp = Server(path, acl_path, opts=["-u", os.path.join(idp_dir, "idp.conf")])
         try:
             login_tests(srv_idp, acl_path, idp_dir)
+            jwks_refresh_tests(idp_dir)
         finally:
             srv_idp.stop()
             logs.append(srv_idp.text())
