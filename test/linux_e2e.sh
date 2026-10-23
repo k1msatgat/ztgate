@@ -347,6 +347,8 @@ check "connector: the ACL still applies (udp/53 to $RESOURCE is not allowed)" \
 	wait_for 3 sh -c "[ \$(grep -c '^\[deny\]' '$SLOG') -gt $denied_before ]"
 
 kill "$CON_PID"; wait "$CON_PID" 2>/dev/null; CON_PID=
+check "connector: the server drops its session right away (DISCONNECT)" \
+	wait_for 2 log_has "$SLOG" "10.0.0.9 closed its session"
 check "connector: its nft table is removed when it stops" \
 	sh -c "! nsenter -t $NS2_PID -n --preserve-credentials nft list table ip ztgate_connector"
 check "connector: with the connector gone, its network is unreachable again" ping_fails "$RESOURCE"

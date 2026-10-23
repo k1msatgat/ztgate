@@ -449,6 +449,18 @@ int session_send_keepalive(vpn_session_t *s, const posture_report_t *posture)
 	return session_send(s, MSG_TYPE_KEEPALIVE, packet, sizeof(packet), sizeof(posture_report_t));
 }
 
+int session_send_disconnect(vpn_session_t *s, uint8_t reason)
+{
+	uint8_t packet[PKT_OVERHEAD + 1];
+
+	if (s->idx == 0) {
+		return 0;
+	}
+	packet[PKT_HDR_LEN] = reason;
+
+	return session_send(s, MSG_TYPE_DISCONNECT, packet, sizeof(packet), 1);
+}
+
 void session_close(vpn_session_t *s)
 {
 	secure_session_close(&s->secure);

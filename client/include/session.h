@@ -57,6 +57,10 @@ int session_send_keepalive(vpn_session_t *s, const posture_report_t *posture);
  * tag 가 붙을 자리(AEAD_TAG_LEN)가 있어야 한다. 성공 0, 실패 -1. */
 int session_send(vpn_session_t *s, uint8_t type, uint8_t *pkt, size_t cap, size_t len);
 
+/* DISCONNECT: 이 세션을 끝낸다고 서버에 알린다 (disconnect_reason_t). 한 번 보내고 답을
+ * 기다리지 않는다. 열린 세션이 없으면 아무것도 하지 않는다. 성공 0, 실패 -1. */
+int session_send_disconnect(vpn_session_t *s, uint8_t reason);
+
 void session_close(vpn_session_t *s);
 
 const char *session_deny_name(uint8_t reason);

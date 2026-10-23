@@ -55,6 +55,7 @@ typedef struct client {
 	uint32_t bcast;			/* 터널 대역의 브로드캐스트 주소 */
 	int denied;			/* 서버가 세션을 거절했다. 터널은 두고 패킷만 막는다 */
 	int readdress;			/* 서버가 다른 터널 주소를 주었다. 다시 핸드셰이크한다 */
+	int server_closed;		/* 서버가 DISCONNECT 로 세션을 끝냈다. 다시 핸드셰이크한다 */
 
 	/* 사용자 로그인 (-t). 토큰 파일이 바뀌거나 세션을 새로 열 때마다 보낸다. */
 	const char *token_path;
@@ -407,6 +408,13 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 		case MSG_TYPE_LOGIN:
 			login_response(c, ip, n);
 			return 0;
+		case MSG_TYPE_DISCONNECT:
+			/* 서버가 끝난다. 다시 시작하는 중일 수 있으니 30초를 기다리지 않고 다음 틱에
+			 * 다시 핸드셰이크한다. 거절과 달리 포스처를 바꿀 일이 없다. */
+			printf("[HS] server closed the session (%s), reconnecting\n",
+					n >= 1 && ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" : "closed");
+			c->server_closed = 1;
+			return 0;
 		case MSG_TYPE_DATA:
 			break;
 		default:
@@ -546,10 +554,13 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 		 *    기다리지 않고 바로 다시 물어본다.
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다 다시
 		 * 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
-		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress ||
+		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress || c->server_closed ||
 				(c->denied && changed)) {
 			if (c->denied) {
 				printf("[HS] retry after deny\n");
+			}
+			else if (c->server_closed) {
+				printf("[HS] re-handshake after the server closed the session\n");
 			}
 			else if (c->readdress) {
 				printf("[HS] re-handshake for the new tunnel address\n");
@@ -560,6 +571,7 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 
 			/* 실패해도 여기서 다시 묻지 않는다. 그대로 두면 매 틱마다 핸드셰이크한다. */
 			c->readdress = 0;
+			c->server_closed = 0;
 			switch (handshake(c)) {
 				case HS_OK:
 					if (apply_session_config(c) < 0) {
@@ -629,6 +641,11 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 		}
 	}
 	ret = 0;
+
+	/* 끝난다고 알린다. 서버는 이 세션을 만료(60초)까지 붙잡아 두지 않는다. */
+	if (session_send_disconnect(&c->session, DISCONNECT_CLIENT_EXIT) == 0 && c->session.idx != 0) {
+		printf("[HS] session closed\n");
+	}
 
 out:
 	connector_down();
