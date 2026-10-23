@@ -37,7 +37,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "server", "bin", "vpn_server")
 PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
-VERSION = 6
+VERSION = 7
 
 REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
 DISCONNECT_CLIENT_EXIT, DISCONNECT_SERVER_SHUTDOWN = 1, 2
@@ -218,10 +218,28 @@ def config(raw):
     if raw is None or len(raw) < 8:
         return "malformed"
     tun_ip, prefix, count, mtu = struct.unpack("!4sBBH", raw[:8])
-    if len(raw) != 8 + count * 5:
+    end = 8 + count * 5
+    if len(raw) < end + 2:
         return "malformed"
-    routes = ["%s/%d" % (socket.inet_ntoa(raw[o:o + 4]), raw[o + 4]) for o in range(8, len(raw), 5)]
-    return "%s/%d mtu %d routes %s" % (socket.inet_ntoa(tun_ip), prefix, mtu, ",".join(routes) or "-")
+    routes = ["%s/%d" % (socket.inet_ntoa(raw[o:o + 4]), raw[o + 4]) for o in range(8, end, 5)]
+    text = "%s/%d mtu %d routes %s" % (socket.inet_ntoa(tun_ip), prefix, mtu, ",".join(routes) or "-")
+
+    # v7: n_dns | n_domains | dns x 4 | domains x (len | 이름). 내부 DNS 가 있을 때만 뒤에 붙여 적는다.
+    n_dns, n_dom = raw[end], raw[end + 1]
+    o = end + 2
+    servers = [socket.inet_ntoa(raw[o + 4 * i:o + 4 * i + 4]) for i in range(n_dns)]
+    o += 4 * n_dns
+    names = []
+    for _ in range(n_dom):
+        if o >= len(raw):
+            return "malformed"
+        names.append(raw[o + 1:o + 1 + raw[o]].decode())
+        o += 1 + raw[o]
+    if o != len(raw):
+        return "malformed"
+    if names:
+        text += " dns %s@%s" % (",".join(names), ",".join(servers))
+    return text
 
 
 def nonce(counter):

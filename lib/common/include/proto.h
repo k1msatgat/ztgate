@@ -14,7 +14,7 @@ extern "C" {
 #define PROTO_STATIC_ASSERT _Static_assert
 #endif
 
-#define PROTOCOL_VERSION 6 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈 */
+#define PROTOCOL_VERSION 7 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS */
 
 #define TUN_MTU		1400
 #define BUF_SIZE	2048
@@ -270,6 +270,13 @@ int posture_decode(const unsigned char *buf, size_t len, struct posture_report *
 /* 터널 설정. 서버가 정해서 내려 주고 클라이언트는 받은 대로 맞춘다.
  *
  *   tun_ip(4) | prefix_len(1) | n_routes(1) | mtu(2) | n_routes x ( addr(4) | prefix_len(1) )
+ *   | n_dns(1) | n_domains(1) | n_dns x addr(4) | n_domains x ( len(1) | 이름(len) )
+ *
+ * 뒤의 둘(v7)은 내부 DNS 다. 내부 자원을 IP 가 아니라 이름(intranet.corp.example)으로 쓰려면
+ * 그 이름을 아는 DNS 에 물어야 하는데, PC 가 원래 쓰는 DNS(공유기, 통신사)는 모른다. 모든
+ * 질의를 내부 DNS 로 보내면 회사와 무관한 이름까지 회사로 가고 내부 DNS 가 죽으면 인터넷도
+ * 안 된다. 그래서 domains 에 적은 이름(과 그 아래 이름)만 dns 로 묻는다 — 분할 DNS.
+ * Windows 는 NRPT, Linux 는 systemd-resolved 의 인터페이스별 도메인으로 건다.
  *
  * 전에는 클라이언트가 터널 IP 를 직접 적어야 했다. 서버가 이미 아는 값을 사용자가 한 번
  * 더 똑같이 입력하는 것이고, 틀리면 거절당할 뿐이다. 그리고 "무엇을 터널로 보낼
@@ -282,6 +289,9 @@ int posture_decode(const unsigned char *buf, size_t len, struct posture_report *
  *
  * 주소는 네트워크 바이트 순서 그대로 둔다 (in_addr.s_addr 와 같은 모양). */
 #define NET_MAX_ROUTES	32
+#define NET_MAX_DNS	2
+#define NET_MAX_DOMAINS	4
+#define NET_DOMAIN_MAX	100	/* 이름 하나의 글자 수 (NUL 빼고) */
 
 typedef struct net_route {
 	uint32_t addr;		/* 대역의 주소 */
@@ -294,11 +304,18 @@ typedef struct net_config {
 	uint8_t n_routes;
 	uint16_t mtu;
 	net_route_t routes[NET_MAX_ROUTES];	/* 터널 대역 말고 터널로 보낼 대역 */
+
+	uint8_t n_dns;
+	uint8_t n_domains;
+	uint32_t dns[NET_MAX_DNS];		/* 내부 DNS 서버 */
+	char domains[NET_MAX_DOMAINS][NET_DOMAIN_MAX + 1];	/* 그 DNS 에 물을 이름. 소문자, 앞뒤 점 없음 */
 } net_config_t;
 
 #define NET_CONFIG_HEAD_LEN	8
 #define NET_ROUTE_LEN		5
-#define NET_CONFIG_MAX_LEN	(NET_CONFIG_HEAD_LEN + NET_MAX_ROUTES * NET_ROUTE_LEN)
+#define NET_DNS_HEAD_LEN	2
+#define NET_CONFIG_MAX_LEN	(NET_CONFIG_HEAD_LEN + NET_MAX_ROUTES * NET_ROUTE_LEN + NET_DNS_HEAD_LEN + \
+				 NET_MAX_DNS * 4 + NET_MAX_DOMAINS * (1 + NET_DOMAIN_MAX))
 
 /* 쓴 길이를 돌려준다. 자리가 모자라거나 값이 범위를 벗어나면 -1. */
 int net_config_encode(unsigned char *buf, size_t cap, const net_config_t *c);
@@ -308,6 +325,12 @@ int net_config_decode(const unsigned char *buf, size_t len, net_config_t *c);
 
 /* 내용이 같으면 1. 구조체의 빈 자리는 보지 않는다. */
 int net_config_equal(const net_config_t *a, const net_config_t *b);
+
+/* DNS 부분(dns, domains)만 같으면 1. 클라이언트가 DNS 설정을 다시 걸지 볼 때 쓴다. */
+int net_dns_equal(const net_config_t *a, const net_config_t *b);
+
+/* DNS 이름으로 받을 수 있으면 1 (소문자, 숫자, -, 점. 앞뒤 점과 이어진 점은 안 된다). */
+int net_domain_ok(const char *name);
 
 #ifdef __cplusplus
 }
