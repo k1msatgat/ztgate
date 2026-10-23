@@ -905,7 +905,7 @@ sendto(buf, n + 32)     └─────────────────�
 ### 운영
 
 - **설정은 텍스트 파일입니다.** 관리 콘솔이나 데이터베이스는 없고, 파일을 고친 뒤 `SIGHUP`(reload)으로 반영합니다. 관리 헬퍼와 MCP 도구가 그 파일을 대신 고칩니다.
-- **서버와 관리 도구가 같은 순간에 기기 목록을 고치는 경우를 잠그지 않았습니다.**
+- **기기 목록과 등록 대기 목록은 서버와 관리 도구가 잠금 파일(`/etc/ztgate/.ztgate.lock`, flock)로 번갈아 고칩니다.** 손으로 고칠 때는 이 잠금을 잡지 않으므로, 등록 코드로 기기가 올라오는 순간과 겹치면 한쪽이 고친 것이 사라질 수 있습니다. 손으로 고칠 때는 `flock /etc/ztgate/.ztgate.lock -c "vi /etc/ztgate/devices.conf"` 처럼 잡고 고칩니다.
 - **서버는 한 대입니다.** 이중화나 장애 넘김이 없고, 서버를 다시 시작하면 모든 세션이 다시 핸드셰이크합니다.
 - **배포 패키지가 없습니다.** 소스에서 빌드하고 설치 스크립트나 Docker 이미지로 올립니다. 서명된 RPM / DEB / MSI 와 자동 업데이트는 없습니다.
 
@@ -1114,5 +1114,6 @@ ztgate/
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
 | 로그 등급과 속도 제한 — `server.c` 의 `log_ok` / `-v`, `bench.sh` 의 quiet 모드, 시험. 쿠키보다 로그를 먼저 막는 판단(비싼 일은 HMAC 뒤에만 한다)은 AI가 제안 |
+| 서버와 관리 도구 사이의 잠금 — `enroll.c` 의 `config_lock` / `enroll_file_drop` 과 잠근 뒤의 겹침 검사, `ctl.cjs` 의 `withConfigLock`(flock(1)), 시험 |
 
 </details>
