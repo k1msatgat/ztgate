@@ -1008,13 +1008,236 @@ static int verify_token(const char *idp_file)
 	return 0;
 }
 
+/* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. */
+static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
+		const struct sockaddr_in *src_in, socklen_t srclen)
+{
+	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	struct sockaddr_in src = *src_in;
+	msg_header_t msg_header;
+	const device_t *conn_dev;
+	struct in_addr inner, inner_dst;
+	uint64_t counter;
+	peer_t *peer;
+	uint8_t *ip;
+	int32_t off;
+	int verdict;
+
+	off = msg_decode(packet, (size_t)n, &msg_header);
+	if (off < 0 || msg_header.version != PROTOCOL_VERSION) {
+		LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
+		return;
+	}
+
+	if (msg_header.type == MSG_TYPE_REQ_HANDSHAKE) {
+		handle_request(sock, packet, n, &src, srclen);
+		return;
+	}
+	if (msg_header.type == MSG_TYPE_AUTH) {
+		handle_auth(sock, packet, n, &src, srclen);
+		return;
+	}
+
+	peer = peer_find_idx(msg_header.session_idx);
+	if (peer == NULL) {
+		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", msg_header.session_idx);
+		stats.unknown_session++;
+		return;
+	}
+
+	/* 세션 번호는 와이어에 그대로 보인다. 그 번호를 댔다고 그 기기인 것은
+	 * 아니다. 세션 키로 열리는 패킷만 그 기기가 보낸 것이고, 열리지 않는
+	 * 패킷은 세션의 어떤 상태도 바꾸지 못한 채 여기서 버려진다. */
+	n = secure_open(&peer->secure, packet, (size_t)n, &counter);
+	if (n == SECURE_REPLAY) {
+		LOG_LIMITED(LOG_DROP, "[drop] counter already seen idx=%08x\n", peer->session_idx);
+		stats.replayed++;
+		return;
+	}
+	if (n < 0) {
+		LOG_LIMITED(LOG_DROP, "[drop] tag does not match idx=%08x\n", peer->session_idx);
+		stats.bad_tag++;
+		return;
+	}
+
+	ip = packet + PKT_HDR_LEN;
+
+	/* 등록용 세션은 등록 말고는 아무것도 하지 못한다. 코드만 가진 쪽이
+	 * 그 세션으로 터널에 패킷을 넣을 수 있으면, 등록 코드가 곧 접속
+	 * 권한이 된다. */
+	if (peer->enroll) {
+		if (msg_header.type == MSG_TYPE_ENROLL) {
+			handle_enroll(sock, peer, ip, n, &src, srclen);
+		}
+		else {
+			LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
+					msg_header.type, peer->session_idx);
+		}
+		return;
+	}
+
+	switch (msg_header.type) {
+		case MSG_TYPE_DATA:
+			break;
+		case MSG_TYPE_KEEPALIVE:
+			handle_keepalive(sock, peer, ip, n, counter, &src, srclen);
+			return;
+		case MSG_TYPE_LOGIN:
+			handle_login(sock, peer, ip, n, &src, srclen);
+			return;
+		case MSG_TYPE_DISCONNECT:
+			printf("[peer] %s closed its session idx=%08x\n",
+					ip_str(peer->inner, ib), peer->session_idx);
+			peer_drop(peer, "closed");
+			return;
+		default:
+			LOG_LIMITED(LOG_DROP, "[drop] unknown type %u\n", msg_header.type);
+			return;
+	}
+
+	if (n < IP_MIN_HDR || IP_VERSION(ip) != 4){
+		return;
+	}
+
+	/* 커넥터가 보낸 내부망의 답. 출발지는 커넥터의 터널 주소가 아니다. */
+	conn_dev = device_find(peer->device_id);
+	if (conn_dev != NULL && conn_dev->n_connector != 0) {
+		if (relay_from_connector(sock, peer, conn_dev, packet, cap, n) == 0) {
+			peer_touch(peer, &src, srclen);
+		}
+		return;
+	}
+
+	memcpy(&inner, ip + IP_SRC_OFF, IP_ADDR_LEN);
+
+	if (inner.s_addr != peer->inner.s_addr) {
+		LOG_LIMITED(LOG_DROP, "[drop] spoofed src %s for idx %08x\n", ip_str(inner, ib), peer->session_idx);
+		stats.spoofed_src++;
+		return;
+	}
+
+	/* 규칙 파일 없이 뜬 서버는 터널 대역 안까지만 통과시킨다. 전에는 "ACL 이
+	 * 없으면 전부 허용"이었는데, 그때는 터널 대역 밖으로 가는 길 자체가
+	 * 없어서 결과가 같았다. 이제 서버가 뒤쪽 네트워크로 전달할 수 있으므로,
+	 * 규칙을 적지 않았다는 이유로 그 네트워크 전체가 열려서는 안 된다.
+	 * 터널 밖으로 내보낼 곳은 규칙으로 적어서 연다. */
+	memcpy(&inner_dst, ip + IP_DST_OFF, IP_ADDR_LEN);
+	if (acl_enabled) {
+		verdict = acl_check(ip, n, &peer->posture, peer->logged_in ? &peer->user : NULL,
+				conn_dev != NULL ? &conn_dev->tags : NULL);
+	}
+	else {
+		verdict = tun_subnet_of(inner_dst).s_addr == tun_subnet_of(peer->inner).s_addr
+			? ACL_ALLOW : ACL_DENY;
+	}
+
+	if (verdict != ACL_ALLOW) {
+		stats.acl_denied++;
+		peer->acl_denied++;
+		if (verdict == ACL_DENY_POSTURE) {
+			stats.acl_denied_posture++;
+		}
+		if (verdict == ACL_DENY_USER) {
+			stats.acl_denied_user++;
+		}
+		if (log_ok(LOG_DENY)) {
+			printf("[deny] %s -> %s proto=%d (%d bytes)",
+					ip_str(inner, ib), ip_str(inner_dst, ob),
+					ip[IP_PROTO_OFF], n);
+			if (!acl_enabled) {
+				printf(" outside the tunnel subnet (no acl file)");
+			}
+			if (verdict == ACL_DENY_POSTURE) {
+				printf(" posture below the rule (build=%u firewall=%u antivirus=%u)",
+						peer->posture.os_build, peer->posture.firewall,
+						peer->posture.antivirus);
+			}
+			if (verdict == ACL_DENY_USER) {
+				printf(" rule is for other users (logged in: %s)",
+						peer->logged_in ? peer->user.name : "nobody");
+			}
+			printf("\n");
+		}
+		audit_access(peer, ip, n, 0, !acl_enabled ? "no_acl_file" :
+				verdict == ACL_DENY_POSTURE ? "posture" :
+				verdict == ACL_DENY_USER ? "user" : "acl");
+		send_prohibited(sock, peer, ip, n);
+		return;
+	}
+
+	audit_access(peer, ip, n, 1, NULL);
+	peer_touch(peer, &src, srclen);
+	peer->rx_packets++;
+	peer->rx_bytes += (uint64_t)n;
+
+	conn_dev = device_connector_for(inner_dst);
+	if (conn_dev != NULL) {
+		LOG_VERBOSE("[udp->connector] %d bytes %s -> %s\n", n, ip_str(inner, ib),
+				ip_str(inner_dst, ob));
+		relay_to_connector(sock, conn_dev, packet, cap, n);
+		return;
+	}
+
+	LOG_VERBOSE("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
+			n, ip_str(src.sin_addr, ob), ntohs(src.sin_port),
+			ip_str(inner, ib), ip[IP_IHL(ip)]);
+
+	if (write(tun_fd, ip, n) < 0) {
+		perror("write tun");
+	}
+}
+
+/* tun 에서 읽은 패킷 하나. packet + PKT_HDR_LEN 에 n 바이트, cap 은 packet 의 크기다. */
+static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
+{
+	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	struct in_addr inner;
+	peer_t *peer;
+	uint8_t *ip;
+	ssize_t sent;
+
+	ip = packet + PKT_HDR_LEN;
+	if (n < IP_MIN_HDR || IP_VERSION(ip) != 4) {
+		LOG_LIMITED(LOG_DROP, "[skip] non-IPv4 (ver=%d, %d bytes)\n",
+				IP_VERSION(ip), n);
+		return;
+	}
+
+	memcpy(&inner, ip + IP_DST_OFF, IP_ADDR_LEN);
+
+	peer = peer_lookup(inner);
+	if (peer == NULL || peer->enroll) {
+		LOG_LIMITED(LOG_DROP, "[drop] no peer for %s\n", ip_str(inner, ib));
+		return;
+	}
+
+	LOG_VERBOSE("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
+			n, ip_str(inner, ib),
+			ip_str(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
+			ip[IP_IHL(ip)]);
+
+	peer->tx_packets++;
+	peer->tx_bytes += (uint64_t)n;
+
+	n = secure_seal(&peer->secure, MSG_TYPE_DATA, peer->session_idx,
+			packet, cap, (size_t)n);
+	if (n < 0) {
+		LOG_LIMITED(LOG_DROP, "[drop] seal failed for %s\n", ip_str(inner, ib));
+		return;
+	}
+
+	sent = sendto(sock, packet, n, 0,
+			(struct sockaddr *)&peer->outer, peer->outer_len);
+	if (sent < 0) {
+		perror("sendto");
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	char ifname[IFNAMSIZ];
-	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
-	int tun_fd, sock, n, sent, port;
+	int tun_fd, sock, n, port;
 	int epfd = -1, nev, i;
-	int verdict;
 	int opt;
 	int status_fd = -1;
 	const char *status_path = NULL;
@@ -1027,15 +1250,7 @@ int main(int argc, char *argv[])
 	struct sockaddr_in local_addr;
 	struct sockaddr_in src;
 	socklen_t srclen;
-	struct in_addr inner;
-	peer_t *peer;
-	struct in_addr inner_dst;
-	const device_t *conn_dev;
 	uint8_t packet[BUF_SIZE];
-	uint8_t *ip;
-	msg_header_t msg_header;
-	uint64_t counter;
-	int32_t off;
 	char *end;
 	int ret = 1;
 	int fd = 0;
@@ -1393,212 +1608,14 @@ int main(int argc, char *argv[])
 				if (n < 0) {
 					perror("recvfrom"); goto out;
 				}
-
-
-				off = msg_decode(packet, (size_t)n, &msg_header);
-				if (off < 0 || msg_header.version != PROTOCOL_VERSION) {
-					LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
-					continue;
-				}
-
-				if (msg_header.type == MSG_TYPE_REQ_HANDSHAKE) {
-					handle_request(sock, packet, n, &src, srclen);
-					continue;
-				}
-				if (msg_header.type == MSG_TYPE_AUTH) {
-					handle_auth(sock, packet, n, &src, srclen);
-					continue;
-				}
-
-				peer = peer_find_idx(msg_header.session_idx);
-				if (peer == NULL) {
-					LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", msg_header.session_idx);
-					stats.unknown_session++;
-					continue;
-				}
-
-				/* 세션 번호는 와이어에 그대로 보인다. 그 번호를 댔다고 그 기기인 것은
-				 * 아니다. 세션 키로 열리는 패킷만 그 기기가 보낸 것이고, 열리지 않는
-				 * 패킷은 세션의 어떤 상태도 바꾸지 못한 채 여기서 버려진다. */
-				n = secure_open(&peer->secure, packet, (size_t)n, &counter);
-				if (n == SECURE_REPLAY) {
-					LOG_LIMITED(LOG_DROP, "[drop] counter already seen idx=%08x\n", peer->session_idx);
-					stats.replayed++;
-					continue;
-				}
-				if (n < 0) {
-					LOG_LIMITED(LOG_DROP, "[drop] tag does not match idx=%08x\n", peer->session_idx);
-					stats.bad_tag++;
-					continue;
-				}
-
-				ip = packet + PKT_HDR_LEN;
-
-				/* 등록용 세션은 등록 말고는 아무것도 하지 못한다. 코드만 가진 쪽이
-				 * 그 세션으로 터널에 패킷을 넣을 수 있으면, 등록 코드가 곧 접속
-				 * 권한이 된다. */
-				if (peer->enroll) {
-					if (msg_header.type == MSG_TYPE_ENROLL) {
-						handle_enroll(sock, peer, ip, n, &src, srclen);
-					}
-					else {
-						LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
-								msg_header.type, peer->session_idx);
-					}
-					continue;
-				}
-
-				switch (msg_header.type) {
-					case MSG_TYPE_DATA:
-						break;
-					case MSG_TYPE_KEEPALIVE:
-						handle_keepalive(sock, peer, ip, n, counter, &src, srclen);
-						continue;
-					case MSG_TYPE_LOGIN:
-						handle_login(sock, peer, ip, n, &src, srclen);
-						continue;
-					case MSG_TYPE_DISCONNECT:
-						printf("[peer] %s closed its session idx=%08x\n",
-								ip_str(peer->inner, ib), peer->session_idx);
-						peer_drop(peer, "closed");
-						continue;
-					default:
-						LOG_LIMITED(LOG_DROP, "[drop] unknown type %u\n", msg_header.type);
-						continue;
-				}
-
-				if (n < IP_MIN_HDR || IP_VERSION(ip) != 4){
-					continue;
-				}
-
-				/* 커넥터가 보낸 내부망의 답. 출발지는 커넥터의 터널 주소가 아니다. */
-				conn_dev = device_find(peer->device_id);
-				if (conn_dev != NULL && conn_dev->n_connector != 0) {
-					if (relay_from_connector(sock, peer, conn_dev, packet, sizeof(packet), n) == 0) {
-						peer_touch(peer, &src, srclen);
-					}
-					continue;
-				}
-
-				memcpy(&inner, ip + IP_SRC_OFF, IP_ADDR_LEN);
-
-				if (inner.s_addr != peer->inner.s_addr) {
-					LOG_LIMITED(LOG_DROP, "[drop] spoofed src %s for idx %08x\n", ip_str(inner, ib), peer->session_idx);
-					stats.spoofed_src++;
-					continue;
-				}
-
-				/* 규칙 파일 없이 뜬 서버는 터널 대역 안까지만 통과시킨다. 전에는 "ACL 이
-				 * 없으면 전부 허용"이었는데, 그때는 터널 대역 밖으로 가는 길 자체가
-				 * 없어서 결과가 같았다. 이제 서버가 뒤쪽 네트워크로 전달할 수 있으므로,
-				 * 규칙을 적지 않았다는 이유로 그 네트워크 전체가 열려서는 안 된다.
-				 * 터널 밖으로 내보낼 곳은 규칙으로 적어서 연다. */
-				memcpy(&inner_dst, ip + IP_DST_OFF, IP_ADDR_LEN);
-				if (acl_enabled) {
-					verdict = acl_check(ip, n, &peer->posture, peer->logged_in ? &peer->user : NULL,
-							conn_dev != NULL ? &conn_dev->tags : NULL);
-				}
-				else {
-					verdict = tun_subnet_of(inner_dst).s_addr == tun_subnet_of(peer->inner).s_addr
-						? ACL_ALLOW : ACL_DENY;
-				}
-
-				if (verdict != ACL_ALLOW) {
-					stats.acl_denied++;
-					peer->acl_denied++;
-					if (verdict == ACL_DENY_POSTURE) {
-						stats.acl_denied_posture++;
-					}
-					if (verdict == ACL_DENY_USER) {
-						stats.acl_denied_user++;
-					}
-					if (log_ok(LOG_DENY)) {
-						printf("[deny] %s -> %s proto=%d (%d bytes)",
-								ip_str(inner, ib), ip_str(inner_dst, ob),
-								ip[IP_PROTO_OFF], n);
-						if (!acl_enabled) {
-							printf(" outside the tunnel subnet (no acl file)");
-						}
-						if (verdict == ACL_DENY_POSTURE) {
-							printf(" posture below the rule (build=%u firewall=%u antivirus=%u)",
-									peer->posture.os_build, peer->posture.firewall,
-									peer->posture.antivirus);
-						}
-						if (verdict == ACL_DENY_USER) {
-							printf(" rule is for other users (logged in: %s)",
-									peer->logged_in ? peer->user.name : "nobody");
-						}
-						printf("\n");
-					}
-					audit_access(peer, ip, n, 0, !acl_enabled ? "no_acl_file" :
-							verdict == ACL_DENY_POSTURE ? "posture" :
-							verdict == ACL_DENY_USER ? "user" : "acl");
-					send_prohibited(sock, peer, ip, n);
-					continue;
-				}
-
-				audit_access(peer, ip, n, 1, NULL);
-				peer_touch(peer, &src, srclen);
-				peer->rx_packets++;
-				peer->rx_bytes += (uint64_t)n;
-
-				conn_dev = device_connector_for(inner_dst);
-				if (conn_dev != NULL) {
-					LOG_VERBOSE("[udp->connector] %d bytes %s -> %s\n", n, ip_str(inner, ib),
-							ip_str(inner_dst, ob));
-					relay_to_connector(sock, conn_dev, packet, sizeof(packet), n);
-					continue;
-				}
-
-				LOG_VERBOSE("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
-						n, ip_str(src.sin_addr, ob), ntohs(src.sin_port),
-						ip_str(inner, ib), ip[IP_IHL(ip)]);
-
-				if (write(tun_fd, ip, n) < 0) {
-					perror("write tun");
-				}
+				udp_in(sock, tun_fd, packet, sizeof(packet), n, &src, srclen);
 			}
 			else if (fd == tun_fd) {
 				/* 앞에는 헤더가, 뒤에는 tag 가 붙을 자리를 남기고 읽는다. 암호화는
 				 * 읽은 자리에서 하므로 패킷을 옮기지 않는다. */
 				n = read(tun_fd, packet + PKT_HDR_LEN, sizeof(packet) - PKT_OVERHEAD);
 				if (n < 0) { perror("read tun"); goto out; }
-
-				ip = packet + PKT_HDR_LEN;
-				if (n < IP_MIN_HDR || IP_VERSION(ip) != 4) {
-					LOG_LIMITED(LOG_DROP, "[skip] non-IPv4 (ver=%d, %d bytes)\n",
-							IP_VERSION(ip), n);
-					continue;
-				}
-
-				memcpy(&inner, ip + IP_DST_OFF, IP_ADDR_LEN);
-
-				peer = peer_lookup(inner);
-				if (peer == NULL || peer->enroll) {
-					LOG_LIMITED(LOG_DROP, "[drop] no peer for %s\n", ip_str(inner, ib));
-					continue;
-				}
-
-				LOG_VERBOSE("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
-						n, ip_str(inner, ib),
-						ip_str(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
-						ip[IP_IHL(ip)]);
-
-				peer->tx_packets++;
-				peer->tx_bytes += (uint64_t)n;
-
-				n = secure_seal(&peer->secure, MSG_TYPE_DATA, peer->session_idx,
-						packet, sizeof(packet), (size_t)n);
-				if (n < 0) {
-					LOG_LIMITED(LOG_DROP, "[drop] seal failed for %s\n", ip_str(inner, ib));
-					continue;
-				}
-
-				sent = sendto(sock, packet, n, 0,
-						(struct sockaddr *)&peer->outer, peer->outer_len);
-				if (sent < 0) {
-					perror("sendto");
-				}
+				tun_in(sock, packet, sizeof(packet), n);
 			}
 		}
 	}
