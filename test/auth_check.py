@@ -719,7 +719,7 @@ class Server:
         self.status_path = tempfile.mktemp(prefix="vpn_status.", suffix=".sock")
         self.audit_path = tempfile.mktemp(prefix="vpn_audit.", suffix=".log")
         self.enroll_path = tempfile.mktemp(prefix="vpn_enroll.", suffix=".conf")
-        self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-s", self.status_path, "-a", self.audit_path,
+        self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-v", "-s", self.status_path, "-a", self.audit_path,
                                       "-e", self.enroll_path] + list(opts) + [
                                       str(PORT)] + list(args),
                                      stdout=self.log, stderr=subprocess.STDOUT)
@@ -1225,6 +1225,25 @@ CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex
 RESOURCE = socket.inet_aton("198.51.100.10")
 
 
+def log_limit_tests(srv):
+    """밖에서 아무나 보낼 수 있는 쓰레기 패킷이 로그를 채우지 못하는가. 종류마다 1초에 20줄
+    (LOG_BURST)까지만 찍히고, 버린 패킷은 상태 소켓이 모두 센다."""
+    c = Client()
+    before_log = srv.text().count("[drop] unknown session_idx")
+    before = srv.status()["counters"]["unknown_session"]
+    for i in range(300):
+        c.send(header(DATA, 0x7f000000 + i) + bytes(40))
+    time.sleep(0.5)
+    lines = srv.text().count("[drop] unknown session_idx") - before_log
+    expect("log limit: 300 junk packets make at most 2 x 20 lines", lines <= 40, True)
+    expect("log limit: ...and every one is counted", srv.status()["counters"]["unknown_session"] - before, 300)
+
+    time.sleep(1.1)
+    c.send(header(DATA, 0x7f0000ff) + bytes(40))
+    time.sleep(0.3)
+    expect("log limit: the suppressed count is reported", "drop lines suppressed" in srv.text(), True)
+
+
 def disconnect_tests(srv):
     """DISCONNECT 로 세션이 바로 닫히는가. 세션 키로 열리지 않는 것으로는 닫히지 않는가."""
     c = Client()
@@ -1613,6 +1632,7 @@ def main():
             status_tests(srv)
             audit_tests(srv)
             disconnect_tests(srv)
+            log_limit_tests(srv)
             enroll_tests(srv, path)
             connector_tests(srv, acl_path, path)
         finally:

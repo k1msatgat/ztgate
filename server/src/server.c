@@ -50,6 +50,53 @@ static int acl_enabled;
 static int tun_prefix = 24;
 static int tun_mtu = TUN_MTU;
 
+/* ---- 로그 -------------------------------------------------------------------
+ *
+ * 밖에서 아무나 일으킬 수 있는 줄(위조, 모르는 세션, 짧은 패킷, ACL 거부)이 패킷마다
+ * 찍히면, 초당 수만 개의 쓰레기 패킷이 서버보다 먼저 로그(디스크, journald)를 무너뜨린다.
+ * 그런 줄은 종류마다 1초에 LOG_BURST 줄까지만 찍고, 넘친 수는 그 종류의 다음 줄 앞에 한
+ * 줄로 알린다. 무엇을 몇 개 버렸는지는 상태 소켓의 카운터가 빠짐없이 센다.
+ *
+ * 통과한 패킷마다의 줄([udp->tun], [tun->udp], [udp->connector])은 -v 일 때만 찍는다.
+ * 운영에서는 감사 로그의 access 사건이 "누가 어디에 닿았나"를 목적지마다 한 번 남긴다. */
+#define LOG_BURST 20
+
+enum log_kind { LOG_DROP, LOG_DENY, LOG_HS, LOG_KINDS };
+
+static const char *const log_kind_name[LOG_KINDS] = { "drop", "deny", "handshake" };
+
+static struct {
+	time_t at;		/* 이 초 (CLOCK_MONOTONIC) */
+	int n;			/* 이 초에 찍은 줄 */
+	unsigned long suppressed;
+} log_state[LOG_KINDS];
+
+static int verbose;
+
+/* 이 종류의 줄을 지금 찍어도 되면 1. */
+static int log_ok(enum log_kind k)
+{
+	time_t now = mono_now();
+
+	if (log_state[k].at != now) {
+		if (log_state[k].suppressed > 0) {
+			printf("[log] %lu %s lines suppressed\n", log_state[k].suppressed, log_kind_name[k]);
+		}
+		log_state[k].at = now;
+		log_state[k].n = 0;
+		log_state[k].suppressed = 0;
+	}
+	if (log_state[k].n >= LOG_BURST) {
+		log_state[k].suppressed++;
+		return 0;
+	}
+	log_state[k].n++;
+	return 1;
+}
+
+#define LOG_LIMITED(kind, ...) do { if (log_ok(kind)) printf(__VA_ARGS__); } while (0)
+#define LOG_VERBOSE(...) do { if (verbose) printf(__VA_ARGS__); } while (0)
+
 /* 세션 키의 수명, 초 (-L). 지나면 세션을 끝내고 클라이언트가 새 키로 다시 열게 한다. */
 static time_t session_lifetime = SESSION_LIFETIME_SEC;
 
@@ -124,7 +171,7 @@ static void relay_to_connector(int32_t sock, const device_t *conn_dev, uint8_t *
 	int len;
 
 	if (conn == NULL || conn->enroll) {
-		printf("[drop] connector %s is not connected\n", device_id_str(conn_dev->id, ids));
+		LOG_LIMITED(LOG_DROP, "[drop] connector %s is not connected\n", device_id_str(conn_dev->id, ids));
 		stats.connector_offline++;
 		return;
 	}
@@ -157,7 +204,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	memcpy(&dst, ip + IP_DST_OFF, IP_ADDR_LEN);
 
 	if (!device_connector_has(conn_dev, src)) {
-		printf("[drop] connector sent %s -> %s, source outside its networks\n",
+		LOG_LIMITED(LOG_DROP, "[drop] connector sent %s -> %s, source outside its networks\n",
 				ip_str(src, sb), ip_str(dst, db));
 		stats.spoofed_src++;
 		return -1;
@@ -166,7 +213,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	to = peer_lookup(dst);
 	to_dev = to != NULL ? device_find(to->device_id) : NULL;
 	if (to == NULL || to->enroll || to_dev == NULL || to_dev->n_connector != 0) {
-		printf("[drop] connector sent %s -> %s, no client session there\n",
+		LOG_LIMITED(LOG_DROP, "[drop] connector sent %s -> %s, no client session there\n",
 				ip_str(src, sb), ip_str(dst, db));
 		stats.connector_dropped++;
 		return -1;
@@ -322,7 +369,7 @@ static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 	int32_t off;
 
 	if (n < (int32_t)(sizeof(msg_header_t) + REQ_HS_PAYLOAD_LEN)) {
-		printf("[HS] short request (%d bytes)\n", n);
+		LOG_LIMITED(LOG_HS, "[HS] short request (%d bytes)\n", n);
 		return;
 	}
 
@@ -333,7 +380,7 @@ static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 		dev = enroll_find(body);
 	}
 	if (dev == NULL) {
-		printf("[HS] unknown device %s\n", device_id_str(body, ids));
+		LOG_LIMITED(LOG_HS, "[HS] unknown device %s\n", device_id_str(body, ids));
 		audit_auth_denied(body, src, DENY_UNKNOWN_DEVICE);
 		send_deny(sock, src, srclen, DENY_UNKNOWN_DEVICE, NULL, NULL);
 		return;
@@ -463,7 +510,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	int enrolling = 0;
 
 	if (n < (int32_t)AUTH_PACKET_LEN) {
-		printf("[HS] short auth (%d bytes)\n", n);
+		LOG_LIMITED(LOG_HS, "[HS] short auth (%d bytes)\n", n);
 		return;
 	}
 
@@ -473,7 +520,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		enrolling = dev != NULL;
 	}
 	if (dev == NULL) {
-		printf("[HS] unknown device %s\n", device_id_str(body + AUTH_OFF_DEVICE_ID, ids));
+		LOG_LIMITED(LOG_HS, "[HS] unknown device %s\n", device_id_str(body + AUTH_OFF_DEVICE_ID, ids));
 		audit_auth_denied(body + AUTH_OFF_DEVICE_ID, src, DENY_UNKNOWN_DEVICE);
 		send_deny(sock, src, srclen, DENY_UNKNOWN_DEVICE, NULL, NULL);
 		return;
@@ -493,7 +540,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	if (!fresh ||
 			crypt_hmac(dev->key, AUTH_KEY_LEN, packet, AUTH_SIGNED_LEN, mac) < 0 ||
 			!crypt_equal(mac, auth_mac, AUTH_MAC_LEN)) {
-		printf("[HS] bad auth from device %s\n", ids);
+		LOG_LIMITED(LOG_HS, "[HS] bad auth from device %s\n", ids);
 		audit_auth_denied(dev->id, src, DENY_BAD_AUTH);
 		send_deny(sock, src, srclen, DENY_BAD_AUTH, NULL, NULL);
 		return;
@@ -623,7 +670,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 	device_t *dev;
 
 	if (n < (int32_t)sizeof(posture)) {
-		printf("[drop] keepalive without posture (%d bytes)\n", n);
+		LOG_LIMITED(LOG_DROP, "[drop] keepalive without posture (%d bytes)\n", n);
 		stats.keepalive_dropped++;
 		return;
 	}
@@ -644,7 +691,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 	 * 된다. 방화벽이 켜져 있던 때의 보고를 길목에서 붙잡아 두었다가, 끈 뒤에 풀어
 	 * 놓는 것을 막는다. */
 	if (peer->ka_seen && counter <= peer->ka_counter) {
-		printf("[drop] keepalive out of order (counter %llu) idx=%08x\n",
+		LOG_LIMITED(LOG_DROP, "[drop] keepalive out of order (counter %llu) idx=%08x\n",
 				(unsigned long long)counter, peer->session_idx);
 		stats.keepalive_dropped++;
 		return;
@@ -699,7 +746,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 	device_t *pending;
 
 	if (n < (int32_t)ENROLL_PAYLOAD_LEN) {
-		printf("[enroll] short request (%d bytes)\n", n);
+		LOG_LIMITED(LOG_DROP, "[enroll] short request (%d bytes)\n", n);
 		return;
 	}
 
@@ -888,7 +935,7 @@ int main(int argc, char *argv[])
 		return verify_token(argv[2]);
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:L:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:L:v")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -918,6 +965,9 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 		}
+		else if (opt == 'v') {
+			verbose = 1;
+		}
 		else if (opt == 'L') {
 			/* 짧게 두면 키를 자주 바꾸는 만큼 왕복 두 번의 끊김이 잦아진다. 시험에서는
 			 * 몇 초로 줄여 바뀌는 것을 본다. */
@@ -942,8 +992,10 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
+		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
+		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
 		fprintf(stderr, "       -u: accept user logins (JWT) from the identity provider this file describes\n");
 		fprintf(stderr, "       -n, -m: what the tun device is configured with (default /24, mtu %d);\n", TUN_MTU);
@@ -1179,7 +1231,7 @@ int main(int argc, char *argv[])
 
 				off = msg_decode(packet, (size_t)n, &msg_header);
 				if (off < 0 || msg_header.version != PROTOCOL_VERSION) {
-					printf("[drop] bad header (%d bytes)\n", n);
+					LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
 					continue;
 				}
 
@@ -1194,7 +1246,7 @@ int main(int argc, char *argv[])
 
 				peer = peer_find_idx(msg_header.session_idx);
 				if (peer == NULL) {
-					printf("[drop] unknown session_idx[%08x]\n", msg_header.session_idx);
+					LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", msg_header.session_idx);
 					stats.unknown_session++;
 					continue;
 				}
@@ -1204,12 +1256,12 @@ int main(int argc, char *argv[])
 				 * 패킷은 세션의 어떤 상태도 바꾸지 못한 채 여기서 버려진다. */
 				n = secure_open(&peer->secure, packet, (size_t)n, &counter);
 				if (n == SECURE_REPLAY) {
-					printf("[drop] counter already seen idx=%08x\n", peer->session_idx);
+					LOG_LIMITED(LOG_DROP, "[drop] counter already seen idx=%08x\n", peer->session_idx);
 					stats.replayed++;
 					continue;
 				}
 				if (n < 0) {
-					printf("[drop] tag does not match idx=%08x\n", peer->session_idx);
+					LOG_LIMITED(LOG_DROP, "[drop] tag does not match idx=%08x\n", peer->session_idx);
 					stats.bad_tag++;
 					continue;
 				}
@@ -1224,7 +1276,7 @@ int main(int argc, char *argv[])
 						handle_enroll(sock, peer, ip, n, &src, srclen);
 					}
 					else {
-						printf("[drop] type %u on an enrollment session idx=%08x\n",
+						LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
 								msg_header.type, peer->session_idx);
 					}
 					continue;
@@ -1245,7 +1297,7 @@ int main(int argc, char *argv[])
 						peer_drop(peer, "closed");
 						continue;
 					default:
-						printf("[drop] unknown type %u\n", msg_header.type);
+						LOG_LIMITED(LOG_DROP, "[drop] unknown type %u\n", msg_header.type);
 						continue;
 				}
 
@@ -1265,7 +1317,7 @@ int main(int argc, char *argv[])
 				memcpy(&inner, ip + IP_SRC_OFF, IP_ADDR_LEN);
 
 				if (inner.s_addr != peer->inner.s_addr) {
-					printf("[drop] spoofed src %s for idx %08x\n", ip_str(inner, ib), peer->session_idx);
+					LOG_LIMITED(LOG_DROP, "[drop] spoofed src %s for idx %08x\n", ip_str(inner, ib), peer->session_idx);
 					stats.spoofed_src++;
 					continue;
 				}
@@ -1285,26 +1337,32 @@ int main(int argc, char *argv[])
 				}
 
 				if (verdict != ACL_ALLOW) {
-					printf("[deny] %s -> %s proto=%d (%d bytes)",
-							ip_str(inner, ib), ip_str(inner_dst, ob),
-							ip[IP_PROTO_OFF], n);
-					if (!acl_enabled) {
-						printf(" outside the tunnel subnet (no acl file)");
-					}
 					stats.acl_denied++;
 					peer->acl_denied++;
 					if (verdict == ACL_DENY_POSTURE) {
 						stats.acl_denied_posture++;
-						printf(" posture below the rule (build=%u firewall=%u antivirus=%u)",
-								peer->posture.os_build, peer->posture.firewall,
-								peer->posture.antivirus);
 					}
 					if (verdict == ACL_DENY_USER) {
 						stats.acl_denied_user++;
-						printf(" rule is for other users (logged in: %s)",
-								peer->logged_in ? peer->user.name : "nobody");
 					}
-					printf("\n");
+					if (log_ok(LOG_DENY)) {
+						printf("[deny] %s -> %s proto=%d (%d bytes)",
+								ip_str(inner, ib), ip_str(inner_dst, ob),
+								ip[IP_PROTO_OFF], n);
+						if (!acl_enabled) {
+							printf(" outside the tunnel subnet (no acl file)");
+						}
+						if (verdict == ACL_DENY_POSTURE) {
+							printf(" posture below the rule (build=%u firewall=%u antivirus=%u)",
+									peer->posture.os_build, peer->posture.firewall,
+									peer->posture.antivirus);
+						}
+						if (verdict == ACL_DENY_USER) {
+							printf(" rule is for other users (logged in: %s)",
+									peer->logged_in ? peer->user.name : "nobody");
+						}
+						printf("\n");
+					}
 					audit_access(peer, ip, n, 0, !acl_enabled ? "no_acl_file" :
 							verdict == ACL_DENY_POSTURE ? "posture" :
 							verdict == ACL_DENY_USER ? "user" : "acl");
@@ -1318,13 +1376,13 @@ int main(int argc, char *argv[])
 
 				conn_dev = device_connector_for(inner_dst);
 				if (conn_dev != NULL) {
-					printf("[udp->connector] %d bytes %s -> %s\n", n, ip_str(inner, ib),
+					LOG_VERBOSE("[udp->connector] %d bytes %s -> %s\n", n, ip_str(inner, ib),
 							ip_str(inner_dst, ob));
 					relay_to_connector(sock, conn_dev, packet, sizeof(packet), n);
 					continue;
 				}
 
-				printf("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
+				LOG_VERBOSE("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
 						n, ip_str(src.sin_addr, ob), ntohs(src.sin_port),
 						ip_str(inner, ib), ip[IP_IHL(ip)]);
 
@@ -1340,7 +1398,7 @@ int main(int argc, char *argv[])
 
 				ip = packet + PKT_HDR_LEN;
 				if (n < IP_MIN_HDR || IP_VERSION(ip) != 4) {
-					printf("[skip] non-IPv4 (ver=%d, %d bytes)\n",
+					LOG_LIMITED(LOG_DROP, "[skip] non-IPv4 (ver=%d, %d bytes)\n",
 							IP_VERSION(ip), n);
 					continue;
 				}
@@ -1349,11 +1407,11 @@ int main(int argc, char *argv[])
 
 				peer = peer_lookup(inner);
 				if (peer == NULL || peer->enroll) {
-					printf("[drop] no peer for %s\n", ip_str(inner, ib));
+					LOG_LIMITED(LOG_DROP, "[drop] no peer for %s\n", ip_str(inner, ib));
 					continue;
 				}
 
-				printf("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
+				LOG_VERBOSE("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
 						n, ip_str(inner, ib),
 						ip_str(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
 						ip[IP_IHL(ip)]);
@@ -1364,7 +1422,7 @@ int main(int argc, char *argv[])
 				n = secure_seal(&peer->secure, MSG_TYPE_DATA, peer->session_idx,
 						packet, sizeof(packet), (size_t)n);
 				if (n < 0) {
-					printf("[drop] seal failed for %s\n", ip_str(inner, ib));
+					LOG_LIMITED(LOG_DROP, "[drop] seal failed for %s\n", ip_str(inner, ib));
 					continue;
 				}
 

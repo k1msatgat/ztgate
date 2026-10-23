@@ -157,7 +157,7 @@ chmod 600 "$DEVICES" "$ENROLL" "$ACL"
 before=$(ip -o link show type tun | awk -F': ' '{print $2}')
 # 사용자 로그인: 시험용 IdP (tools/idp/mint.py) 의 키를 서버가 믿게 한다.
 python3 "$ROOT_DIR/tools/idp/mint.py" keys "$IDP" > /dev/null || { echo "mint.py keys failed"; exit 1; }
-stdbuf -oL "$SERVER" -e "$ENROLL" -u "$IDP/idp.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
+stdbuf -oL "$SERVER" -v -e "$ENROLL" -u "$IDP/idp.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
 SRV_PID=$!
 wait_for 5 sh -c "ip -o link show type tun | grep -q ." || { echo "server did not start"; cat "$SLOG"; exit 1; }
 SRV_IF=$(ip -o link show type tun | awk -F': ' '{print $2}' | grep -vxF "$before" | head -n 1)
