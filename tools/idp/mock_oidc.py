@@ -125,7 +125,12 @@ def main():
                                         "authorization_endpoint": base + "/authorize",
                                         "device_authorization_endpoint": base + "/device",
                                         "revocation_endpoint": base + "/revoke",
+                                        "jwks_uri": base + "/jwks",
                                         "code_challenge_methods_supported": ["S256"]})
+            if u.path == "/jwks":
+                # 키 폴더의 jwks.json 을 그대로 (mint.py keys). 갱신 도구(tools/idp/ztgate_jwks.py)가 받아 간다.
+                with open(os.path.join(a.keys, "jwks.json")) as f:
+                    return self.reply(200, json.load(f))
             if u.path == "/authorize":
                 if (q.get("response_type") != "code" or not q.get("client_id") or not q.get("state")
                         or q.get("code_challenge_method") != "S256" or len(q.get("code_challenge", "")) != 43
