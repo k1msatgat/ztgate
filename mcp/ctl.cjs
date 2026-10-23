@@ -257,7 +257,7 @@ function readDevices() {
 			return;
 		}
 		if (tok.length < 3 || !/^[0-9a-fA-F]{32}$/.test(tok[0]) ||
-				!/^[0-9a-fA-F]{64}$/.test(tok[1]) || !isIPv4(tok[2])) {
+				!/^([0-9a-fA-F]{64}|p256:[0-9a-fA-F]{128})$/.test(tok[1]) || !isIPv4(tok[2])) {
 			fail(`${DEVICE_FILE}: line ${i + 1} is malformed; fix it by hand first`);
 		}
 
@@ -288,7 +288,7 @@ function writeDevices(devices) {
 		'# ztgate 기기 목록. MCP(ztgate_ctl)가 관리한다 — 손으로 고쳐도 되지만 주석은 줄 끝의',
 		'# 이름표만 남는다. 형식은 README 의 "설정 파일".',
 		'#',
-		'# id (32 hex)  key (64 hex)  tunnel-ip  requirements  # label',
+		'# id (32 hex)  key (64 hex 공유 키, 또는 p256:<공개키>)  tunnel-ip  requirements  # label',
 	];
 
 	for (const d of devices) {
@@ -310,7 +310,9 @@ function writeDevices(devices) {
 
 /* 키는 어떤 응답에도 넣지 않는다. */
 function publicDevice(d) {
-	const p = { id: d.id, label: d.label, tunnel_ip: d.tunnel_ip, requirements: d.requirements };
+	/* 공개키 기기(p256:, 등록 코드로 올라온 기기)는 서버에 비밀이 없다. 공유 키 기기는 관리자가 손으로 올린 것이다. */
+	const p = { id: d.id, label: d.label, tunnel_ip: d.tunnel_ip, key_type: d.key.startsWith('p256:') ? 'p256' : 'shared',
+		requirements: d.requirements };
 
 	if (d.connector && d.connector.length > 0) {
 		p.connector = d.connector;
@@ -1004,8 +1006,8 @@ const COMMANDS = {
 			label: wantLabel(a.label),
 		};
 
-		if (typeof d.key !== 'string' || !/^[0-9a-fA-F]{64}$/.test(d.key)) {
-			fail('key must be 64 hex digits');
+		if (typeof d.key !== 'string' || !/^([0-9a-fA-F]{64}|p256:[0-9a-fA-F]{128})$/.test(d.key)) {
+			fail('key must be 64 hex digits (a shared key) or p256:<128 hex digits> (a device public key)');
 		}
 		d.key = d.key.toLowerCase();
 

@@ -139,7 +139,7 @@ server.registerTool('device_add', {
 	description: 'Register a device by hand from an id and key printed on the device ("vpn_client.exe enroll" without a code). Prefer enroll_create, which avoids copying the key. Applied to the running server immediately.',
 	inputSchema: {
 		id: deviceId.describe('device id, 32 hex digits, as printed by enroll'),
-		key: z.string().regex(/^[0-9a-fA-F]{64}$/).describe('device key, 64 hex digits, as printed by enroll'),
+		key: z.string().regex(/^([0-9a-fA-F]{64}|p256:[0-9a-fA-F]{128})$/).describe('a shared device key, 64 hex digits, as printed by "enroll" without a code; or p256:<128 hex digits>, a device public key (the server then holds no secret for this device and needs its server key, -k)'),
 		tunnel_ip: tunnelIp,
 		requirements: requirements.optional(),
 		tags: tags.optional(),
