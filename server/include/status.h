@@ -38,7 +38,14 @@ extern server_stats_t stats;
 /* path 에 소켓을 만들고 듣는다. 성공하면 fd, 실패하면 -1. */
 int status_listen(const char *path);
 
-/* 기다리던 접속 하나를 받아 상태를 쓰고 닫는다. */
-void status_serve(int lfd, int acl_enabled);
+/* 기다리던 접속 하나를 받아 상태를 쓰고 닫는다. 한 번에 다 쓰지 못하면 그 접속을 epfd 에
+ * EPOLLOUT 으로 걸어 두고, 이어 쓰는 것은 status_writable 이 한다. */
+void status_serve(int epfd, int lfd, int acl_enabled);
+
+/* fd 가 상태를 쓰는 중인 접속이면 이어 쓰고 1. 아니면 0. */
+int status_writable(int epfd, int fd);
+
+/* 오래 다 읽지 않는 접속을 끊는다. 이벤트 루프가 돌 때마다 부른다. */
+void status_tick(int epfd);
 
 #endif

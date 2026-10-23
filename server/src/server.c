@@ -999,6 +999,7 @@ int main(int argc, char *argv[])
 		}
 
 		peer_check_expired();
+		status_tick(epfd);
 
 		/* kill -HUP 으로 기기 목록과 ACL 을 다시 읽는다. 서버를 내렸다 올리면 모든
 		 * 세션이 끊기지만, 이렇게 하면 정책을 바꾸거나 기기 하나를 지우는 동안
@@ -1069,6 +1070,12 @@ int main(int argc, char *argv[])
 		for (i = 0; i < nev; i++) {
 			fd = events[i].data.fd;
 
+			/* 상태를 이어 쓰는 접속. 상대가 닫은 것(EPOLLHUP)도 거기서 처리해 닫는다 —
+			 * 아래로 내려가면 닫히지 않은 채 매번 다시 깨운다. */
+			if (status_writable(epfd, fd)) {
+				continue;
+			}
+
 			if (events[i].events & (EPOLLERR | EPOLLHUP)) {
 				fprintf(stderr, "[err] fd=%d events=0x%x\n",
 						fd, events[i].events);
@@ -1076,7 +1083,7 @@ int main(int argc, char *argv[])
 			}
 
 			if (fd == status_fd) {
-				status_serve(status_fd, acl_enabled);
+				status_serve(epfd, status_fd, acl_enabled);
 			}
 			else if (fd == sock) {
 				srclen = sizeof(src);
