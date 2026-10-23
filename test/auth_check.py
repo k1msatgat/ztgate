@@ -1374,6 +1374,42 @@ CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex
 RESOURCE = socket.inet_aton("198.51.100.10")
 
 
+def metrics_tests(srv):
+    """tools/metrics/ztgate_exporter.py 가 상태 소켓을 Prometheus 지표로 내주는가."""
+    import urllib.request
+    exporter = os.path.join(ROOT, "tools", "metrics", "ztgate_exporter.py")
+    c = Client()
+    session(c)
+
+    def scrape(status_path, port):
+        p = subprocess.Popen([sys.executable, exporter, "-s", status_path, "-l", "127.0.0.1:%d" % port, "--per-session"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:%d/metrics" % port, timeout=2) as r:
+                        return r.headers.get("Content-Type", ""), r.read().decode()
+                except OSError:
+                    time.sleep(0.1)
+            return "", ""
+        finally:
+            p.terminate()
+            p.wait()
+
+    ctype, text = scrape(srv.status_path, 19469)
+    lines = [l for l in text.splitlines() if l and not l.startswith("#")]
+    value = {l.split(" ")[0]: l.split(" ")[1] for l in lines if "{" not in l}
+    expect("metrics: text exposition format", ctype.startswith("text/plain; version=0.0.4"), True)
+    expect("metrics: the server is up and has sessions", (value.get("ztgate_up"), int(value.get("ztgate_sessions", 0)) >= 1),
+           ("1", True))
+    expect("metrics: counters from the status socket", "ztgate_handshake_ok_total" in value and "ztgate_acl_denied_total" in value, True)
+    expect("metrics: one series per session with its device",
+           any(l.startswith('ztgate_session_rx_bytes{device="%s"' % DEV_ID.hex()) for l in lines), True)
+
+    _, text = scrape("/nonexistent/status.sock", 19470)
+    expect("metrics: without the server it says up 0", "ztgate_up 0" in text, True)
+
+
 def icmp_deny_tests(srv):
     """ACL 이 막은 패킷에 ICMP '관리자가 막음'(3/13)이 돌아오는가. 원래 헤더를 담고, 세션마다
     1초에 10개까지, ICMP 오류에는 답하지 않는다. 규칙은 icmp 만 허용 (main 의 acl 파일)."""
@@ -1825,6 +1861,7 @@ def main():
             disconnect_tests(srv)
             log_limit_tests(srv)
             icmp_deny_tests(srv)
+            metrics_tests(srv)
             enroll_tests(srv, path)
             connector_tests(srv, acl_path, path)
         finally:

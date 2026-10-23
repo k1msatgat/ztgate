@@ -1,0 +1,24 @@
+# ztgate 의 Prometheus 지표 (tools/metrics/ztgate_exporter.py). 127.0.0.1:9469/metrics
+#
+#   sudo install -m 755 tools/metrics/ztgate_exporter.py /opt/ztgate/tools/ztgate_exporter.py
+#   sudo install -m 644 tools/metrics/ztgate-exporter.service /etc/systemd/system/
+#   sudo systemctl enable --now ztgate-exporter
+#
+# 상태 소켓이 root 전용이라 root 로 돈다. 대신 쓸 수 있는 곳은 하나도 열지 않는다.
+[Unit]
+Description=ztgate Prometheus exporter
+After=ztgate.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/ztgate/tools/ztgate_exporter.py -s /run/ztgate/status.sock -l 127.0.0.1:9469
+Restart=on-failure
+RestartSec=5
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ReadOnlyPaths=/run/ztgate
+
+[Install]
+WantedBy=multi-user.target
