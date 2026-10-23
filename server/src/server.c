@@ -334,6 +334,105 @@ static void rekey_tick(int32_t sock)
 	}
 }
 
+/* ---- ACL 이 막은 패킷에 답하기 ---------------------------------------------------
+ *
+ * 막힌 패킷을 조용히 버리면 클라이언트의 프로그램은 타임아웃까지 기다린다 (TCP 의 SYN 은
+ * 몇 번이고 다시 보내 수십 초). 방화벽의 REJECT 처럼 ICMP "관리자가 막음"(type 3 code 13,
+ * RFC 1812)을 돌려주면 connect() 가 바로 실패하고 사용자는 "막혔다"를 곧바로 안다.
+ *
+ * 출발지는 막힌 목적지로 둔다. 서버는 자기 tun 주소를 모르고(설치 스크립트가 붙인다), 받는
+ * 쪽 커널은 ICMP 안에 담긴 원래 헤더로 어느 연결의 오류인지를 찾을 뿐이다. ICMP 오류에는
+ * 답하지 않는다 (RFC 1122 — 오류에 오류가 꼬리를 문다). 세션마다 1초에 ICMP_DENY_PER_SEC
+ * 개까지만 보낸다. 받는 쪽은 인증된 세션 하나뿐이라 증폭은 없지만, 막힌 곳을 계속 두드리는
+ * 프로그램 하나가 서버의 일을 두 배로 만들지 않게 한다. */
+#define ICMP_DENY_PER_SEC 10
+#define ICMP_QUOTE_LEN 8	/* 원래 패킷에서 IP 헤더 뒤로 담는 바이트 (RFC 792) */
+
+static uint16_t inet_csum(const uint8_t *p, size_t len)
+{
+	uint32_t sum = 0;
+
+	while (len > 1) {
+		sum += (uint32_t)(p[0] << 8 | p[1]);
+		p += 2;
+		len -= 2;
+	}
+	if (len == 1) {
+		sum += (uint32_t)(p[0] << 8);
+	}
+	while (sum >> 16) {
+		sum = (sum & 0xffff) + (sum >> 16);
+	}
+
+	return (uint16_t)~sum;
+}
+
+static void send_prohibited(int32_t sock, peer_t *peer, const uint8_t *orig, int len)
+{
+	uint8_t pkt[PKT_OVERHEAD + IP_MIN_HDR + 8 + 60 + ICMP_QUOTE_LEN];
+	uint8_t *ip = pkt + PKT_HDR_LEN;
+	uint8_t *icmp;
+	int ihl = IP_IHL(orig);
+	int quote;
+	int total;
+	uint16_t sum;
+	time_t now = mono_now();
+	int n;
+
+	if (ihl < IP_MIN_HDR || ihl > 60 || len < ihl) {
+		return;
+	}
+	/* ICMP 오류(echo 와 그 답이 아닌 것)에는 답하지 않는다. 조각난 패킷의 뒷조각도. */
+	if (orig[IP_PROTO_OFF] == 1 && len > ihl && orig[ihl] != 0 && orig[ihl] != 8) {
+		return;
+	}
+	if (((orig[6] & 0x1f) | orig[7]) != 0) {
+		return;
+	}
+
+	if (peer->icmp_at != now) {
+		peer->icmp_at = now;
+		peer->icmp_n = 0;
+	}
+	if (peer->icmp_n >= ICMP_DENY_PER_SEC) {
+		return;
+	}
+	peer->icmp_n++;
+
+	quote = ihl + (len - ihl < ICMP_QUOTE_LEN ? len - ihl : ICMP_QUOTE_LEN);
+	total = IP_MIN_HDR + 8 + quote;
+
+	memset(ip, 0, (size_t)(IP_MIN_HDR + 8));
+	ip[0] = 0x45;
+	ip[2] = (uint8_t)(total >> 8);
+	ip[3] = (uint8_t)total;
+	ip[8] = 64;			/* TTL */
+	ip[IP_PROTO_OFF] = 1;		/* ICMP */
+	memcpy(ip + IP_SRC_OFF, orig + IP_DST_OFF, IP_ADDR_LEN);
+	memcpy(ip + IP_DST_OFF, orig + IP_SRC_OFF, IP_ADDR_LEN);
+	sum = inet_csum(ip, IP_MIN_HDR);
+	ip[10] = (uint8_t)(sum >> 8);
+	ip[11] = (uint8_t)sum;
+
+	icmp = ip + IP_MIN_HDR;
+	icmp[0] = 3;			/* destination unreachable */
+	icmp[1] = 13;			/* communication administratively prohibited */
+	memcpy(icmp + 8, orig, (size_t)quote);
+	sum = inet_csum(icmp, (size_t)(8 + quote));
+	icmp[2] = (uint8_t)(sum >> 8);
+	icmp[3] = (uint8_t)sum;
+
+	n = secure_seal(&peer->secure, MSG_TYPE_DATA, peer->session_idx, pkt, sizeof(pkt), (size_t)total);
+	if (n < 0) {
+		return;
+	}
+	peer->tx_packets++;
+	peer->tx_bytes += (uint64_t)total;
+	if (sendto(sock, pkt, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+		perror("sendto icmp");
+	}
+}
+
 /* 열려 있는 세션을 거절한다. 세션 키로 감싸므로 서버만 만들 수 있다 — 세션 번호를
  * 엿본 제3자가 가짜 거절로 남의 접속을 끊을 수 없다. 보낸 뒤 세션을 내리는 것은
  * 부르는 쪽의 일이다. */
@@ -1405,6 +1504,7 @@ int main(int argc, char *argv[])
 					audit_access(peer, ip, n, 0, !acl_enabled ? "no_acl_file" :
 							verdict == ACL_DENY_POSTURE ? "posture" :
 							verdict == ACL_DENY_USER ? "user" : "acl");
+					send_prohibited(sock, peer, ip, n);
 					continue;
 				}
 

@@ -310,6 +310,8 @@ class Client:
         self.sock.settimeout(1.0)
 
     def request(self, dev_id=DEV_ID):
+        # 앞의 세션으로 받을 것이 남아 있을 수 있다 (막힌 패킷에 돌아온 ICMP 등). 핸드셰이크의 답과 섞이지 않게.
+        self.drain()
         self.send(header(REQ_HANDSHAKE) + dev_id)
         return self.recv()
 
@@ -1001,10 +1003,11 @@ def status_tests(srv):
     c.recv()
     c.send(data(idx, None, udp_packet(TUN_IP, server_ip, 53, 901)))
     time.sleep(0.3)
+    c.drain()       # 막힌 패킷에 돌아온 ICMP (icmp_deny_tests)
     st = srv.status()
     s = find(st, "10.0.0.3")
-    expect("status: one packet in, one out, one denied",
-           s and (s["rx_packets"], s["tx_packets"], s["acl_denied"]), (1, 1, 1))
+    expect("status: one packet in, two out (the reply and the icmp for the denied one), one denied",
+           s and (s["rx_packets"], s["tx_packets"], s["acl_denied"]), (1, 2, 1))
     expect("status: acl_denied counted", counted(st, before, "acl_denied"), (1,))
 
     # 키가 틀린 핸드셰이크, 세션 키로 열리지 않는 패킷, 다시 보낸 패킷, 순서가 뒤바뀐 포스처 보고
@@ -1321,6 +1324,48 @@ CON_ID = bytes(range(0x90, 0xa0))
 CON_KEY = bytes(range(0xa0, 0xc0))
 CON_LINE = "%s %s 10.0.0.9 connector=198.51.100.0/24  # connector" % (CON_ID.hex(), CON_KEY.hex())
 RESOURCE = socket.inet_aton("198.51.100.10")
+
+
+def icmp_deny_tests(srv):
+    """ACL 이 막은 패킷에 ICMP '관리자가 막음'(3/13)이 돌아오는가. 원래 헤더를 담고, 세션마다
+    1초에 10개까지, ICMP 오류에는 답하지 않는다. 규칙은 icmp 만 허용 (main 의 acl 파일)."""
+    c = Client()
+    idx = session(c)
+    server_ip = socket.inet_aton("10.0.0.1")
+    c.drain()
+
+    c.send(data(idx, None, udp_packet(TUN_IP, server_ip, 9, 4242)))
+    r = c.recv()
+    inner = r[2] if r and r[0] == DATA else b""
+    expect("icmp deny: a denied packet gets 'administratively prohibited' back",
+           (inner[9:10], inner[20:22]) if len(inner) >= 22 else describe(r), (b"\x01", b"\x03\x0d"))
+    expect("icmp deny: ...from the blocked destination to the sender",
+           (inner[12:16], inner[16:20]) if len(inner) >= 20 else None, (server_ip, TUN_IP))
+    quoted = inner[28:]
+    expect("icmp deny: ...quoting the original header and its ports",
+           (quoted[:20][12:20], struct.unpack("!H", quoted[22:24])[0]) if len(quoted) >= 28 else None,
+           (TUN_IP + server_ip, 9))
+    expect("icmp deny: ...with valid checksums", (checksum(inner[:20]), checksum(inner[20:])), (0, 0))
+
+    time.sleep(1.1)
+    c.drain()
+    for i in range(30):
+        c.send(data(idx, None, udp_packet(TUN_IP, server_ip, 9, 5000 + i)))
+    time.sleep(0.5)
+    got = 0
+    c.sock.settimeout(0.2)
+    while c.recv() is not None:
+        got += 1
+    c.sock.settimeout(1.0)
+    expect("icmp deny: at most 10 a second per session", got, 10)
+
+    time.sleep(1.1)
+    err = struct.pack("!BBHI", 3, 1, 0, 0) + udp_packet(server_ip, TUN_IP, 9, 1)[:28]
+    err = err[:2] + struct.pack("!H", checksum(err)) + err[4:]
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(err), 77, 0, 64, 1, 0, TUN_IP, socket.inet_aton("10.9.9.9"))
+    ip = ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:]
+    c.send(data(idx, None, ip + err))
+    expect("icmp deny: an icmp error is not answered with another", describe(c.recv()), "no response")
 
 
 def log_limit_tests(srv):
@@ -1731,6 +1776,7 @@ def main():
             audit_tests(srv)
             disconnect_tests(srv)
             log_limit_tests(srv)
+            icmp_deny_tests(srv)
             enroll_tests(srv, path)
             connector_tests(srv, acl_path, path)
         finally:

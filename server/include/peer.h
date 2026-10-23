@@ -69,6 +69,10 @@ typedef struct peer {
     int32_t logged_in;
     user_identity_t user;
 
+    /* ACL 이 막은 패킷에 돌려준 ICMP 의 수 (server.c 의 send_prohibited). 1초에 몇 개까지만. */
+    time_t icmp_at;
+    int32_t icmp_n;
+
     audit_flow_t flows[AUDIT_FLOWS];
     int32_t flow_next;
 } peer_t;
