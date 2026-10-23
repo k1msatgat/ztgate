@@ -50,6 +50,9 @@ static int acl_enabled;
 static int tun_prefix = 24;
 static int tun_mtu = TUN_MTU;
 
+/* 세션 키의 수명, 초 (-L). 지나면 세션을 끝내고 클라이언트가 새 키로 다시 열게 한다. */
+static time_t session_lifetime = SESSION_LIFETIME_SEC;
+
 /* 기기 목록 파일. 등록이 끝나면 여기에 한 줄을 더하고 다시 읽는다. */
 static const char *device_path;
 
@@ -223,21 +226,58 @@ static void send_deny(int32_t sock, const struct sockaddr_in *dst, socklen_t dst
 	}
 }
 
-/* 서버가 끝난다고 세션에 알린다 (DISCONNECT). 등록용 세션에도 보낸다 — 등록 중인 쪽도
- * 답을 기다리지 않게 된다. arg 는 UDP 소켓. */
+/* 세션을 끝낸다고 알릴 때 peer_drop_if 에 넘기는 것. */
+typedef struct disconnect_ctx {
+	int32_t sock;
+	uint8_t reason;		/* disconnect_reason_t */
+	time_t now;		/* CLOCK_MONOTONIC 초 */
+} disconnect_ctx_t;
+
+/* 세션에 DISCONNECT 를 보낸다. 등록용 세션에도 보낸다 — 등록 중인 쪽도 답을 기다리지
+ * 않게 된다. */
 static void send_disconnect(peer_t *peer, void *arg)
 {
+	const disconnect_ctx_t *ctx = arg;
 	uint8_t res[PKT_OVERHEAD + 1];
-	int sock = *(int *)arg;
 	int n;
 
-	res[PKT_HDR_LEN] = DISCONNECT_SERVER_SHUTDOWN;
+	res[PKT_HDR_LEN] = ctx->reason;
 	n = secure_seal(&peer->secure, MSG_TYPE_DISCONNECT, peer->session_idx, res, sizeof(res), 1);
 	if (n < 0) {
 		return;
 	}
-	if (sendto(sock, res, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+	if (sendto(ctx->sock, res, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
 		perror("sendto disconnect");
+	}
+}
+
+/* 키를 바꿀 때가 된 세션 (proto.h 의 "세션 키의 수명"). 등록용 세션은 몇 초면 끝나고
+ * 터널을 나르지 않으므로 보지 않는다. */
+static int rekey_due(const peer_t *peer, void *arg)
+{
+	const disconnect_ctx_t *ctx = arg;
+
+	return !peer->enroll &&
+		(ctx->now - peer->established_at >= session_lifetime ||
+		 peer->secure.tx_counter >= REKEY_AFTER_PACKETS ||
+		 peer->secure.rx_max >= REKEY_AFTER_PACKETS);
+}
+
+/* 1초에 한 번. 키를 바꿀 때가 된 세션을 끝내고 클라이언트가 새 키로 다시 열게 한다. */
+static void rekey_tick(int32_t sock)
+{
+	static time_t checked_at = -1;
+	disconnect_ctx_t ctx = { .sock = sock, .reason = DISCONNECT_REKEY, .now = mono_now() };
+	int n;
+
+	if (ctx.now == checked_at) {
+		return;
+	}
+	checked_at = ctx.now;
+
+	n = peer_drop_if(rekey_due, send_disconnect, &ctx, "rekey");
+	if (n > 0) {
+		printf("[peer] %d session(s) reached the key lifetime, asked to re-handshake\n", n);
 	}
 }
 
@@ -848,7 +888,7 @@ int main(int argc, char *argv[])
 		return verify_token(argv[2]);
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:L:")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -878,6 +918,16 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 		}
+		else if (opt == 'L') {
+			/* 짧게 두면 키를 자주 바꾸는 만큼 왕복 두 번의 끊김이 잦아진다. 시험에서는
+			 * 몇 초로 줄여 바뀌는 것을 본다. */
+			long v = strtol(optarg, &end, 10);
+			if (*end != '\0' || v < 2 || v > 7 * 86400) {
+				fprintf(stderr, "invalid session lifetime in seconds (2..%d) : %s\n", 7 * 86400, optarg);
+				return 1;
+			}
+			session_lifetime = (time_t)v;
+		}
 		else {
 			argc = 0;
 			break;
@@ -892,7 +942,8 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-n tunnel-prefix-len] [-m tunnel-mtu] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
 		fprintf(stderr, "       -u: accept user logins (JWT) from the identity provider this file describes\n");
 		fprintf(stderr, "       -n, -m: what the tun device is configured with (default /24, mtu %d);\n", TUN_MTU);
@@ -1030,6 +1081,7 @@ int main(int argc, char *argv[])
 		}
 
 		peer_check_expired();
+		rekey_tick(sock);
 		status_tick(epfd);
 
 		/* kill -HUP 으로 기기 목록과 ACL 을 다시 읽는다. 서버를 내렸다 올리면 모든
@@ -1328,7 +1380,11 @@ int main(int argc, char *argv[])
 
 	/* 끝난다고 알린다. 다시 시작하는 중이면 클라이언트는 30초를 기다리지 않고 바로 다시
 	 * 붙는다. 세션도 감사 로그에 "shutdown" 으로 닫힌다. */
-	peer_drop_all(send_disconnect, &sock, "shutdown");
+	{
+		disconnect_ctx_t ctx = { .sock = sock, .reason = DISCONNECT_SERVER_SHUTDOWN };
+
+		peer_drop_if(NULL, send_disconnect, &ctx, "shutdown");
+	}
 
 out:
 	if (epfd >= 0) {

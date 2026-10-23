@@ -7,6 +7,7 @@
 #   service.sh forward-down   터널 밖으로의 전달 규칙을 뺀다 (ExecStopPost)
 #
 # server.env 에 FORWARD_OUT=<인터페이스> 가 있으면 tun-up 이 그 인터페이스로의 전달을 켠다.
+# SESSION_LIFETIME=<초> 가 있으면 세션 키를 그 주기로 바꾼다 (vpn_server -L, 기본 3600).
 
 set -eu
 
@@ -73,6 +74,11 @@ run)
 	# 내려 준다.
 	# -e: 등록 코드의 대기 목록. 서버가 그 코드로 온 기기를 devices.conf 에 직접 올린다.
 	args=(-s /run/ztgate/status.sock -a /var/log/ztgate/audit.log -e "$ETC/enroll.conf" -n "$PREFIX" -m "$MTU")
+
+	# 세션 키의 수명. 적지 않으면 서버의 기본값(1시간)이다.
+	if [ -n "${SESSION_LIFETIME:-}" ]; then
+		args+=(-L "$SESSION_LIFETIME")
+	fi
 
 	# 사용자 로그인은 IdP 설정이 있을 때만 받는다 (README 의 "사용자 로그인").
 	if [ -f "$ETC/idp.conf" ]; then

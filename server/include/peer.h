@@ -82,8 +82,10 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 peer_t *peer_find_idx(uint32_t idx);
 /* reason 은 감사 로그에 남는 단어다 (audit.h). */
 void peer_drop(peer_t *peer, const char *reason);
-/* 모든 세션을 내린다. 내리기 전에 세션마다 before 를 부른다 (끝난다고 알리기). */
-void peer_drop_all(void (*before)(peer_t *peer, void *arg), void *arg, const char *reason);
+/* due 가 1 을 돌려주는 세션을 모두 내린다 (due 가 NULL 이면 전부). 내리기 전에 세션마다
+ * before 를 부른다 (끝난다고 알리기). 내린 수를 돌려준다. */
+int peer_drop_if(int (*due)(const peer_t *peer, void *arg),
+		void (*before)(peer_t *peer, void *arg), void *arg, const char *reason);
 peer_t *peer_lookup(struct in_addr inner);
 peer_t *peer_find_device(const uint8_t id[DEVICE_ID_LEN]);
 void peer_dump(void);

@@ -235,16 +235,21 @@ void peer_drop(peer_t *peer, const char *reason)
 	release((int32_t)(peer - peers));
 }
 
-void peer_drop_all(void (*before)(peer_t *peer, void *arg), void *arg, const char *reason)
+int peer_drop_if(int (*due)(const peer_t *peer, void *arg),
+		void (*before)(peer_t *peer, void *arg), void *arg, const char *reason)
 {
 	int32_t i;
+	int n = 0;
 
 	for (i = 0; i < MAX_PEERS; i++) {
-		if (peers[i].used) {
+		if (peers[i].used && (due == NULL || due(&peers[i], arg))) {
 			before(&peers[i], arg);
 			peer_drop(&peers[i], reason);
+			n++;
 		}
 	}
+
+	return n;
 }
 
 void peer_init(void)

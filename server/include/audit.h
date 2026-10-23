@@ -49,7 +49,7 @@ void audit_session_open(const peer_t *peer);
 
 /* reason: "expired" (60초 무응답), "posture" (정책에 못 미침), "device_removed",
  * "replaced" (같은 기기가 다시 인증), "evicted" (표가 가득 참), "error",
- * "closed" (클라이언트가 DISCONNECT 로 끝냄), "shutdown" (서버가 끝남) */
+ * "closed" (클라이언트가 DISCONNECT 로 끝냄), "shutdown" (서버가 끝남), "rekey" (키의 수명이 다함) */
 void audit_session_close(const peer_t *peer, const char *reason);
 
 /* id 는 상대가 댄 기기 ID 다. 등록된 기기인지와 관계없이 적는다. */

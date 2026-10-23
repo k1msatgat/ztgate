@@ -1262,6 +1262,40 @@ def shutdown_tests(path):
     return srv
 
 
+def rekey_tests(path):
+    """세션 키의 수명(-L)이 다하면 서버가 DISCONNECT(REKEY) 로 세션을 끝내고, 다시 핸드셰이크한
+    세션은 새 번호와 새 키로 열리는가. 이전 세션의 키로 감싼 패킷은 더 이상 받지 않는가."""
+    DISCONNECT_REKEY = 3
+    srv = Server(path, opts=["-L", "2"])
+    c = Client()
+    idx = session(c)
+    old = SESSIONS[idx][:]
+
+    r = None
+    for _ in range(5):
+        r = c.recv()
+        if r is not None and r[0] == DISCONNECT:
+            break
+    expect("rekey: the server ends the session when its key is old",
+           r and (r[0], r[1] == idx, r[2]), (DISCONNECT, True, bytes([DISCONNECT_REKEY])))
+
+    new = session(c)
+    expect("rekey: the next handshake opens a new session", new != idx, True)
+    expect("rekey: ...with new keys", SESSIONS[new][0] != old[0] and SESSIONS[new][1] != old[1], True)
+
+    c.drain()
+    c.send(keepalive(idx))
+    expect("rekey: the old session no longer answers", describe(c.recv()), "no response")
+    c.send(keepalive(new))
+    r = c.recv()
+    expect("rekey: the new session answers", r and r[0], KEEPALIVE)
+
+    reasons = [e["reason"] for e in srv.events() if e["event"] == "session_close" and e.get("session") == "%08x" % idx]
+    expect("rekey: audited as rekey", reasons, ["rekey"])
+    srv.stop()
+    return srv
+
+
 SCALE_DEVICES = 1000
 
 
@@ -1598,6 +1632,7 @@ def main():
 
         write_devices(path, LINE1, LINE2)
         logs.append(shutdown_tests(path).text())
+        logs.append(rekey_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)
