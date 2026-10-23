@@ -152,12 +152,16 @@ cat > "$ACL" <<EOF
 10.0.0.0/24  $SRV_TUN       udp   5353 allow  group=ops
 any          any            any   any  deny
 EOF
+# 내부 DNS. 네임스페이스 안의 클라이언트는 호스트의 systemd-resolved 에 자기 tun 을 알릴 수
+# 없어(장치 번호가 다른 네임스페이스의 것이다) 실제로 걸리지는 않는다. 여기서는 v7 의 설정을
+# 받아 DNS 를 처리하는 길을 지나고도 연결이 그대로인지를 본다.
+printf 'server %s\ndomain corp.example\n' "$SRV_TUN" > "$WORK/dns.conf"
 chmod 600 "$DEVICES" "$ENROLL" "$ACL"
 
 before=$(ip -o link show type tun | awk -F': ' '{print $2}')
 # 사용자 로그인: 시험용 IdP (tools/idp/mint.py) 의 키를 서버가 믿게 한다.
 python3 "$ROOT_DIR/tools/idp/mint.py" keys "$IDP" > /dev/null || { echo "mint.py keys failed"; exit 1; }
-stdbuf -oL "$SERVER" -v -e "$ENROLL" -u "$IDP/idp.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
+stdbuf -oL "$SERVER" -v -e "$ENROLL" -u "$IDP/idp.conf" -d "$WORK/dns.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
 SRV_PID=$!
 wait_for 5 sh -c "ip -o link show type tun | grep -q ." || { echo "server did not start"; cat "$SLOG"; exit 1; }
 SRV_IF=$(ip -o link show type tun | awk -F': ' '{print $2}' | grep -vxF "$before" | head -n 1)
@@ -186,6 +190,7 @@ check "connect: tun mtu is the server's (1400)" \
 check "connect: route from the ACL allow rule ($ROUTED_NET)" \
 	sh -c "nsenter -t $NS_PID -n --preserve-credentials ip route show $ROUTED_NET | grep -q $CLI_IF"
 check "connect: ping $SRV_TUN through the tunnel" ping_ok "$SRV_TUN"
+check "connect: the client handles the pushed internal dns" log_has "$CLOG" "[cfg] dns"
 
 echo "== 3. acl"
 denied_before=$(grep -c '^\[deny\]' "$SLOG")

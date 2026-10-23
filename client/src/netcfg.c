@@ -6,6 +6,7 @@
 #include <net/route.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 
 #include "netcfg.h"
 
@@ -103,6 +104,102 @@ static void route_ctl(int sock, netcfg_t *n, const net_route_t *r, unsigned long
 	printf("[cfg] route %c %s/%u\n", add ? '+' : '-', ip4(r->addr, ib), r->prefix_len);
 }
 
+/* ---- 내부 DNS ------------------------------------------------------------------
+ *
+ * systemd-resolved 의 인터페이스별 설정으로 건다. domain 앞의 ~ 는 "이 이름은 이 인터페이스의
+ * DNS 로 묻되, 짧은 이름 뒤에 붙여 보지는 않는다"는 뜻이다 — 분할 DNS (proto.h). tun 장치가
+ * 없어지면 resolved 가 그 설정을 스스로 버리므로 끝날 때 따로 지우지 않는다.
+ *
+ * resolved 를 쓰지 않는 장비(/etc/resolv.conf 를 직접 쓰는 곳)에서는 걸지 않는다. 모든 이름을
+ * 회사 DNS 로 보내는 것(resolv.conf 를 바꾸는 것)은 분할 DNS 가 아니다. */
+static const char *const RESOLVECTL[] = { "/usr/bin/resolvectl", "/bin/resolvectl" };
+
+static int run_resolvectl(char *const argv[])
+{
+	const char *path = NULL;
+	int status;
+	pid_t pid;
+	size_t i;
+
+	for (i = 0; i < sizeof(RESOLVECTL) / sizeof(RESOLVECTL[0]); i++) {
+		if (access(RESOLVECTL[i], X_OK) == 0) {
+			path = RESOLVECTL[i];
+			break;
+		}
+	}
+	if (path == NULL) {
+		fprintf(stderr, "[cfg] dns: resolvectl not found (systemd-resolved), internal names will not resolve\n");
+		return -1;
+	}
+
+	/* 셸을 거치지 않는다. 이름은 net_domain_ok 를 지난 글자뿐이지만, 인자로 넘기면 그런
+	 * 검사에 기대지 않아도 된다. */
+	pid = fork();
+	if (pid < 0) {
+		perror("fork");
+		return -1;
+	}
+	if (pid == 0) {
+		execv(path, argv);
+		_exit(127);
+	}
+	if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+		fprintf(stderr, "[cfg] dns: %s %s failed\n", argv[0], argv[1]);
+		return -1;
+	}
+
+	return 0;
+}
+
+static void dns_apply(netcfg_t *n, const net_config_t *want)
+{
+	char ips[NET_MAX_DNS][INET_ADDRSTRLEN];
+	char doms[NET_MAX_DOMAINS][NET_DOMAIN_MAX + 2];
+	char *argv[3 + NET_MAX_DOMAINS + 1];
+	int i, k;
+
+	if (want->n_domains == 0) {
+		argv[0] = "resolvectl";
+		argv[1] = "revert";
+		argv[2] = n->ifname;
+		argv[3] = NULL;
+		if (run_resolvectl(argv) == 0) {
+			printf("[cfg] dns: none\n");
+		}
+		return;
+	}
+
+	k = 0;
+	argv[k++] = "resolvectl";
+	argv[k++] = "dns";
+	argv[k++] = n->ifname;
+	for (i = 0; i < want->n_dns; i++) {
+		argv[k++] = (char *)ip4(want->dns[i], ips[i]);
+	}
+	argv[k] = NULL;
+	if (run_resolvectl(argv) < 0) {
+		return;
+	}
+
+	k = 0;
+	argv[k++] = "resolvectl";
+	argv[k++] = "domain";
+	argv[k++] = n->ifname;
+	for (i = 0; i < want->n_domains; i++) {
+		snprintf(doms[i], sizeof(doms[i]), "~%s", want->domains[i]);
+		argv[k++] = doms[i];
+	}
+	argv[k] = NULL;
+	if (run_resolvectl(argv) < 0) {
+		return;
+	}
+
+	for (i = 0; i < want->n_domains; i++) {
+		printf("[cfg] dns: %s -> %s%s%s\n", want->domains[i], ips[0],
+				want->n_dns > 1 ? ", " : "", want->n_dns > 1 ? ips[1] : "");
+	}
+}
+
 static int ifr_ioctl(int sock, const netcfg_t *n, unsigned long req, struct ifreq *ifr, const char *what)
 {
 	memcpy(ifr->ifr_name, n->ifname, IFNAMSIZ);
@@ -179,6 +276,10 @@ int netcfg_apply(netcfg_t *n, const net_config_t *want)
 		if (!n->has_applied || !route_in(cur, &want->routes[i])) {
 			route_ctl(sock, n, &want->routes[i], SIOCADDRT);
 		}
+	}
+
+	if (!n->has_applied ? want->n_domains > 0 : !net_dns_equal(cur, want)) {
+		dns_apply(n, want);
 	}
 
 	*cur = *want;
