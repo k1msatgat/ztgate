@@ -15,7 +15,7 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const net = require('node:net');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 
 const UNIT = 'ztgate.service';
 const ETC = '/etc/ztgate';
@@ -23,6 +23,7 @@ const DEVICE_FILE = `${ETC}/devices.conf`;
 const ACL_FILE = `${ETC}/acl.conf`;
 const ENROLL_FILE = `${ETC}/enroll.conf`;
 const ENV_FILE = `${ETC}/server.env`;
+const LOCK_FILE = `${ETC}/.ztgate.lock`;	/* server/src/enroll.c 의 config_lock 과 같은 파일 */
 const ACL_APPLIED = '/run/ztgate/acl.applied';
 const STATUS_SOCK = '/run/ztgate/status.sock';
 const SERVER_BIN = '/opt/ztgate/server/bin/vpn_server';
@@ -823,6 +824,43 @@ function reload() {
 
 /* ---- 명령 ------------------------------------------------------------------ */
 
+/* 기기 목록과 등록 대기 목록은 서버도 고친다 (등록 코드로 기기가 올라올 때). 읽고 → 고치고 →
+ * 새 파일로 바꾸는 사이에 서로 끼면 먼저 쓴 쪽이 고친 것이 사라진다. 그 파일을 고치는 명령은
+ * 서버와 같은 잠금(LOCK_FILE 의 flock)을 잡고 돈다.
+ *
+ * Node 에는 flock 이 없어 flock(1) 이 잠금을 쥔 채 표준 입력을 기다리게 하고, 끝나면 그
+ * 표준 입력을 닫는다. 이 프로세스가 죽어도 flock(1) 이 EOF 를 보고 끝나 잠금이 남지 않는다.
+ * 서버는 200ms 만 기다리므로 잠금 안에서는 파일을 고치는 것만 한다 — 서버에 다시 읽게 하고
+ * 그 결과를 기다리는 것(최대 3초)은 풀고 나서 한다 (명령이 [RELOAD] 를 돌려주면 main 이). */
+const LOCKED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove', 'enroll_create', 'enroll_revoke']);
+const RELOAD = Symbol('reload');
+
+function withConfigLock(fn) {
+	return new Promise((resolve, reject) => {
+		const holder = spawn('flock', ['-x', '-w', '5', LOCK_FILE, 'sh', '-c', 'echo locked; exec cat > /dev/null'],
+			{ env: ENV, stdio: ['pipe', 'pipe', 'ignore'] });
+		let held = false;
+
+		holder.stdout.once('data', () => {
+			held = true;
+			try {
+				resolve(fn());
+			} catch (e) {
+				reject(e);
+			} finally {
+				holder.stdin.end();
+			}
+		});
+		holder.on('exit', (code) => {
+			if (!held) {
+				reject(new CtlError(code === 1 ? 'the device files are being changed by the server; try again'
+					: 'cannot lock the device files (flock)'));
+			}
+		});
+		holder.on('error', () => reject(new CtlError('cannot lock the device files (flock(1) not found)')));
+	});
+}
+
 const COMMANDS = {
 	status() {
 		return status();	/* Promise — main 이 기다린다 */
@@ -964,7 +1002,7 @@ const COMMANDS = {
 		devices.push(d);
 		writeDevices(devices);
 
-		return { device: publicDevice(d), ...reload() };
+		return { device: publicDevice(d), [RELOAD]: true };
 	},
 
 	device_update(a) {
@@ -996,7 +1034,7 @@ const COMMANDS = {
 
 		writeDevices(devices);
 
-		return { device: publicDevice(d), ...reload() };
+		return { device: publicDevice(d), [RELOAD]: true };
 	},
 
 	/* 코드는 이 응답에서 한 번만 나온다. 파일에는 코드에서 뽑은 값만 남는다. */
@@ -1047,7 +1085,7 @@ const COMMANDS = {
 			code: code.match(/.{5}/g).join('-'),
 			enrollment: publicEnroll(entry),
 			how: 'On the device: "vpn_client.exe enroll <server-ip> <port> <code>", or the GUI posture tab -> enroll. The code works once.',
-			...reload(),
+			[RELOAD]: true,
 		};
 	},
 
@@ -1066,7 +1104,7 @@ const COMMANDS = {
 
 		writeEnroll(left);
 
-		return { revoked: id, ...reload() };
+		return { revoked: id, [RELOAD]: true };
 	},
 
 	device_remove(a) {
@@ -1080,7 +1118,7 @@ const COMMANDS = {
 
 		writeDevices(left);
 
-		return { removed: id, ...reload() };
+		return { removed: id, [RELOAD]: true };
 	},
 
 	acl_get() {
@@ -1181,7 +1219,14 @@ async function main() {
 		if (req === null || typeof req !== 'object' || !Object.hasOwn(COMMANDS, req.cmd)) {
 			fail(`unknown command (${Object.keys(COMMANDS).join(', ')})`);
 		}
-		out = { ok: true, ...await COMMANDS[req.cmd](req) };
+		let r = LOCKED_COMMANDS.has(req.cmd)
+			? await withConfigLock(() => COMMANDS[req.cmd](req))
+			: await COMMANDS[req.cmd](req);
+		if (r[RELOAD]) {
+			delete r[RELOAD];
+			r = { ...r, ...reload() };
+		}
+		out = { ok: true, ...r };
 	} catch (e) {
 		/* 예상한 실패만 그대로 전한다. 그 밖의 예외는 경로 같은 내부 사정을 담고
 		 * 있을 수 있으니 종류만 알린다. */
