@@ -1804,12 +1804,14 @@ static int pump_udp(tunnel_t *t)
  * 키를 보낸다. 어댑터는 만들지 않는다 — 등록용 세션으로는 터널을 쓸 수 없고, 그래서
  * 관리자 권한도 필요 없다. */
 int tunnel_enroll(const tunnel_config_t *base, const char *code,
-		const uint8_t id[DEVICE_ID_LEN], const uint8_t key[AUTH_KEY_LEN], HANDLE stop_event)
+		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN], HANDLE stop_event)
 {
 	tunnel_config_t cfg = *base;
 	tunnel_t tunnel;
 	tunnel_t *t = &tunnel;
 	uint8_t packet[BUF_SIZE];
+	uint8_t pub[VPN_PUB_LEN];
+	crypt_ecdh_t *mine = NULL;
 	msg_header_t h;
 	WSADATA wsa;
 	uint64_t deadline;
@@ -1825,6 +1827,14 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 		return TUNNEL_ENROLL_BAD_CODE;
 	}
 
+	/* 이 기기의 고정 키 쌍 (proto.h 의 "기기 등록", v8). 비밀키는 기기 키를 뽑는 데 한 번 쓰고
+	 * 버린다 — 저장하는 것은 그 결과뿐이라 DPAPI 에 두는 신원의 모양이 그대로다. */
+	mine = crypt_ecdh_new(pub);
+	if (mine == NULL) {
+		crypt_wipe(&cfg, sizeof(cfg));
+		return TUNNEL_ENROLL_ERROR;
+	}
+
 	memset(t, 0, sizeof(*t));
 	t->cfg = &cfg;
 	t->stop_event = stop_event;
@@ -1835,6 +1845,7 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 	t->session.server.sin_port = htons(cfg.server_port);
 
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+		crypt_ecdh_free(mine);
 		crypt_wipe(&cfg, sizeof(cfg));
 		return TUNNEL_ENROLL_ERROR;
 	}
@@ -1861,7 +1872,7 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 		/* 다시 보낼 때마다 새로 감싼다. counter 가 달라져야 서버가 재전송으로 버리지
 		 * 않는다. 내용이 같으므로 서버는 같은 답을 한다. */
 		memcpy(packet + PKT_HDR_LEN, id, DEVICE_ID_LEN);
-		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, key, AUTH_KEY_LEN);
+		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, pub, VPN_PUB_LEN);
 		n = secure_seal(&t->session.secure, MSG_TYPE_ENROLL, t->session.idx,
 				packet, sizeof(packet), ENROLL_PAYLOAD_LEN);
 		if (n < 0) {
@@ -1887,7 +1898,7 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 
 			/* 세션 키로 열려야 서버의 답이다. */
 			n = secure_open(&t->session.secure, packet, (size_t)n, NULL);
-			if (n < 1) {
+			if (n < (int)ENROLL_REPLY_LEN) {
 				continue;
 			}
 
@@ -1898,6 +1909,13 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 			default:		ret = TUNNEL_ENROLL_SERVER_FAILED; break;
 			}
 			tlog(t, "[enroll] server answered %u", packet[PKT_HDR_LEN]);
+
+			/* 서버의 공개키는 코드를 아는 서버만 열 수 있는 이 세션으로 왔다. 그것과 이 기기의
+			 * 비밀키로 기기 키를 뽑는다. 서버는 자기 비밀키와 이 기기의 공개키로 같은 값을 뽑는다. */
+			if (ret == TUNNEL_ENROLL_OK &&
+					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
+				ret = TUNNEL_ENROLL_ERROR;
+			}
 			goto out;
 		}
 	}
@@ -1912,7 +1930,8 @@ out:
 	}
 	WSACleanup();
 
-	/* 기기의 키가 지나간 자리와, 코드에서 뽑은 키가 든 설정의 사본. */
+	/* 코드에서 뽑은 키가 든 설정의 사본과 이 기기의 비밀키. */
+	crypt_ecdh_free(mine);
 	crypt_wipe(packet, sizeof(packet));
 	crypt_wipe(&cfg, sizeof(cfg));
 

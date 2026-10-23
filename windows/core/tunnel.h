@@ -160,16 +160,18 @@ typedef enum tunnel_enroll_result {
 	TUNNEL_ENROLL_ERROR		/* 이쪽의 오류 (소켓, 암호 도구) 또는 중지 요청 */
 } tunnel_enroll_result_t;
 
-/* 등록 코드(code)로 서버에 이 기기의 id 와 key 를 올린다. tunnel_enroll_result_t 를 돌려준다.
+/* 등록 코드(code)로 서버에 이 기기의 id 를 올린다 (proto.h 의 "기기 등록", v8). 이번에 만든 고정
+ * 키 쌍의 공개키를 보내고, 서버가 받아 주면 답에 실린 서버 공개키로 기기 키를 뽑아 key 에 적는다
+ * (TUNNEL_ENROLL_OK 일 때만). tunnel_enroll_result_t 를 돌려준다.
  *
  * cfg 에서는 서버 주소 / 포트와 on_log 만 쓴다. 어댑터를 만들지 않으므로 관리자 권한이
  * 필요 없다. 응답을 기다리는 동안 블로킹한다 (길어야 십여 초). stop_event 는
  * manual-reset 이벤트여야 하고, signaled 되면 기다리던 것을 그만둔다.
  *
- * id 와 key 는 호출자가 device_generate() 로 만든 것이고, OK 를 받은 뒤에 device_save()
+ * id 는 호출자가 device_generate() 로 만든 것이고, OK 를 받은 뒤에 key 와 함께 device_save()
  * 로 저장해야 한다. 순서가 반대면 서버가 받지 않았을 때 예전 신원만 잃는다. */
 int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
-		const uint8_t id[DEVICE_ID_LEN], const uint8_t key[AUTH_KEY_LEN], HANDLE stop_event);
+		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN], HANDLE stop_event);
 
 /* 폐기 이유의 짧은 영문 이름.
  * 코어는 표시 문자열을 가지지 않는다 — 여기서 한국어를 돌려주면 char* 가 되어
