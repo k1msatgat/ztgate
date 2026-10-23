@@ -56,6 +56,7 @@ const requirements = z.object({
 	min_build: z.number().int().min(0).optional().describe('minimum OS build (Windows 11 starts at 22000); 0 = no check'),
 }).strict().describe('Posture the device must report at handshake and at every keepalive. Omitted items are not checked. A value the client reports as "unknown" never passes.');
 
+const tags = z.array(z.string().regex(/^[a-z0-9_-]{1,32}$/)).max(4).describe('device tags (roles), e.g. ["eng", "laptop"]: ACL rules with tags apply only to devices that carry one of them');
 const deviceId = z.string().regex(/^[0-9a-fA-F]{32}$/).describe('device id, 32 hex digits (from device_list)');
 const label = z.string().max(32).describe('human-readable name, e.g. "woo-laptop"');
 const tunnelIp = z.string().describe('tunnel IPv4 address assigned to this device, e.g. 10.0.0.3. The server pushes it to the device; nothing is typed on the client');
@@ -141,6 +142,7 @@ server.registerTool('device_add', {
 		key: z.string().regex(/^[0-9a-fA-F]{64}$/).describe('device key, 64 hex digits, as printed by enroll'),
 		tunnel_ip: tunnelIp,
 		requirements: requirements.optional(),
+		tags: tags.optional(),
 		label: label.optional(),
 	},
 	annotations: WRITE,
@@ -152,6 +154,7 @@ server.registerTool('enroll_create', {
 		label: label.optional(),
 		tunnel_ip: tunnelIp.optional().describe('tunnel IPv4 address for the device; omit to take the lowest free address in the tunnel subnet'),
 		requirements: requirements.optional(),
+		tags: tags.optional(),
 		connector: z.array(z.string()).max(4).optional().describe('make this device an app connector for these networks, e.g. ["10.101.0.0/16"]: a machine inside that network that runs "vpn_client connector <server-ip> <port> <lan-ifname>". The server then relays packets for those networks (after the ACL) into the connector\'s session instead of its own tun, so the protected network needs no inbound port. Clients keep getting the routes from the ACL; the connector gets none.'),
 		ttl_minutes: z.number().int().min(1).max(1440).optional().describe('how long the code stays valid (default 15)'),
 	},
@@ -175,6 +178,7 @@ server.registerTool('device_update', {
 	inputSchema: {
 		id: deviceId,
 		requirements: requirements.optional(),
+		tags: tags.optional(),
 		tunnel_ip: tunnelIp.optional(),
 		label: label.optional(),
 	},
@@ -209,7 +213,8 @@ server.registerTool('acl_set', {
 				users: z.array(z.string()).optional().describe('user names as the identity provider reports them (the server\'s user-claim)'),
 				groups: z.array(z.string()).optional().describe('group names from the token\'s groups claim'),
 			}).strict().optional().describe('allow rules only: who must be logged in on the session (a user token sent by the client, see README "user login"). Any one listed user or group is enough; at most 4 in total. A session with nobody logged in, or whose token has expired, does not match and the packet is denied; later rules are not tried. Rules without users keep working on the device alone.'),
-		}).strict()).min(1).max(32),
+			tags: tags.optional().describe('which devices this rule is for, like src but by role: the rule applies only to a device carrying one of these tags; for other devices the rule is skipped and later rules are tried. Allowed on allow and deny rules.'),
+		}).strict()).min(1).max(1024),
 	},
 	annotations: DISRUPT,
 }, (a) => call('acl_set', a));

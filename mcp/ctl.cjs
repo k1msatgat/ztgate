@@ -40,7 +40,7 @@ const MAX_RULES = 1024;
 const MAX_PENDING = 256;	/* server/include/enroll.h */
 const ENROLL_CODE_LEN = 25;	/* lib/common/include/proto.h */
 const ENROLL_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const LINE_MAX = 255;	/* device.c / acl.c 가 한 줄을 char[256] 으로 읽는다 */
+const LINE_MAX = 511;	/* server/include/policy.h 의 CONF_LINE_MAX (줄바꿈 포함 512) */
 
 const ENV = { PATH: '/usr/sbin:/usr/bin', LC_ALL: 'C' };
 
@@ -270,6 +270,8 @@ function readDevices() {
 		 * 평범한 기기가 되고, 그 대역으로 가는 길이 사라진다. */
 		const conds = splitConnector(tok.slice(3));
 		d.connector = conds.connector;
+		/* 태그도 반드시 들고 다닌다. 빠뜨리면 다시 쓰는 순간 그 기기가 태그 규칙에서 빠진다. */
+		d.tags = conds.tags;
 		d.requirements = parseReq(conds.rest);
 		if (d.requirements === null) {
 			fail(`${DEVICE_FILE}: line ${i + 1}: unknown requirement; fix it by hand first`);
@@ -291,6 +293,7 @@ function writeDevices(devices) {
 
 	for (const d of devices) {
 		let line = [d.id, d.key, d.tunnel_ip, ...reqTokens(d.requirements),
+			...(d.tags || []).map((t) => `tag=${t}`),
 			...(d.connector || []).map((c) => `connector=${c}`)].join(' ');
 
 		if (d.label) {
@@ -311,6 +314,9 @@ function publicDevice(d) {
 
 	if (d.connector && d.connector.length > 0) {
 		p.connector = d.connector;
+	}
+	if (d.tags && d.tags.length > 0) {
+		p.tags = d.tags;
 	}
 	return p;
 }
@@ -378,6 +384,7 @@ function readEnroll() {
 			expires: Number(tok[3]),
 			requirements: parseReq(splitConnector(tok.slice(4)).rest) || { firewall: false, antivirus: false, min_build: 0 },
 			connector: splitConnector(tok.slice(4)).connector,
+			tags: splitConnector(tok.slice(4)).tags,
 			label: /^[A-Za-z0-9 _.-]{1,32}$/.test(label) ? label : '',
 		});
 	}
@@ -393,6 +400,7 @@ function writeEnroll(list) {
 
 	for (const e of list) {
 		let line = [e.id, e.key, e.tunnel_ip, e.expires, ...reqTokens(e.requirements),
+			...(e.tags || []).map((t) => `tag=${t}`),
 			...(e.connector || []).map((c) => `connector=${c}`)].join(' ');
 
 		if (e.label) {
@@ -413,6 +421,7 @@ function publicEnroll(e) {
 		tunnel_ip: e.tunnel_ip,
 		requirements: e.requirements,
 		...(e.connector && e.connector.length > 0 ? { connector: e.connector } : {}),
+		...(e.tags && e.tags.length > 0 ? { tags: e.tags } : {}),
 		expires_in_sec: e.expires - Math.floor(Date.now() / 1000),
 	};
 }
@@ -466,8 +475,23 @@ function isConnectorNet(s) {
 function splitConnector(tokens) {
 	return {
 		connector: tokens.filter((t) => t.startsWith('connector=')).map((t) => t.slice(10)),
-		rest: tokens.filter((t) => !t.startsWith('connector=')),
+		tags: tokens.filter((t) => t.startsWith('tag=')).map((t) => t.slice(4)),
+		rest: tokens.filter((t) => !t.startsWith('connector=') && !t.startsWith('tag=')),
 	};
+}
+
+/* 기기 태그: tag=eng (server/include/policy.h). 글자와 개수가 서버와 같아야 한다. */
+const TAG_NAME = /^[a-z0-9_-]{1,32}$/;
+const TAG_MAX = 4;
+
+function wantTags(v, what = 'tags') {
+	if (v === undefined || v === null) {
+		return [];
+	}
+	if (!Array.isArray(v) || v.length > TAG_MAX || !v.every((t) => typeof t === 'string' && TAG_NAME.test(t))) {
+		fail(`${what} must be a list of at most ${TAG_MAX} names of a-z 0-9 _ - (1-32 characters)`);
+	}
+	return [...new Set(v)];
 }
 
 function wantConnector(v) {
@@ -547,7 +571,8 @@ function readAcl() {
 
 		if (tok.length >= 5) {
 			const rule = { src: tok[0], dst: tok[1], proto: tok[2], dport: tok[3], action: tok[4] };
-			const conds = tok.slice(5);
+			const conds = tok.slice(5).filter((t) => !t.startsWith('tag='));
+			const tags = tok.slice(5).filter((t) => t.startsWith('tag=')).map((t) => t.slice(4));
 			const require = parseReq(conds.filter((t) => !isUserToken(t)));
 			const users = parseUsers(conds.filter(isUserToken));
 
@@ -558,6 +583,10 @@ function readAcl() {
 			 * 쓰는 순간 "alice 만"이던 규칙이 모두에게 열린다. */
 			if (users.users.length + users.groups.length > 0) {
 				rule.users = users;
+			}
+			/* 태그도 같다. 빠뜨리면 "eng 기기만"이던 규칙이 모든 기기의 것이 된다. */
+			if (tags.length > 0) {
+				rule.tags = tags;
 			}
 			rules.push(rule);
 		}
@@ -971,6 +1000,7 @@ const COMMANDS = {
 			key: a.key,
 			tunnel_ip: a.tunnel_ip,
 			requirements: wantRequirements(a.requirements),
+			tags: wantTags(a.tags),
 			label: wantLabel(a.label),
 		};
 
@@ -1016,6 +1046,9 @@ const COMMANDS = {
 		if (a.requirements !== undefined) {
 			d.requirements = wantRequirements(a.requirements);
 		}
+		if (a.tags !== undefined) {
+			d.tags = wantTags(a.tags);
+		}
 		if (a.label !== undefined) {
 			d.label = wantLabel(a.label);
 		}
@@ -1044,6 +1077,7 @@ const COMMANDS = {
 		const ttl = a.ttl_minutes === undefined ? 15 : wantInt(a.ttl_minutes, 'ttl_minutes', 1, 1440);
 		const requirements = wantRequirements(a.requirements);
 		const connector = wantConnector(a.connector);
+		const tags = wantTags(a.tags);
 		const label = wantLabel(a.label);
 		const code = newEnrollCode();
 		let tunnelIp = a.tunnel_ip;
@@ -1075,6 +1109,7 @@ const COMMANDS = {
 			expires: Math.floor(Date.now() / 1000) + ttl * 60,
 			requirements,
 			connector,
+			tags,
 			label,
 		};
 
@@ -1163,8 +1198,11 @@ const COMMANDS = {
 				fail(`rule ${i}: users is only for allow rules`);
 			}
 
+			const tags = wantTags(r.tags, `rule ${i}: tags`);
+
 			lines.push([r.src, r.dst, r.proto, dport, r.action, ...reqTokens(require),
-				...users.users.map((n) => `user=${n}`), ...users.groups.map((n) => `group=${n}`)].join(' '));
+				...users.users.map((n) => `user=${n}`), ...users.groups.map((n) => `group=${n}`),
+				...tags.map((t) => `tag=${t}`)].join(' '));
 		});
 
 		writeAtomic(ACL_FILE, lines.join('\n') + '\n');
