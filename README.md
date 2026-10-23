@@ -240,7 +240,7 @@ any            any              any    any    deny
 any            any              any    any    deny
 ```
 
-**서버.** IdP의 공개키 묶음(JWKS)을 파일로 받아 두고 `-u`로 설정을 줍니다. 서버는 IdP와 직접 통신하지 않습니다 — 단일 스레드 이벤트 루프가 HTTPS 응답을 기다리는 동안 모든 터널이 멈추기 때문입니다. IdP가 키를 바꾸면 파일을 갈아 끼우고 `SIGHUP`을 보냅니다.
+**서버.** IdP의 공개키 묶음(JWKS)을 파일로 받아 두고 `-u`로 설정을 줍니다. 서버는 IdP와 직접 통신하지 않습니다 — 단일 스레드 이벤트 루프가 HTTPS 응답을 기다리는 동안 모든 터널이 멈추기 때문입니다. IdP가 키를 바꾸면 파일을 갈아 끼우고 `SIGHUP`을 보냅니다. 이 일은 `tools/idp/ztgate_jwks.py` 가 서버 밖에서 합니다 — 설정 문서에서 `jwks_uri` 를 찾아 받고, 서명 키가 있는 온전한 묶음이고 지금 것과 다를 때만 갈아 끼운 뒤 다시 읽게 합니다. `ztgate-jwks.timer` 가 15분마다 돌립니다.
 
 ```bash
 curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs > /etc/ztgate/jwks.json
@@ -399,7 +399,7 @@ sudo systemctl enable --now ztgate
 | 기기 추가 | `sudo env ENROLL_FILE=/etc/ztgate/enroll.conf docker/enroll-code.sh <터널 IP> [조건] -l <이름>`으로 코드를 만들어 건넨다 |
 | 정책 바꾸기 | `acl.conf`나 `devices.conf`를 고치고 `sudo systemctl reload ztgate`. 붙어 있는 기기는 다음 keepalive(10초 이내)부터 따른다 |
 | 기기 폐기 | `devices.conf`에서 그 줄을 지우고 reload. 다음 keepalive에서 끊긴다 |
-| IdP 키 교체 | 새 JWKS를 `jwks.json`에 받아 두고 reload. 깨진 파일이면 이전 키를 그대로 쓴다 |
+| IdP 키 교체 | `ztgate-jwks.timer` 가 15분마다 받아 바뀌었으면 reload 한다. 바로 받으려면 `sudo systemctl start ztgate-jwks`. 깨진 묶음은 깔지 않고, 서버도 깨진 파일이면 이전 키를 그대로 쓴다 |
 | ACL 켜기 / 끄기 | `acl.conf`를 만들거나 지우고 restart. 켜고 끄는 것은 시작할 때만 정해진다 |
 | 무슨 일이 있었나 | `sudo tail -f /var/log/ztgate/audit.log` (세션, 거절, 접근, 로그인, 정책 변경) |
 | 지금 누가 붙어 있나 | `echo '{"cmd":"status"}' \| sudo ztgate_ctl` (세션, 포스처, 사용자, 사유별 거절 수) |
@@ -909,7 +909,7 @@ sendto(buf, n + 32)     └─────────────────�
 - **기기 키는 서버에 평문으로 있습니다.** 기기 목록 파일의 권한(600)에 기대며, 서버가 뚫리면 모든 기기의 키가 드러납니다. 공개키 방식이면 서버에는 공개키만 두면 됩니다.
 - **기기 ID 와 핸드셰이크의 포스처는 평문입니다.** 기기를 추적할 수 있습니다.
 - **포스처는 자기 보고입니다.** Linux 에서는 커널 버전과 nftables 만 봅니다. iptables-legacy 로 건 규칙은 보지 못하고, 백신 칸은 수집하지 않습니다.
-- **사용자 토큰은 기기에 묶이지 않습니다.** 훔친 토큰은 다른 등록 기기에서도 쓸 수 있습니다 (그 기기의 키도 있어야 하지만). 서버는 IdP에 묻지 않으므로 IdP에서 막은 사용자도 토큰의 `exp`까지는 쓰입니다. JWKS는 관리자가 받아 두고 `SIGHUP`으로 다시 읽게 해야 합니다 (자동으로 받아 오지 않습니다).
+- **사용자 토큰은 기기에 묶이지 않습니다.** 훔친 토큰은 다른 등록 기기에서도 쓸 수 있습니다 (그 기기의 키도 있어야 하지만). 서버는 IdP에 묻지 않으므로 IdP에서 막은 사용자도 토큰의 `exp`까지는 쓰입니다. JWKS 는 서버가 받지 않고 `ztgate_jwks.py`(타이머, 15분)가 받아 줍니다. IdP 가 새 키를 묶음에 미리 올리지 않고 바로 쓰기 시작하면 다음 갱신까지 그 키의 토큰은 거절됩니다.
 - **세션 키는 끊고 다시 여는 방식으로 바꿉니다.** 세션이 열린 지 1시간(`-L`, `server.env` 의 `SESSION_LIFETIME`)이 지나거나 한 방향의 패킷이 2^36개에 닿으면 서버가 `DISCONNECT`(사유 3)로 세션을 끝내고, 클라이언트가 바로 새 핸드셰이크로 새 키를 받습니다. 새 키를 미리 합의해 두고 갈아 끼우는 방식(IKEv2 의 CREATE_CHILD_SA, WireGuard 의 키 쌍 겹치기)이 아니라서 그 사이(왕복 두 번)의 패킷은 잃습니다. 서버가 세션을 내리지 못해도 2^40개에서 양쪽이 그 키로 더는 감싸거나 풀지 않습니다.
 
 ### 규모와 성능
@@ -1146,6 +1146,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| JWKS 자동 갱신 — `tools/idp/ztgate_jwks.py`, systemd 타이머, 시험용 IdP 의 `jwks_uri`, 시험. 서버가 IdP 와 통신하지 않는 원칙을 지키고 밖의 도구가 받는 것은 AI가 제안 |
 | Prometheus 지표 — `tools/metrics/ztgate_exporter.py`, `ztgate-exporter.service`, 시험. 서버에 HTTP 를 넣지 않고 상태 소켓을 바꿔 내주는 것은 AI가 제안 |
 | 기기 태그 — `policy.c` 의 `tag_parse` / `tag_match`, 기기 목록 · ACL · 경로 · 상태 소켓, `ctl.cjs` / MCP 의 `tags`, 설정 줄 512자와 넘치는 줄 거부, 시험. 태그를 조건이 아닌 출발지처럼 다루는 것은 AI가 제안 |
 | ACL 거부 통지 — `server.c` 의 `send_prohibited`(ICMP 3/13, 세션마다 1초 10개), 시험 |
