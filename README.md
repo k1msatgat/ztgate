@@ -404,6 +404,7 @@ sudo systemctl enable --now ztgate
 | 무슨 일이 있었나 | `sudo tail -f /var/log/ztgate/audit.log` (세션, 거절, 접근, 로그인, 정책 변경) |
 | 지금 누가 붙어 있나 | `echo '{"cmd":"status"}' \| sudo ztgate_ctl` (세션, 포스처, 사용자, 사유별 거절 수) |
 | 서버 로그 | `journalctl -u ztgate` |
+| 지표 (Prometheus) | `tools/metrics/ztgate_exporter.py` 가 상태 소켓을 `127.0.0.1:9469/metrics` 로 내준다 (`ztgate-exporter.service`). 세션 수, 사유별 거절 수, 주고받은 양. `--per-session` 이면 세션마다 (기기 ID, 터널 주소, 사용자가 라벨에 들어가므로 밖으로 열 때는 인증하는 프록시를 앞에 둔다) |
 
 `ztgate_ctl`은 표준 입력으로 JSON 명령 하나를 받는 root 헬퍼입니다(`status`, `start` / `stop` / `restart` / `reload`, `logs`, `audit`, `device_*`, `enroll_*`, `acl_get` / `acl_set`). MCP 서버는 이 헬퍼를 감싸 AI 에이전트가 SSH로 같은 일을 하게 합니다. 셸은 열어 주지 않고, sudoers는 `ztgate_ctl`을 인자 없이 부르는 것 하나만 허용합니다.
 
@@ -1145,6 +1146,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| Prometheus 지표 — `tools/metrics/ztgate_exporter.py`, `ztgate-exporter.service`, 시험. 서버에 HTTP 를 넣지 않고 상태 소켓을 바꿔 내주는 것은 AI가 제안 |
 | 기기 태그 — `policy.c` 의 `tag_parse` / `tag_match`, 기기 목록 · ACL · 경로 · 상태 소켓, `ctl.cjs` / MCP 의 `tags`, 설정 줄 512자와 넘치는 줄 거부, 시험. 태그를 조건이 아닌 출발지처럼 다루는 것은 AI가 제안 |
 | ACL 거부 통지 — `server.c` 의 `send_prohibited`(ICMP 3/13, 세션마다 1초 10개), 시험 |
 | Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계 |
