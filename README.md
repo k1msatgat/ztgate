@@ -37,7 +37,7 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 | 어디까지 가는가 | 내부망 전체 | **적어서 연 곳만.** 규칙이 없으면 터널 대역 밖으로 나가지 못한다 |
 | 설정은 누가 갖는가 | 클라이언트의 설정 파일 | **서버.** 터널 주소와 경로를 서버가 내려 주고, 정책을 고치면 붙어 있는 기기가 따라온다 |
 
-> **상태: v0.6 (프로토콜 v6), [변경 기록](CHANGELOG.md).** 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 237개, 전체 경로 시험 44개, Keycloak 연동 시험을 돌립니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
+> **상태: v0.7 개발 중 (프로토콜 v7), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가 더해져 v6 과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 270개, 전체 경로 시험 46개, Keycloak 연동 시험을 돌립니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
 
 ## 한눈에 보기
 
@@ -314,6 +314,27 @@ docker run -d --cap-add NET_ADMIN --device /dev/net/tun \
 </details>
 
 <details>
+<summary><b>내부 DNS — 내부 자원을 이름으로</b></summary>
+
+<br/>
+
+내부 자원을 IP 가 아니라 이름(`intranet.corp.example`)으로 쓰려면 그 이름을 아는 DNS 에 물어야 합니다. 서버에 `dns.conf` 를 주면(`-d`, 서비스로 설치했다면 `/etc/ztgate/dns.conf` 가 있을 때) 터널 설정에 실어 모든 기기에 내려 줍니다.
+
+```
+# dns.conf — domain 에 적은 이름(과 그 아래 이름)만 server 로 묻는다
+server 10.101.0.53
+domain corp.example
+```
+
+- **적은 도메인만 내부 DNS 로 묻습니다 (분할 DNS).** 그 밖의 이름은 PC 가 원래 쓰던 DNS 로 갑니다 — 회사와 무관한 질의가 회사로 가지 않고, 내부 DNS 가 죽어도 인터넷은 됩니다. Windows 는 NRPT(이름 해석 정책 표), Linux 는 systemd-resolved 의 인터페이스별 도메인(`resolvectl domain <tun> ~corp.example`)으로 겁니다.
+- **그 DNS 서버에 닿을 규칙이 있어야 합니다.** ACL 에 `udp 53` 을 여는 `allow` 를 적으면 그 대역이 경로로도 내려갑니다.
+- 서버는 `domain` 이 없으면 `server` 를 적어도 내려 주지 않습니다. 커넥터에는 내려 주지 않습니다.
+- `SIGHUP` 으로 다시 읽고, 붙어 있는 기기는 다음 keepalive 응답에서 새 값을 받습니다. 틀린 파일이면 이전 것을 그대로 씁니다.
+- Linux 클라이언트는 systemd-resolved 가 없는 장비에서는 DNS 를 걸지 않고 그렇다고 로그에 남깁니다.
+
+</details>
+
+<details>
 <summary><b>앱 커넥터 — 내부망에 들어오는 포트를 열지 않는다</b></summary>
 
 <br/>
@@ -362,6 +383,7 @@ sudo systemctl enable --now ztgate
 | `/etc/ztgate/enroll.conf` | 등록 코드의 대기 목록 |
 | `/etc/ztgate/acl.conf` | 있으면 ACL이 켜진다 |
 | `/etc/ztgate/idp.conf`, `jwks.json` | 있으면 사용자 로그인을 받는다 |
+| `/etc/ztgate/dns.conf` | 있으면 내부 DNS 를 기기에 내려 준다 |
 | `/var/log/ztgate/audit.log` | 감사 로그 (사건마다 JSON 한 줄) |
 | `/run/ztgate/status.sock` | 상태 소켓 (root 전용) |
 
@@ -646,6 +668,7 @@ nonce  = 0x00000000 | counter (8B)            패킷마다, 방향마다 다른 
 
 ```
 tun_ip(4) | prefix_len(1) | n_routes(1) | mtu(2) | n_routes x ( addr(4) | prefix_len(1) )
+| n_dns(1) | n_domains(1) | n_dns x addr(4) | n_domains x ( len(1) | 이름 )        ← v7
 ```
 
 | 값 | 어디서 오는가 |
@@ -653,6 +676,7 @@ tun_ip(4) | prefix_len(1) | n_routes(1) | mtu(2) | n_routes x ( addr(4) | prefix
 | 터널 주소 | 기기 목록에 그 기기 앞으로 적힌 주소 |
 | 대역의 prefix, MTU | 서버를 띄울 때의 `-n` / `-m` |
 | 경로 | ACL에서 그 기기의 터널 주소가 출발지에 걸리는 `allow` 규칙들의 목적지 대역 |
+| 내부 DNS (v7) | 서버의 `dns.conf` (`-d`). 서버 2개, 도메인 4개까지 |
 
 - **경로는 ACL에서 뽑습니다.** 경로 목록을 따로 두면 둘이 어긋납니다 — 경로는 있는데 규칙이 없어 터널로 들어간 패킷이 버려지거나, 규칙은 있는데 경로가 없어 터널로 가지도 않습니다.
 - **빼는 것**: `deny` 규칙, 터널 대역 안의 목적지, 목적지가 `any`인 규칙.
@@ -1113,6 +1137,7 @@ ztgate/
 | 서버 규모 확장 — `peer.c` 의 해시 색인과 16bit 자리 번호(직접 구현한 피어 테이블의 구조를 바꿈), `device.c` 의 ID / 터널 주소 색인과 커넥터 목록, `status.c` 의 이어 쓰기, 상한 상수, `auth_check.py` 의 1000대 시험. 학습용에서 상용 수준으로 가는 방향은 사용자가 정하고, 무엇부터 할지는 AI가 제안 |
 | 종료 통지 — `DISCONNECT` 메시지, 서버의 수신과 종료 시 알림(`peer_drop_all`), Linux 클라이언트 / 커넥터와 Windows 터널의 송수신, 시험 |
 | 세션 키 교체 — 서버의 수명 / 패킷 수 검사(`rekey_tick`)와 `-L`, `secure.c` 의 counter 한계, 클라이언트의 사유 표시, `service.sh` 의 `SESSION_LIFETIME`, 시험. 끊고 다시 여는 방식으로 프로토콜을 바꾸지 않는 것은 AI가 제안 |
+| 내부 DNS (프로토콜 v7) — `net_config` 의 DNS 칸(`proto.c`), `server/src/dns.c` 와 `-d`, Linux 의 resolvectl, Windows 의 NRPT(`nrpt_*`), 시험. 분할 DNS 로 하고 모든 이름을 회사로 보내지 않는 것은 AI가 제안 |
 | Windows 네트워크 변화 감지 — `core/tunnel.c` 의 `net_watch_*` / `net_tick`, 절전 복귀 뒤 실패한 재핸드셰이크의 즉시 재시도 |
 | 로그 등급과 속도 제한 — `server.c` 의 `log_ok` / `-v`, `bench.sh` 의 quiet 모드, 시험. 쿠키보다 로그를 먼저 막는 판단(비싼 일은 HMAC 뒤에만 한다)은 AI가 제안 |
 | 서버와 관리 도구 사이의 잠금 — `enroll.c` 의 `config_lock` / `enroll_file_drop` 과 잠근 뒤의 겹침 검사, `ctl.cjs` 의 `withConfigLock`(flock(1)), 시험 |
