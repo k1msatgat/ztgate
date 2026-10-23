@@ -77,6 +77,10 @@ int crypt_ecdh_derive(crypt_ecdh_t *e, const uint8_t peer_pub[VPN_PUB_LEN],
 
 void crypt_ecdh_free(crypt_ecdh_t *e);
 
+/* 키 쌍의 비밀 스칼라(빅엔디언 32B)를 꺼낸다. 서버가 자기 고정 키를 파일로 둘 때만 쓴다
+ * (vpn_server genkey). 그래서 Linux(OpenSSL) 쪽에만 있다. */
+int crypt_ecdh_export(crypt_ecdh_t *e, uint8_t priv[VPN_PRIV_LEN]);
+
 /* ---- 패킷 암호 -------------------------------------------------------------
  * 키 하나에 묶인 AES-256-GCM. 암호화와 위조 방지를 한 번에 한다. aad 는 암호화하지
  * 않지만 tag 가 함께 덮는 부분이다 (우리 헤더).

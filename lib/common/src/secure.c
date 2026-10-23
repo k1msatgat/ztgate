@@ -157,6 +157,28 @@ int secure_deny_mac(const uint8_t device_key[AUTH_KEY_LEN], uint8_t reason,
 static const char ENROLL_ALPHABET[] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 static const char ENROLL_ID_LABEL[] = "ztgate enroll id";
 static const char ENROLL_KEY_LABEL[] = "ztgate enroll key";
+static const char STATIC_LABEL[] = "ztgate v8 static";
+
+int secure_static_key(crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[AUTH_KEY_LEN])
+{
+	uint8_t secret[VPN_SECRET_LEN];
+	uint8_t msg[sizeof(STATIC_LABEL) - 1 + 2 * VPN_PUB_LEN];
+	int ret = -1;
+
+	if (crypt_ecdh_derive(mine, peer_pub, secret) < 0) {
+		goto out;
+	}
+	memcpy(msg, STATIC_LABEL, sizeof(STATIC_LABEL) - 1);
+	memcpy(msg + sizeof(STATIC_LABEL) - 1, client_pub, VPN_PUB_LEN);
+	memcpy(msg + sizeof(STATIC_LABEL) - 1 + VPN_PUB_LEN, server_pub, VPN_PUB_LEN);
+	ret = crypt_hmac(secret, sizeof(secret), msg, sizeof(msg), key);
+
+out:
+	crypt_wipe(secret, sizeof(secret));
+	return ret;
+}
 
 int secure_enroll_identity(const char *code, uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN])
 {

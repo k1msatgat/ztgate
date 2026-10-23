@@ -14,7 +14,7 @@ extern "C" {
 #define PROTO_STATIC_ASSERT _Static_assert
 #endif
 
-#define PROTOCOL_VERSION 7 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS */
+#define PROTOCOL_VERSION 8 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS, 8: 등록이 기기 공개키를 올리고 서버 공개키를 받는다 */
 
 #define TUN_MTU		1400
 #define BUF_SIZE	2048
@@ -119,6 +119,7 @@ typedef enum DISCONNECT_REASON {
 #define SECURE_COUNTER_LIMIT	(1ull << 40)
 
 #define DEVICE_ID_LEN	16
+#define VPN_PUB_LEN_WIRE	64	/* P-256 공개키 X | Y. crypt.h 의 VPN_PUB_LEN 과 같다 */
 #define AUTH_KEY_LEN	32
 #define AUTH_NONCE_LEN	16
 #define AUTH_MAC_LEN	32	/* HMAC-SHA256 출력 전체 */
@@ -161,11 +162,23 @@ typedef struct posture_report {
  *
  * 등록용 세션으로는 아래 한 가지만 할 수 있다. 터널 패킷은 받지 않는다.
  *
- *   C -> S  ENROLL   세션 패킷. 암호문 = device_id(16) | device_key(32)
- *   S -> C  ENROLL   세션 패킷. 암호문 = status(1)
+ *   C -> S  ENROLL   세션 패킷. 암호문 = device_id(16) | device_pub(64)
+ *   S -> C  ENROLL   세션 패킷. 암호문 = status(1) | server_pub(64)
  *
  * 답이 사라지면 클라이언트는 같은 것을 다시 보낸다. 서버는 같은 ID 로 다시 온 요청에
- * 같은 답을 한다 — 한 번 더 등록하지 않는다. */
+ * 같은 답을 한다 — 한 번 더 등록하지 않는다.
+ *
+ * v8 부터 기기는 비밀 키가 아니라 공개키를 올린다. 서버의 목록에는 공개키만 남고(p256:...),
+ * 서버가 뚫리거나 목록 파일이 새어도 기기의 키는 드러나지 않는다. 기기 키는 양쪽의 고정 키로
+ * 한 번 더 한 ECDH 에서 뽑는다 (secure.h 의 secure_static_key):
+ *
+ *   기기   key = static_key(기기 비밀키, 서버 공개키)    등록할 때 한 번 계산해 저장하고 비밀키는 버린다
+ *   서버   key = static_key(서버 비밀키, 기기 공개키)    목록을 읽을 때 계산한다
+ *
+ * 그 값이 지금까지의 "기기 키" 자리에 들어가므로 핸드셰이크와 세션 키는 그대로다. 서버의 비밀은
+ * 서버 키 파일(vpn_server -k) 하나로 줄어든다. 서버 공개키는 등록 세션 안에서 오므로(코드를 아는
+ * 서버만 그 세션을 열 수 있다) 기기는 따로 확인할 것이 없다. 관리자가 손으로 적는 공유 키
+ * 기기(64 hex)도 그대로 받는다. */
 typedef enum ENROLL_STATUS {
 	ENROLL_OK = 0,
 	ENROLL_GONE,		/* 코드가 그 사이에 만료됐거나 다른 기기가 먼저 썼다 */
@@ -173,7 +186,8 @@ typedef enum ENROLL_STATUS {
 	ENROLL_FAILED		/* 서버가 목록에 적지 못했다 */
 } enroll_status_t;
 
-#define ENROLL_PAYLOAD_LEN	(DEVICE_ID_LEN + AUTH_KEY_LEN)
+#define ENROLL_PAYLOAD_LEN	(DEVICE_ID_LEN + VPN_PUB_LEN_WIRE)
+#define ENROLL_REPLY_LEN	(1 + VPN_PUB_LEN_WIRE)
 
 /* 등록 코드: 0-9 와 헷갈리는 글자(I L O U)를 뺀 대문자, 25자 (125비트).
  * 보여 줄 때는 다섯 자씩 끊는다: 7K2QF-9XWM4-... */

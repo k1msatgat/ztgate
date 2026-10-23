@@ -70,6 +70,18 @@ int secure_deny_mac(const uint8_t device_key[AUTH_KEY_LEN], uint8_t reason,
  * 글자 수가 맞지 않거나 쓰지 않는 글자가 있으면 -1. */
 int secure_enroll_identity(const char *code, uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN]);
 
+/* 고정 키 쌍 둘(기기, 서버)에서 기기 키를 뽑는다 (proto.h 의 "기기 등록", v8).
+ *
+ *   secret = ECDH(mine, peer_pub)                     crypt_ecdh_derive 와 같다
+ *   key    = HMAC-SHA256(secret, "ztgate v8 static" | client_pub | server_pub)
+ *
+ * 기기는 (기기 비밀키, 서버 공개키), 서버는 (서버 비밀키, 기기 공개키)로 같은 값을 얻는다. 두
+ * 공개키를 넣는 순서는 역할로 정한다 — 기기가 앞. 이 값은 지금까지의 기기 키 자리에 들어간다. */
+PROTO_STATIC_ASSERT(VPN_PUB_LEN == VPN_PUB_LEN_WIRE, "public key size on the wire");
+int secure_static_key(crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[AUTH_KEY_LEN]);
+
 /* ---- 열린 세션 -------------------------------------------------------------- */
 
 /* 이미 받은 counter 를 기억하는 창의 폭. UDP 는 순서를 바꿔 전달할 수 있으므로 가장

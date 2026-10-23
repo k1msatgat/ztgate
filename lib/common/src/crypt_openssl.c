@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/random.h>
 
+#include <openssl/bn.h>
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -141,6 +142,20 @@ crypt_ecdh_t *crypt_ecdh_new(uint8_t pub[VPN_PUB_LEN])
 crypt_ecdh_t *crypt_ecdh_import(const uint8_t priv[VPN_PRIV_LEN], const uint8_t pub[VPN_PUB_LEN])
 {
 	return ecdh_wrap(ec_key(priv, pub));
+}
+
+int crypt_ecdh_export(crypt_ecdh_t *e, uint8_t priv[VPN_PRIV_LEN])
+{
+	BIGNUM *d = NULL;
+	int ret = -1;
+
+	if (EVP_PKEY_get_bn_param(e->pkey, OSSL_PKEY_PARAM_PRIV_KEY, &d) > 0 &&
+			BN_bn2binpad(d, priv, VPN_PRIV_LEN) == VPN_PRIV_LEN) {
+		ret = 0;
+	}
+	BN_clear_free(d);
+
+	return ret;
 }
 
 int crypt_ecdh_derive(crypt_ecdh_t *e, const uint8_t peer_pub[VPN_PUB_LEN],
