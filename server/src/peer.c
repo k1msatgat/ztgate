@@ -134,9 +134,17 @@ peer_t *peer_find_idx(uint32_t idx)
 }
 
 void peer_check_expired(void) {
+	static time_t checked_at = -1;
 	int i;
 	time_t now = mono_now();
 	char dst[INET_ADDRSTRLEN];
+
+	/* 이벤트 루프는 패킷이 올 때마다 돈다. 만료는 초 단위라 1초에 한 번만 표를 훑는다 —
+	 * 표가 크면 패킷마다 훑는 비용이 패킷을 나르는 비용보다 커진다. */
+	if (now == checked_at) {
+		return;
+	}
+	checked_at = now;
 
 	for (i = 0; i < MAX_PEERS; i++){
 		if(peers[i].used){
