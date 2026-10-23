@@ -7,7 +7,12 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <pthread.h>
 #include <sys/epoll.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <linux/if_tun.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <net/if.h>
 
@@ -67,7 +72,7 @@ enum log_kind { LOG_DROP, LOG_DENY, LOG_HS, LOG_KINDS };
 
 static const char *const log_kind_name[LOG_KINDS] = { "drop", "deny", "handshake" };
 
-static struct {
+static __thread struct {
 	time_t at;		/* 이 초 (CLOCK_MONOTONIC) */
 	int n;			/* 이 초에 찍은 줄 */
 	unsigned long suppressed;
@@ -95,6 +100,36 @@ static int log_ok(enum log_kind k)
 	log_state[k].n++;
 	return 1;
 }
+
+/* ---- 워커 ----------------------------------------------------------------------
+ *
+ * 서버는 패킷 수에서 막힌다 (README 의 "성능") — 패킷마다 시스템 콜, 열기, ACL, 쓰기를 한
+ * 스레드가 한다. -w N 이면 워커 N 개가 저마다 UDP 소켓(SO_REUSEPORT)과 tun 큐(IFF_MULTI_QUEUE)를
+ * 하나씩 갖고 같은 일을 나눠 한다. 커널이 UDP 는 출발지 주소로, tun 은 흐름으로 나눠 주므로 한
+ * 클라이언트의 패킷은 늘 같은 워커로 온다.
+ *
+ * 잠금은 두 겹이다.
+ *   table_lock   표(세션, 기기, ACL, 등록, IdP)를 바꾸는 일은 쓰기, 데이터 패킷은 읽기로 잡는다.
+ *                핸드셰이크, keepalive, 로그인, 다시 읽기, 만료는 드물어 쓰기로 둔다. 쓰기를 먼저
+ *                받게 해 데이터가 몰려도 핸드셰이크가 굶지 않는다.
+ *   peer->lock   읽기 잠금 아래에서 데이터 패킷이 세션의 바뀌는 칸을 고치는 동안. 두 세션의 잠금을
+ *                한꺼번에 쥐지 않는다 — 커넥터로 중계할 때 먼저 쥔 것을 놓고 다음 것을 잡는다.
+ *                한꺼번에 쥐면 "클라이언트 → 커넥터"와 "커넥터 → 클라이언트"를 맡은 두 워커가
+ *                서로를 기다린다.
+ * 워커가 하나면 잡지 않는다 — 지금까지와 같은 단일 스레드다.
+ *
+ * 만료, 키 교체, 다시 읽기, 상태 소켓은 워커 0 (main) 만 맡는다. */
+#define MAX_WORKERS 64
+
+static int nworkers = 1;
+static pthread_rwlock_t table_lock;
+
+#define TABLE_RDLOCK()	do { if (nworkers > 1) pthread_rwlock_rdlock(&table_lock); } while (0)
+#define TABLE_WRLOCK()	do { if (nworkers > 1) pthread_rwlock_wrlock(&table_lock); } while (0)
+#define TABLE_UNLOCK()	do { if (nworkers > 1) pthread_rwlock_unlock(&table_lock); } while (0)
+#define PEER_LOCK(p)	do { if (nworkers > 1) pthread_mutex_lock(&(p)->lock); } while (0)
+#define PEER_UNLOCK(p)	do { if (nworkers > 1) pthread_mutex_unlock(&(p)->lock); } while (0)
+#define STAT_INC(f)	__atomic_fetch_add(&stats.f, 1, __ATOMIC_RELAXED)
 
 #define LOG_LIMITED(kind, ...) do { if (log_ok(kind)) printf(__VA_ARGS__); } while (0)
 #define LOG_VERBOSE(...) do { if (verbose) printf(__VA_ARGS__); } while (0)
@@ -177,20 +212,29 @@ static void relay_to_connector(int32_t sock, const device_t *conn_dev, uint8_t *
 	peer_t *conn = peer_find_device(conn_dev->id);
 	int len;
 
+	struct sockaddr_in to;
+	socklen_t to_len;
+
 	if (conn == NULL || conn->enroll) {
 		LOG_LIMITED(LOG_DROP, "[drop] connector %s is not connected\n", device_id_str(conn_dev->id, ids));
-		stats.connector_offline++;
+		STAT_INC(connector_offline);
 		return;
 	}
 
+	PEER_LOCK(conn);
 	len = secure_seal(&conn->secure, MSG_TYPE_DATA, conn->session_idx, packet, cap, (size_t)n);
+	if (len >= 0) {
+		conn->tx_packets++;
+		conn->tx_bytes += (uint64_t)n;
+	}
+	to = conn->outer;
+	to_len = conn->outer_len;
+	PEER_UNLOCK(conn);
 	if (len < 0) {
 		return;
 	}
-	conn->tx_packets++;
-	conn->tx_bytes += (uint64_t)n;
 
-	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&conn->outer, conn->outer_len) < 0) {
+	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&to, to_len) < 0) {
 		perror("sendto connector");
 	}
 }
@@ -204,6 +248,8 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	const uint8_t *ip = packet + PKT_HDR_LEN;
 	struct in_addr src, dst;
 	const device_t *to_dev;
+	struct sockaddr_in dst_addr;
+	socklen_t dst_len;
 	peer_t *to;
 	int len;
 
@@ -213,7 +259,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	if (!device_connector_has(conn_dev, src)) {
 		LOG_LIMITED(LOG_DROP, "[drop] connector sent %s -> %s, source outside its networks\n",
 				ip_str(src, sb), ip_str(dst, db));
-		stats.spoofed_src++;
+		STAT_INC(spoofed_src);
 		return -1;
 	}
 
@@ -222,20 +268,26 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	if (to == NULL || to->enroll || to_dev == NULL || to_dev->n_connector != 0) {
 		LOG_LIMITED(LOG_DROP, "[drop] connector sent %s -> %s, no client session there\n",
 				ip_str(src, sb), ip_str(dst, db));
-		stats.connector_dropped++;
+		STAT_INC(connector_dropped);
 		return -1;
 	}
 
+	PEER_LOCK(conn);
 	conn->rx_packets++;
 	conn->rx_bytes += (uint64_t)n;
+	PEER_UNLOCK(conn);
+
+	PEER_LOCK(to);
 	to->tx_packets++;
 	to->tx_bytes += (uint64_t)n;
-
 	len = secure_seal(&to->secure, MSG_TYPE_DATA, to->session_idx, packet, cap, (size_t)n);
+	dst_addr = to->outer;
+	dst_len = to->outer_len;
+	PEER_UNLOCK(to);
 	if (len < 0) {
 		return -1;
 	}
-	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&to->outer, to->outer_len) < 0) {
+	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&dst_addr, dst_len) < 0) {
 		perror("sendto client");
 	}
 
@@ -272,7 +324,7 @@ static void send_deny(int32_t sock, const struct sockaddr_in *dst, socklen_t dst
 	}
 
 	if (reason <= DENY_POSTURE) {
-		stats.deny[reason]++;
+		__atomic_fetch_add(&stats.deny[reason], 1, __ATOMIC_RELAXED);
 	}
 
 	if (sendto(sock, res, sizeof(res), 0, (const struct sockaddr *)dst, dstlen) < 0) {
@@ -450,7 +502,7 @@ static void send_session_deny(int32_t sock, peer_t *peer, const struct sockaddr_
 	}
 
 	if (reason <= DENY_POSTURE) {
-		stats.deny[reason]++;
+		__atomic_fetch_add(&stats.deny[reason], 1, __ATOMIC_RELAXED);
 	}
 
 	if (sendto(sock, res, n, 0, (const struct sockaddr *)dst, dstlen) < 0) {
@@ -719,7 +771,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		printf("[enroll] code %s accepted, waiting for the device (%s)\n", ids, ip_str(tun_ip, ib));
 	}
 	else {
-		stats.handshake_ok++;
+		STAT_INC(handshake_ok);
 		audit_session_open(peer);
 
 		printf("[HS] device %s authenticated as %s (build=%u firewall=%u antivirus=%u)\n",
@@ -777,7 +829,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 
 	if (n < (int32_t)sizeof(posture)) {
 		LOG_LIMITED(LOG_DROP, "[drop] keepalive without posture (%d bytes)\n", n);
-		stats.keepalive_dropped++;
+		STAT_INC(keepalive_dropped);
 		return;
 	}
 
@@ -799,7 +851,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 	if (peer->ka_seen && counter <= peer->ka_counter) {
 		LOG_LIMITED(LOG_DROP, "[drop] keepalive out of order (counter %llu) idx=%08x\n",
 				(unsigned long long)counter, peer->session_idx);
-		stats.keepalive_dropped++;
+		STAT_INC(keepalive_dropped);
 		return;
 	}
 	peer->ka_counter = counter;
@@ -943,7 +995,7 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 		peer->user = who;
 		peer->logged_in = 1;
 		if (!same) {
-			stats.login_ok++;
+			STAT_INC(login_ok);
 			printf("[login] device %s: user %s (%u groups) until %lld\n",
 					ids, who.name, who.n_groups, (long long)who.expires);
 			audit_login(peer, status);
@@ -952,7 +1004,7 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 		name_len = strlen(who.name);
 	}
 	else {
-		stats.login_failed++;
+		STAT_INC(login_failed);
 		printf("[login] device %s: token rejected (%s)\n", ids, idp_status_name(status));
 		audit_login(peer, status);
 	}
@@ -1008,93 +1060,52 @@ static int verify_token(const char *idp_file)
 	return 0;
 }
 
-/* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. */
-static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
-		const struct sockaddr_in *src_in, socklen_t srclen)
+/* 데이터 패킷 (MSG_TYPE_DATA). 표의 읽기 잠금 아래에서 돈다 — 세션과 기기와 규칙은 그동안 바뀌지
+ * 않는다. 세션의 바뀌는 칸은 peer->lock 으로 고친다 (위의 "워커"). */
+static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
+		const msg_header_t *h, const struct sockaddr_in *src, socklen_t srclen)
 {
 	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
-	struct sockaddr_in src = *src_in;
-	msg_header_t msg_header;
 	const device_t *conn_dev;
 	struct in_addr inner, inner_dst;
-	uint64_t counter;
 	peer_t *peer;
 	uint8_t *ip;
-	int32_t off;
 	int verdict;
 
-	off = msg_decode(packet, (size_t)n, &msg_header);
-	if (off < 0 || msg_header.version != PROTOCOL_VERSION) {
-		LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
-		return;
-	}
-
-	if (msg_header.type == MSG_TYPE_REQ_HANDSHAKE) {
-		handle_request(sock, packet, n, &src, srclen);
-		return;
-	}
-	if (msg_header.type == MSG_TYPE_AUTH) {
-		handle_auth(sock, packet, n, &src, srclen);
-		return;
-	}
-
-	peer = peer_find_idx(msg_header.session_idx);
+	peer = peer_find_idx(h->session_idx);
 	if (peer == NULL) {
-		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", msg_header.session_idx);
-		stats.unknown_session++;
+		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", h->session_idx);
+		STAT_INC(unknown_session);
 		return;
 	}
 
 	/* 세션 번호는 와이어에 그대로 보인다. 그 번호를 댔다고 그 기기인 것은
 	 * 아니다. 세션 키로 열리는 패킷만 그 기기가 보낸 것이고, 열리지 않는
 	 * 패킷은 세션의 어떤 상태도 바꾸지 못한 채 여기서 버려진다. */
-	n = secure_open(&peer->secure, packet, (size_t)n, &counter);
+	PEER_LOCK(peer);
+	n = secure_open(&peer->secure, packet, (size_t)n, NULL);
+	PEER_UNLOCK(peer);
 	if (n == SECURE_REPLAY) {
 		LOG_LIMITED(LOG_DROP, "[drop] counter already seen idx=%08x\n", peer->session_idx);
-		stats.replayed++;
+		STAT_INC(replayed);
 		return;
 	}
 	if (n < 0) {
 		LOG_LIMITED(LOG_DROP, "[drop] tag does not match idx=%08x\n", peer->session_idx);
-		stats.bad_tag++;
+		STAT_INC(bad_tag);
 		return;
 	}
-
-	ip = packet + PKT_HDR_LEN;
 
 	/* 등록용 세션은 등록 말고는 아무것도 하지 못한다. 코드만 가진 쪽이
 	 * 그 세션으로 터널에 패킷을 넣을 수 있으면, 등록 코드가 곧 접속
 	 * 권한이 된다. */
 	if (peer->enroll) {
-		if (msg_header.type == MSG_TYPE_ENROLL) {
-			handle_enroll(sock, peer, ip, n, &src, srclen);
-		}
-		else {
-			LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
-					msg_header.type, peer->session_idx);
-		}
+		LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
+				h->type, peer->session_idx);
 		return;
 	}
 
-	switch (msg_header.type) {
-		case MSG_TYPE_DATA:
-			break;
-		case MSG_TYPE_KEEPALIVE:
-			handle_keepalive(sock, peer, ip, n, counter, &src, srclen);
-			return;
-		case MSG_TYPE_LOGIN:
-			handle_login(sock, peer, ip, n, &src, srclen);
-			return;
-		case MSG_TYPE_DISCONNECT:
-			printf("[peer] %s closed its session idx=%08x\n",
-					ip_str(peer->inner, ib), peer->session_idx);
-			peer_drop(peer, "closed");
-			return;
-		default:
-			LOG_LIMITED(LOG_DROP, "[drop] unknown type %u\n", msg_header.type);
-			return;
-	}
-
+	ip = packet + PKT_HDR_LEN;
 	if (n < IP_MIN_HDR || IP_VERSION(ip) != 4){
 		return;
 	}
@@ -1103,7 +1114,9 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	conn_dev = device_find(peer->device_id);
 	if (conn_dev != NULL && conn_dev->n_connector != 0) {
 		if (relay_from_connector(sock, peer, conn_dev, packet, cap, n) == 0) {
-			peer_touch(peer, &src, srclen);
+			PEER_LOCK(peer);
+			peer_touch(peer, src, srclen);
+			PEER_UNLOCK(peer);
 		}
 		return;
 	}
@@ -1112,7 +1125,7 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 
 	if (inner.s_addr != peer->inner.s_addr) {
 		LOG_LIMITED(LOG_DROP, "[drop] spoofed src %s for idx %08x\n", ip_str(inner, ib), peer->session_idx);
-		stats.spoofed_src++;
+		STAT_INC(spoofed_src);
 		return;
 	}
 
@@ -1132,13 +1145,12 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	}
 
 	if (verdict != ACL_ALLOW) {
-		stats.acl_denied++;
-		peer->acl_denied++;
+		STAT_INC(acl_denied);
 		if (verdict == ACL_DENY_POSTURE) {
-			stats.acl_denied_posture++;
+			STAT_INC(acl_denied_posture);
 		}
 		if (verdict == ACL_DENY_USER) {
-			stats.acl_denied_user++;
+			STAT_INC(acl_denied_user);
 		}
 		if (log_ok(LOG_DENY)) {
 			printf("[deny] %s -> %s proto=%d (%d bytes)",
@@ -1158,17 +1170,22 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 			}
 			printf("\n");
 		}
+		PEER_LOCK(peer);
+		peer->acl_denied++;
 		audit_access(peer, ip, n, 0, !acl_enabled ? "no_acl_file" :
 				verdict == ACL_DENY_POSTURE ? "posture" :
 				verdict == ACL_DENY_USER ? "user" : "acl");
 		send_prohibited(sock, peer, ip, n);
+		PEER_UNLOCK(peer);
 		return;
 	}
 
+	PEER_LOCK(peer);
 	audit_access(peer, ip, n, 1, NULL);
-	peer_touch(peer, &src, srclen);
+	peer_touch(peer, src, srclen);
 	peer->rx_packets++;
 	peer->rx_bytes += (uint64_t)n;
+	PEER_UNLOCK(peer);
 
 	conn_dev = device_connector_for(inner_dst);
 	if (conn_dev != NULL) {
@@ -1179,7 +1196,7 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	}
 
 	LOG_VERBOSE("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
-			n, ip_str(src.sin_addr, ob), ntohs(src.sin_port),
+			n, ip_str(src->sin_addr, ob), ntohs(src->sin_port),
 			ip_str(inner, ib), ip[IP_IHL(ip)]);
 
 	if (write(tun_fd, ip, n) < 0) {
@@ -1187,10 +1204,106 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	}
 }
 
+/* 데이터가 아닌 것 (핸드셰이크, keepalive, 로그인, 등록, 종료 통지). 표의 쓰기 잠금 아래에서
+ * 돈다 — 다른 워커의 데이터 패킷이 그동안 멈추므로 세션의 잠금은 필요 없다. */
+static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t *h,
+		const struct sockaddr_in *src, socklen_t srclen)
+{
+	char ib[INET_ADDRSTRLEN];
+	uint64_t counter;
+	peer_t *peer;
+	uint8_t *ip;
+
+	if (h->type == MSG_TYPE_REQ_HANDSHAKE) {
+		handle_request(sock, packet, n, src, srclen);
+		return;
+	}
+	if (h->type == MSG_TYPE_AUTH) {
+		handle_auth(sock, packet, n, src, srclen);
+		return;
+	}
+
+	peer = peer_find_idx(h->session_idx);
+	if (peer == NULL) {
+		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", h->session_idx);
+		STAT_INC(unknown_session);
+		return;
+	}
+
+	n = secure_open(&peer->secure, packet, (size_t)n, &counter);
+	if (n == SECURE_REPLAY) {
+		LOG_LIMITED(LOG_DROP, "[drop] counter already seen idx=%08x\n", peer->session_idx);
+		STAT_INC(replayed);
+		return;
+	}
+	if (n < 0) {
+		LOG_LIMITED(LOG_DROP, "[drop] tag does not match idx=%08x\n", peer->session_idx);
+		STAT_INC(bad_tag);
+		return;
+	}
+
+	ip = packet + PKT_HDR_LEN;
+
+	/* 등록용 세션은 등록 말고는 아무것도 하지 못한다. */
+	if (peer->enroll) {
+		if (h->type == MSG_TYPE_ENROLL) {
+			handle_enroll(sock, peer, ip, n, src, srclen);
+		}
+		else {
+			LOG_LIMITED(LOG_DROP, "[drop] type %u on an enrollment session idx=%08x\n",
+					h->type, peer->session_idx);
+		}
+		return;
+	}
+
+	switch (h->type) {
+		case MSG_TYPE_KEEPALIVE:
+			handle_keepalive(sock, peer, ip, n, counter, src, srclen);
+			return;
+		case MSG_TYPE_LOGIN:
+			handle_login(sock, peer, ip, n, src, srclen);
+			return;
+		case MSG_TYPE_DISCONNECT:
+			printf("[peer] %s closed its session idx=%08x\n",
+					ip_str(peer->inner, ib), peer->session_idx);
+			peer_drop(peer, "closed");
+			return;
+		default:
+			LOG_LIMITED(LOG_DROP, "[drop] unknown type %u\n", h->type);
+			return;
+	}
+}
+
+/* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. 헤더의 종류를 보고 데이터면 표의
+ * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다. */
+static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
+		const struct sockaddr_in *src, socklen_t srclen)
+{
+	msg_header_t h;
+
+	if (msg_decode(packet, (size_t)n, &h) < 0 || h.version != PROTOCOL_VERSION) {
+		LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
+		return;
+	}
+
+	if (h.type == MSG_TYPE_DATA) {
+		TABLE_RDLOCK();
+		udp_data(sock, tun_fd, packet, cap, n, &h, src, srclen);
+		TABLE_UNLOCK();
+	}
+	else {
+		TABLE_WRLOCK();
+		udp_control(sock, packet, n, &h, src, srclen);
+		TABLE_UNLOCK();
+	}
+}
+
 /* tun 에서 읽은 패킷 하나. packet + PKT_HDR_LEN 에 n 바이트, cap 은 packet 의 크기다. */
 static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 {
 	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	struct sockaddr_in to;
+	socklen_t to_len;
 	struct in_addr inner;
 	peer_t *peer;
 	uint8_t *ip;
@@ -1205,12 +1318,15 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 
 	memcpy(&inner, ip + IP_DST_OFF, IP_ADDR_LEN);
 
+	TABLE_RDLOCK();
 	peer = peer_lookup(inner);
 	if (peer == NULL || peer->enroll) {
+		TABLE_UNLOCK();
 		LOG_LIMITED(LOG_DROP, "[drop] no peer for %s\n", ip_str(inner, ib));
 		return;
 	}
 
+	PEER_LOCK(peer);
 	LOG_VERBOSE("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
 			n, ip_str(inner, ib),
 			ip_str(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
@@ -1221,22 +1337,105 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 
 	n = secure_seal(&peer->secure, MSG_TYPE_DATA, peer->session_idx,
 			packet, cap, (size_t)n);
+	to = peer->outer;
+	to_len = peer->outer_len;
+	PEER_UNLOCK(peer);
+	TABLE_UNLOCK();
+
 	if (n < 0) {
 		LOG_LIMITED(LOG_DROP, "[drop] seal failed for %s\n", ip_str(inner, ib));
 		return;
 	}
 
-	sent = sendto(sock, packet, n, 0,
-			(struct sockaddr *)&peer->outer, peer->outer_len);
+	sent = sendto(sock, packet, n, 0, (struct sockaddr *)&to, to_len);
 	if (sent < 0) {
 		perror("sendto");
 	}
+}
+
+/* 워커 하나의 소켓과 tun 큐. 워커 0 은 main 의 루프다. */
+typedef struct worker {
+	int32_t sock;
+	int tun_fd;
+	pthread_t thread;
+} worker_t;
+
+static worker_t workers[MAX_WORKERS];
+
+/* 같은 이름의 tun 장치에 큐를 하나 더 연다 (IFF_MULTI_QUEUE). 커널이 흐름마다 큐를 나눠 준다.
+ * 처음 부를 때 name 이 비어 있으면 이름을 받는다. */
+static int tun_open_queue(char *name)
+{
+	struct ifreq ifr;
+	int fd;
+
+	fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC);
+	if (fd < 0) {
+		return -1;
+	}
+	memset(&ifr, 0, sizeof(ifr));
+	ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
+	if (*name) {
+		strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+	}
+	if (ioctl(fd, TUNSETIFF, (void *)&ifr) < 0) {
+		close(fd);
+		return -1;
+	}
+	strcpy(name, ifr.ifr_name);
+	return fd;
+}
+
+/* 워커 1..N-1. 데이터와 핸드셰이크를 나눠 받을 뿐 만료, 다시 읽기, 상태 소켓은 하지 않는다. */
+static void *worker_main(void *arg)
+{
+	worker_t *w = arg;
+	struct epoll_event ev, events[MAX_EVENTS];
+	struct sockaddr_in src;
+	socklen_t srclen;
+	uint8_t packet[BUF_SIZE];
+	int epfd, nev, i, n;
+
+	epfd = epoll_create1(EPOLL_CLOEXEC);
+	if (epfd < 0) {
+		perror("epoll_create1 (worker)");
+		return NULL;
+	}
+	memset(&ev, 0, sizeof(ev));
+	ev.events = EPOLLIN;
+	ev.data.fd = w->sock;
+	epoll_ctl(epfd, EPOLL_CTL_ADD, w->sock, &ev);
+	ev.data.fd = w->tun_fd;
+	epoll_ctl(epfd, EPOLL_CTL_ADD, w->tun_fd, &ev);
+
+	while (running) {
+		nev = epoll_wait(epfd, events, MAX_EVENTS, 1000);
+		for (i = 0; i < nev; i++) {
+			if (events[i].data.fd == w->sock) {
+				srclen = sizeof(src);
+				n = recvfrom(w->sock, packet, sizeof(packet), 0, (struct sockaddr *)&src, &srclen);
+				if (n >= 0) {
+					udp_in(w->sock, w->tun_fd, packet, sizeof(packet), n, &src, srclen);
+				}
+			}
+			else {
+				n = read(w->tun_fd, packet + PKT_HDR_LEN, sizeof(packet) - PKT_OVERHEAD);
+				if (n >= 0) {
+					tun_in(w->sock, packet, sizeof(packet), n);
+				}
+			}
+		}
+	}
+
+	close(epfd);
+	return NULL;
 }
 
 int main(int argc, char *argv[])
 {
 	char ifname[IFNAMSIZ];
 	int tun_fd, sock, n, port;
+	time_t tick_at = -1;
 	int epfd = -1, nev, i;
 	int opt;
 	int status_fd = -1;
@@ -1272,7 +1471,7 @@ int main(int argc, char *argv[])
 		return serverkey_generate(argv[2]) == 0 ? 0 : 1;
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:v")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:v")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -1311,6 +1510,14 @@ int main(int argc, char *argv[])
 		else if (opt == 'v') {
 			verbose = 1;
 		}
+		else if (opt == 'w') {
+			long v = strtol(optarg, &end, 10);
+			if (*end != '\0' || v < 1 || v > MAX_WORKERS) {
+				fprintf(stderr, "invalid number of workers (1..%d) : %s\n", MAX_WORKERS, optarg);
+				return 1;
+			}
+			nworkers = (int)v;
+		}
 		else if (opt == 'L') {
 			/* 짧게 두면 키를 자주 바꾸는 만큼 왕복 두 번의 끊김이 잦아진다. 시험에서는
 			 * 몇 초로 줄여 바뀌는 것을 본다. */
@@ -1335,8 +1542,9 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
+		fprintf(stderr, "       -w: worker threads, each with its own UDP socket and tun queue (default 1)\n");
 		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
 		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
@@ -1433,17 +1641,14 @@ int main(int argc, char *argv[])
 	signal(SIGTERM, on_signal);
 	signal(SIGHUP, on_reload);
 
-	ifname[0] = '\0';
-	tun_fd = tun_alloc(ifname);
-	if (tun_fd < 0) {
-		fprintf(stderr, "tun_alloc failed\n"); return 1;
-	}
+	/* 쓰기를 먼저 받는다. 읽기(데이터)를 먼저 받으면 패킷이 끊이지 않는 동안 핸드셰이크가 굶는다. */
+	if (nworkers > 1) {
+		pthread_rwlockattr_t attr;
 
-	printf("tun device: %s (fd=%d)\n", ifname, tun_fd);
-
-	sock = socket(AF_INET, SOCK_DGRAM, 0);
-	if (sock < 0) {
-		perror("socket"); close(tun_fd); return 1;
+		pthread_rwlockattr_init(&attr);
+		pthread_rwlockattr_setkind_np(&attr, PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+		pthread_rwlock_init(&table_lock, &attr);
+		pthread_rwlockattr_destroy(&attr);
 	}
 
 	memset(&local_addr, 0, sizeof(local_addr));
@@ -1451,11 +1656,39 @@ int main(int argc, char *argv[])
 	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	local_addr.sin_port        = htons((uint16_t)port);
 
-	if (bind(sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
-		perror("bind"); goto out;
-	}
+	ifname[0] = '\0';
+	for (i = 0; i < nworkers; i++) {
+		int one = 1;
 
-	printf("listening on UDP 0.0.0.0:%d\n", port);
+		workers[i].sock = -1;
+		workers[i].tun_fd = nworkers == 1 ? tun_alloc(ifname) : tun_open_queue(ifname);
+		if (workers[i].tun_fd < 0) {
+			fprintf(stderr, "tun_alloc failed%s\n", nworkers > 1 ? " (multi-queue)" : "");
+			return 1;
+		}
+		workers[i].sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+		if (workers[i].sock < 0) {
+			perror("socket");
+			return 1;
+		}
+		/* 같은 포트에 소켓 여럿. 커널이 출발지 주소의 해시로 나눠 주므로 한 클라이언트는 한 워커로 온다. */
+		if (nworkers > 1 && setsockopt(workers[i].sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {
+			perror("SO_REUSEPORT");
+			return 1;
+		}
+		if (bind(workers[i].sock, (struct sockaddr *)&local_addr, sizeof(local_addr)) < 0) {
+			perror("bind");
+			return 1;
+		}
+	}
+	tun_fd = workers[0].tun_fd;
+	sock = workers[0].sock;
+
+	printf("tun device: %s (fd=%d)\n", ifname, tun_fd);
+	printf("listening on UDP 0.0.0.0:%d%s\n", port, nworkers > 1 ? "" : "");
+	if (nworkers > 1) {
+		printf("workers: %d\n", nworkers);
+	}
 
 	epfd = epoll_create1(EPOLL_CLOEXEC);
 	if (epfd < 0) {
@@ -1490,6 +1723,15 @@ int main(int argc, char *argv[])
 
 	printf("epoll ready (epfd=%d, tun_fd=%d, sock=%d)\n", epfd, tun_fd, sock);
 
+	for (i = 1; i < nworkers; i++) {
+		if (pthread_create(&workers[i].thread, NULL, worker_main, &workers[i]) != 0) {
+			fprintf(stderr, "cannot start worker %d\n", i);
+			running = 0;
+			nworkers = i;	/* 이미 띄운 것만 기다린다 */
+			break;
+		}
+	}
+
 	while (running) {
 		nev = epoll_wait(epfd, events, MAX_EVENTS, 1000);
 		if (nev < 0) {
@@ -1500,8 +1742,15 @@ int main(int argc, char *argv[])
 			break;
 		}
 
-		peer_check_expired();
-		rekey_tick(sock);
+		/* 만료와 키 교체는 1초에 한 번 표를 훑는다. 워커가 여럿이면 표를 쓰기로 잡으므로 패킷마다
+		 * 잡지 않게 초가 바뀌었을 때만 들어간다. */
+		if (mono_now() != tick_at) {
+			tick_at = mono_now();
+			TABLE_WRLOCK();
+			peer_check_expired();
+			rekey_tick(sock);
+			TABLE_UNLOCK();
+		}
 		status_tick(epfd);
 
 		/* kill -HUP 으로 기기 목록과 ACL 을 다시 읽는다. 서버를 내렸다 올리면 모든
@@ -1511,6 +1760,7 @@ int main(int argc, char *argv[])
 		 * 시그널을 받고 늦어도 1초 안에 여기에 온다. */
 		if (reload_requested) {
 			reload_requested = 0;
+			TABLE_WRLOCK();
 
 			/* 감사 로그를 돌리는 쪽이 파일 이름을 바꿔 두었으면 새 파일에 이어 쓴다. */
 			audit_reopen();
@@ -1581,6 +1831,7 @@ int main(int argc, char *argv[])
 				audit_reload("devices", 1, nd);
 				device_dump();
 			}
+			TABLE_UNLOCK();
 		}
 
 		for (i = 0; i < nev; i++) {
@@ -1599,7 +1850,9 @@ int main(int argc, char *argv[])
 			}
 
 			if (fd == status_fd) {
+				TABLE_WRLOCK();
 				status_serve(epfd, status_fd, acl_enabled);
+				TABLE_UNLOCK();
 			}
 			else if (fd == sock) {
 				srclen = sizeof(src);
@@ -1621,6 +1874,11 @@ int main(int argc, char *argv[])
 	}
 	ret = 0;
 
+	/* 다른 워커는 running 을 보고 1초 안에 끝난다. 그 뒤로는 스레드가 하나다. */
+	for (i = 1; i < nworkers; i++) {
+		pthread_join(workers[i].thread, NULL);
+	}
+
 	/* 끝난다고 알린다. 다시 시작하는 중이면 클라이언트는 30초를 기다리지 않고 바로 다시
 	 * 붙는다. 세션도 감사 로그에 "shutdown" 으로 닫힌다. */
 	{
@@ -1637,8 +1895,14 @@ out:
 		close(status_fd);
 		unlink(status_path);
 	}
-	close(sock);
-	close(tun_fd);
+	for (i = 0; i < nworkers; i++) {
+		if (workers[i].sock >= 0) {
+			close(workers[i].sock);
+		}
+		if (workers[i].tun_fd >= 0) {
+			close(workers[i].tun_fd);
+		}
+	}
 	audit_close();
 	return ret;
 }

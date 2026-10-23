@@ -93,6 +93,8 @@ static void begin(const char *event)
 
 	gmtime_r(&now, &tm);
 	strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &tm);
+	/* 워커가 여럿이면 사건이 동시에 적힌다. 한 사건의 조각들이 섞이지 않게 end() 까지 파일을 쥔다. */
+	flockfile(out);
 	fprintf(out, "{\"time\":\"%s\",\"event\":\"%s\"", stamp, event);
 }
 
@@ -109,6 +111,7 @@ static void field(const char *fmt, ...)
 static void end(void)
 {
 	fputs("}\n", out);
+	funlockfile(out);
 }
 
 static const char *state_name(uint8_t state)

@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/random.h>
@@ -206,7 +207,8 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 		/* 이 자리에 있던 세션의 키를 먼저 놓는다. 그냥 덮으면 키 객체가 샌다. */
 		release(slot);
 	}
-	memset(peer, 0, sizeof(*peer));
+	/* 잠금은 남기고 지운다. 여기는 표를 쓰는 쪽(쓰기 잠금)이라 이 잠금을 쥔 워커가 없다. */
+	memset((char *)peer + offsetof(peer_t, used), 0, sizeof(*peer) - offsetof(peer_t, used));
 	peer->used = 1;
 	peer->session_idx = idx;
 	peer->inner = inner;
@@ -254,7 +256,12 @@ int peer_drop_if(int (*due)(const peer_t *peer, void *arg),
 
 void peer_init(void)
 {
+	int32_t i;
+
 	memset(peers, 0, sizeof(peers));
+	for (i = 0; i < MAX_PEERS; i++) {
+		pthread_mutex_init(&peers[i].lock, NULL);
+	}
 	/* 0xff 바이트로 채우면 int32_t 가 모두 -1 (빈 사슬)이 된다. */
 	memset(ip_head, 0xff, sizeof(ip_head));
 	memset(id_head, 0xff, sizeof(id_head));

@@ -1,6 +1,7 @@
 #ifndef PEER_H
 #define PEER_H
 
+#include <pthread.h>
 #include <stdint.h>
 #include <time.h>
 #include <netinet/in.h>
@@ -29,6 +30,11 @@ typedef struct audit_flow {
 } audit_flow_t;
 
 typedef struct peer {
+    /* 워커가 여럿일 때(server.c 의 -w) 데이터 패킷이 이 세션의 바뀌는 칸(secure 의 창과 보낼
+     * counter, 오간 양, flows, outer)을 고치는 동안 잡는다. 맨 앞에 둔다 — 자리를 새로 쓸 때
+     * 이것만 남기고 지운다 (peer.c 의 peer_register). */
+    pthread_mutex_t lock;
+
     int32_t used;
     uint32_t session_idx;
     secure_session_t secure;	/* 세션 키, 보낼 counter, 받은 counter 의 창 */
