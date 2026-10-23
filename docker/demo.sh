@@ -78,7 +78,7 @@ check "acl: $CLI_TUN -> $OTHER denied by the server" wait_for 3 logs_have server
 
 echo "== posture"
 check "posture: client container has no inbound filter" sh -c "${DC[*]} exec -T client vpn_client posture | grep -q 'firewall  off'"
-srv sh -c "sed -i -E 's/^([0-9a-f]{32}[[:space:]]+[0-9a-f]{64}[[:space:]]+$CLI_TUN)/\1 firewall=on/' /etc/ztgate/devices.conf && pkill -HUP -x vpn_server"
+srv sh -c "sed -i -E 's/^([0-9a-f]{32}[[:space:]]+(p256:)?[0-9a-f]+[[:space:]]+$CLI_TUN)/\1 firewall=on/' /etc/ztgate/devices.conf && pkill -HUP -x vpn_server"
 check "posture: policy tightened -> denied at the next keepalive" \
 	wait_for "$KEEPALIVE_WAIT" logs_have client "[deny] posture does not meet policy"
 check "posture: no traffic while denied" sh -c "! ${DC[*]} exec -T client ping -c 1 -W 1 $SRV_TUN"

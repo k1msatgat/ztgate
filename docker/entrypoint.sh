@@ -33,7 +33,11 @@ server() {
 	done
 	chmod 600 "$ETC/devices.conf" "$ETC/enroll.conf"
 
-	set -- -e "$ETC/enroll.conf" -a "$ETC/audit.log" -s /run/vpn_status.sock \
+	# 서버 키는 처음 한 번 만든다. 볼륨에 남아 컨테이너를 다시 만들어도 같은 키다 — 바뀌면 등록된
+	# 기기가 모두 다시 등록해야 한다.
+	[ -e "$ETC/server.key" ] || vpn_server genkey "$ETC/server.key" > /dev/null
+
+	set -- -e "$ETC/enroll.conf" -k "$ETC/server.key" -a "$ETC/audit.log" -s /run/vpn_status.sock \
 		-n "$PREFIX" -m "$MTU" "$PORT" "$ETC/devices.conf"
 	if [ -f "$ETC/acl.conf" ]; then
 		chmod 600 "$ETC/acl.conf"

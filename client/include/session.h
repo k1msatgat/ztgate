@@ -44,11 +44,13 @@ typedef struct vpn_session {
 int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture);
 
-/* 등록 코드로 서버에 이 기기(id, key)를 올린다 (proto.h 의 "기기 등록"). 코드에서 뽑은
- * 임시 신원으로 평소의 핸드셰이크를 돌고, 그 세션으로 id 와 key 를 보낸다. 끝나면
- * 등록용 세션은 닫는다. 0 이상이면 서버의 답(enroll_status_t), 음수는 SESSION_ENROLL_*. */
+/* 등록 코드로 서버에 이 기기(id)를 올린다 (proto.h 의 "기기 등록", v8). 코드에서 뽑은
+ * 임시 신원으로 평소의 핸드셰이크를 돌고, 그 세션으로 id 와 이번에 만든 고정 공개키를
+ * 보낸다. 서버가 받아 주면 답에 실린 서버 공개키와 그 비밀키로 기기 키를 뽑아 key 에 적고
+ * 비밀키는 버린다. 끝나면 등록용 세션은 닫는다. 0 이상이면 서버의 답(enroll_status_t),
+ * 음수는 SESSION_ENROLL_*. ENROLL_OK 일 때만 key 가 채워진다. */
 int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture);
+		uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture);
 
 /* KEEPALIVE: 지금의 포스처를 세션 키로 감싸 보낸다. 성공 0, 실패 -1. */
 int session_send_keepalive(vpn_session_t *s, const posture_report_t *posture);

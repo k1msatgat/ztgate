@@ -351,11 +351,13 @@ out:
 }
 
 int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture)
+		uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture)
 {
 	uint8_t tmp_id[DEVICE_ID_LEN];
 	uint8_t tmp_key[AUTH_KEY_LEN];
 	uint8_t packet[BUF_SIZE];
+	uint8_t pub[VPN_PUB_LEN];
+	crypt_ecdh_t *mine = NULL;
 	msg_header_t h;
 	uint64_t deadline;
 	int ret = SESSION_ENROLL_NO_RESPONSE;
@@ -364,6 +366,13 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 
 	if (secure_enroll_identity(code, tmp_id, tmp_key) < 0) {
 		return SESSION_ENROLL_BAD_CODE;
+	}
+
+	/* 이 기기의 고정 키 쌍. 비밀키는 기기 키를 뽑는 데 한 번 쓰고 버린다 — 저장하는 것은 그
+	 * 결과(기기 키)뿐이라 신원 파일의 모양이 그대로다. */
+	mine = crypt_ecdh_new(pub);
+	if (mine == NULL) {
+		return SESSION_ENROLL_ERROR;
 	}
 
 	switch (session_handshake(s, tmp_id, tmp_key, posture)) {
@@ -381,7 +390,7 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 		/* 다시 보낼 때마다 새로 감싼다. counter 가 달라져야 서버가 재전송으로 버리지
 		 * 않는다. 내용이 같으므로 서버는 같은 답을 한다. */
 		memcpy(packet + PKT_HDR_LEN, id, DEVICE_ID_LEN);
-		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, key, AUTH_KEY_LEN);
+		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, pub, VPN_PUB_LEN);
 		if (session_send(s, MSG_TYPE_ENROLL, packet, sizeof(packet), ENROLL_PAYLOAD_LEN) < 0) {
 			ret = SESSION_ENROLL_ERROR;
 			goto out;
@@ -404,12 +413,17 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 
 			/* 세션 키로 열려야 서버의 답이다. */
 			n = secure_open(&s->secure, packet, (size_t)n, NULL);
-			if (n < 1) {
+			if (n < (int)ENROLL_REPLY_LEN) {
 				continue;
 			}
 
 			ret = packet[PKT_HDR_LEN];
 			printf("[enroll] server answered %d\n", ret);
+			/* 서버의 공개키는 코드를 아는 서버만 열 수 있는 이 세션으로 왔다. */
+			if (ret == ENROLL_OK &&
+					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
+				ret = SESSION_ENROLL_ERROR;
+			}
 			goto out;
 		}
 	}
@@ -417,6 +431,7 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 out:
 	/* 등록용 세션으로는 터널을 쓸 수 없다. 남겨 둘 이유가 없다. */
 	session_close(s);
+	crypt_ecdh_free(mine);
 	crypt_wipe(tmp_key, sizeof(tmp_key));
 	crypt_wipe(packet, sizeof(packet));
 

@@ -161,7 +161,9 @@ chmod 600 "$DEVICES" "$ENROLL" "$ACL"
 before=$(ip -o link show type tun | awk -F': ' '{print $2}')
 # 사용자 로그인: 시험용 IdP (tools/idp/mint.py) 의 키를 서버가 믿게 한다.
 python3 "$ROOT_DIR/tools/idp/mint.py" keys "$IDP" > /dev/null || { echo "mint.py keys failed"; exit 1; }
-stdbuf -oL "$SERVER" -v -e "$ENROLL" -u "$IDP/idp.conf" -d "$WORK/dns.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
+# 서버 키: 등록 코드로 올라오는 기기는 공개키 기기라 -e 에는 -k 가 있어야 한다 (v8).
+"$SERVER" genkey "$WORK/server.key" > /dev/null || { echo "genkey failed"; exit 1; }
+stdbuf -oL "$SERVER" -v -e "$ENROLL" -k "$WORK/server.key" -u "$IDP/idp.conf" -d "$WORK/dns.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
 SRV_PID=$!
 wait_for 5 sh -c "ip -o link show type tun | grep -q ." || { echo "server did not start"; cat "$SLOG"; exit 1; }
 SRV_IF=$(ip -o link show type tun | awk -F': ' '{print $2}' | grep -vxF "$before" | head -n 1)
@@ -207,7 +209,7 @@ echo "== 4. posture"
 check "posture: client ns has no inbound filter (firewall=off)" \
 	sh -c "nsenter -t $NS_PID -n --preserve-credentials '$CLIENT' posture | grep -q 'firewall  off'"
 # 기기 정책을 조인다: 이 기기 줄의 터널 주소 뒤에 firewall=on.
-sed -i -E "s/^([0-9a-f]{32}[[:space:]]+[0-9a-f]{64}[[:space:]]+$CLI_TUN)/\1 firewall=on/" "$DEVICES"
+sed -i -E "s/^([0-9a-f]{32}[[:space:]]+(p256:)?[0-9a-f]+[[:space:]]+$CLI_TUN)/\1 firewall=on/" "$DEVICES"
 kill -HUP "$SRV_PID"
 t0=$(date +%s)
 check "posture: policy tightened -> denied at the next keepalive" \
