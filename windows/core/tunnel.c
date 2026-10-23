@@ -318,6 +318,114 @@ static int mtu_set(tunnel_t *t, uint16_t mtu)
  * 왔을 때에도 부른다. 그래서 "설정을 넣는다"가 아니라 "지금 넣어 둔 것(t->applied)과 다른
  * 부분만 고친다"로 짰다. 통째로 지우고 다시 넣으면 바뀌지 않은 경로까지 잠깐 사라져
  * 그 사이의 연결이 끊긴다. */
+/* ---- 내부 DNS (NRPT) -------------------------------------------------------------
+ *
+ * 서버가 내려 준 도메인(과 그 아래 이름)만 내부 DNS 로 묻게 한다 (proto.h 의 분할 DNS).
+ * 어댑터에 DNS 서버를 넣는 것만으로는 Windows 가 어느 어댑터의 DNS 에 물을지를 인터페이스
+ * 순서로 정해, 모든 이름이 회사로 가거나 내부 이름이 공유기로 간다. NRPT(이름 해석 정책
+ * 표)는 "이 이름은 이 DNS 로"를 이름 단위로 정한다. 그룹 정책이 쓰는 키와 같은 모양으로
+ * DNS 클라이언트의 로컬 정책 키에 규칙 하나를 둔다.
+ *
+ * 규칙은 터널이 도는 동안만 둔다. 끝날 때 지우고, 서비스가 죽어 남은 것은 다음에 시작할 때
+ * 지운다 — 남아 있으면 내부 이름을 닿지 않는 DNS 로 묻게 된다. */
+#define NRPT_KEY L"SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters\\DnsPolicyConfig\\ztgate"
+
+/* DNS 클라이언트가 규칙을 다시 읽고, 예전 답을 잊게 한다. 둘 다 실패해도 터널은 돈다 —
+ * 그러면 길어야 캐시의 수명 동안 예전 답이 남는다. */
+static void nrpt_refresh(void)
+{
+	typedef BOOL (WINAPI *flush_fn)(void);
+	HMODULE dnsapi;
+	SC_HANDLE scm, svc;
+	SERVICE_STATUS st;
+
+	scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+	if (scm) {
+		svc = OpenServiceW(scm, L"Dnscache", SERVICE_PAUSE_CONTINUE);
+		if (svc) {
+			ControlService(svc, SERVICE_CONTROL_PARAMCHANGE, &st);
+			CloseServiceHandle(svc);
+		}
+		CloseServiceHandle(scm);
+	}
+
+	/* 문서에 없는 함수지만 ipconfig /flushdns 가 부르는 것이다. 없으면 건너뛴다. */
+	dnsapi = LoadLibraryExW(L"dnsapi.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+	if (dnsapi) {
+		flush_fn flush = (flush_fn)(void (*)(void))GetProcAddress(dnsapi, "DnsFlushResolverCache");
+		if (flush) {
+			flush();
+		}
+		FreeLibrary(dnsapi);
+	}
+}
+
+static void nrpt_clear(tunnel_t *t)
+{
+	LSTATUS err = RegDeleteKeyExW(HKEY_LOCAL_MACHINE, NRPT_KEY, KEY_WOW64_64KEY, 0);
+
+	if (err == ERROR_SUCCESS) {
+		if (t) {
+			tlog(t, "[cfg] dns: none");
+		}
+		nrpt_refresh();
+	}
+}
+
+static void nrpt_apply(tunnel_t *t, const net_config_t *c)
+{
+	/* 도메인마다 ".corp.example"(그 아래 이름)과 "corp.example"(그 이름 자신) 둘을 적는다. */
+	wchar_t names[NET_MAX_DOMAINS * 2 * (NET_DOMAIN_MAX + 2) + 1];
+	wchar_t servers[NET_MAX_DNS * (INET_ADDRSTRLEN + 1)];
+	char ib[INET_ADDRSTRLEN];
+	DWORD v;
+	HKEY key;
+	LSTATUS err;
+	size_t off = 0;
+	int i;
+
+	if (c->n_domains == 0) {
+		nrpt_clear(t);
+		return;
+	}
+
+	for (i = 0; i < c->n_domains; i++) {
+		off += (size_t)swprintf(names + off, sizeof(names) / sizeof(names[0]) - off, L".%hs", c->domains[i]) + 1;
+		off += (size_t)swprintf(names + off, sizeof(names) / sizeof(names[0]) - off, L"%hs", c->domains[i]) + 1;
+	}
+	names[off++] = L'\0';
+
+	servers[0] = L'\0';
+	for (i = 0; i < c->n_dns; i++) {
+		size_t len = wcslen(servers);
+		swprintf(servers + len, sizeof(servers) / sizeof(servers[0]) - len, L"%s%hs",
+				i == 0 ? L"" : L";", ip4(c->dns[i], ib));
+	}
+
+	err = RegCreateKeyExW(HKEY_LOCAL_MACHINE, NRPT_KEY, 0, NULL, REG_OPTION_VOLATILE,
+			KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &key, NULL);
+	if (err != ERROR_SUCCESS) {
+		tlog(t, "[cfg] dns: cannot write the name resolution policy: %ld", (long)err);
+		return;
+	}
+
+	/* 값의 이름과 뜻은 그룹 정책의 NRPT 와 같다. ConfigOptions 8 = GenericDNSServers 를 쓴다. */
+	RegSetValueExW(key, L"Name", 0, REG_MULTI_SZ, (const BYTE *)names, (DWORD)(off * sizeof(wchar_t)));
+	RegSetValueExW(key, L"GenericDNSServers", 0, REG_SZ, (const BYTE *)servers,
+			(DWORD)((wcslen(servers) + 1) * sizeof(wchar_t)));
+	v = 0x8;
+	RegSetValueExW(key, L"ConfigOptions", 0, REG_DWORD, (const BYTE *)&v, sizeof(v));
+	v = 0x2;
+	RegSetValueExW(key, L"Version", 0, REG_DWORD, (const BYTE *)&v, sizeof(v));
+	RegSetValueExW(key, L"IPSECCARestriction", 0, REG_SZ, (const BYTE *)L"", sizeof(wchar_t));
+	RegCloseKey(key);
+
+	nrpt_refresh();
+	for (i = 0; i < c->n_domains; i++) {
+		tlog(t, "[cfg] dns: %s -> %ls", c->domains[i], servers);
+	}
+}
+
 static int netcfg_apply(tunnel_t *t)
 {
 	const net_config_t *want = &t->want;
@@ -362,6 +470,10 @@ static int netcfg_apply(tunnel_t *t)
 		if (!t->has_applied || !route_in(cur, &want->routes[i])) {
 			route_add(t, &want->routes[i]);
 		}
+	}
+
+	if (!t->has_applied ? want->n_domains > 0 : !net_dns_equal(cur, want)) {
+		nrpt_apply(t, want);
 	}
 
 	*cur = *want;
@@ -1837,6 +1949,9 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 	set_state(t, TUNNEL_STATE_CONNECTING);
 
+	/* 지난번에 끝나지 못하고(서비스가 죽었다) 남은 이름 해석 규칙. */
+	nrpt_clear(t);
+
 	err = (DWORD)WSAStartup(MAKEWORD(2, 2), &wsa);
 	if (err != 0) {
 		tlog(t, "WSAStartup failed: %lu", err);
@@ -2015,6 +2130,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 out:
 	net_watch_stop(t);
+	nrpt_clear(t);
 	secure_session_close(&session->secure);
 	if (t->sock != INVALID_SOCKET) {
 		closesocket(t->sock);
