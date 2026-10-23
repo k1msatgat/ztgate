@@ -15,10 +15,92 @@ static int ndevices;
 static device_t staged[MAX_DEVICES];
 static int nstaged;
 
+/* 기기를 ID 와 터널 주소로 찾는 색인. 핸드셰이크, keepalive, 커넥터를 지나는 패킷마다
+ * 기기를 찾으므로 목록을 훑지 않는다. 버킷마다 그 버킷에 든 자리를 next 로 잇는다
+ * (-1 이 끝). 목록과 똑같이 읽는 동안에는 staged 쪽에 만들고, 끝까지 문제없을 때 옮긴다.
+ * 읽는 동안의 색인은 같은 ID 나 같은 터널 주소가 두 번 나오는 것을 찾는 데도 쓴다. */
+#define DEVICE_BUCKETS (MAX_DEVICES * 2)
+_Static_assert((DEVICE_BUCKETS & (DEVICE_BUCKETS - 1)) == 0, "DEVICE_BUCKETS must be a power of two");
+
+typedef struct device_index {
+	int32_t id_head[DEVICE_BUCKETS], id_next[MAX_DEVICES];
+	int32_t ip_head[DEVICE_BUCKETS], ip_next[MAX_DEVICES];
+} device_index_t;
+
+static device_index_t index_live, index_staged;
+
+/* 커넥터인 기기의 자리. 클라이언트가 보낸 패킷마다 그 목적지를 맡은 커넥터를 찾는데,
+ * 커넥터는 기기 중 몇 대뿐이다. */
+static int32_t connectors[MAX_DEVICES];
+static int nconnectors;
+
+static uint32_t mix(uint32_t v)
+{
+	/* 터널 주소는 이어진 번호라 그대로 쓰면 아래 bit 만 다르다. 곱해서 섞는다 (Knuth). */
+	return ((v * 2654435761u) >> 7) & (DEVICE_BUCKETS - 1);
+}
+
+static uint32_t id_bucket(const uint8_t id[DEVICE_ID_LEN])
+{
+	uint32_t v;
+
+	memcpy(&v, id, sizeof(v));
+	return mix(v);
+}
+
+static uint32_t ip_bucket(struct in_addr a)
+{
+	return mix(ntohl(a.s_addr));
+}
+
+static void index_clear(device_index_t *x)
+{
+	/* 0xff 바이트로 채우면 int32_t 가 모두 -1 (빈 사슬)이 된다. */
+	memset(x, 0xff, sizeof(*x));
+}
+
+static int32_t index_find_id(const device_index_t *x, const device_t *table, const uint8_t id[DEVICE_ID_LEN])
+{
+	int32_t i;
+
+	for (i = x->id_head[id_bucket(id)]; i >= 0; i = x->id_next[i]) {
+		if (memcmp(table[i].id, id, DEVICE_ID_LEN) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static int32_t index_find_ip(const device_index_t *x, const device_t *table, struct in_addr ip)
+{
+	int32_t i;
+
+	for (i = x->ip_head[ip_bucket(ip)]; i >= 0; i = x->ip_next[i]) {
+		if (table[i].tun_ip.s_addr == ip.s_addr) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void index_add(device_index_t *x, const device_t *table, int32_t slot)
+{
+	uint32_t b = id_bucket(table[slot].id);
+
+	x->id_next[slot] = x->id_head[b];
+	x->id_head[b] = slot;
+
+	b = ip_bucket(table[slot].tun_ip);
+	x->ip_next[slot] = x->ip_head[b];
+	x->ip_head[b] = slot;
+}
+
 void device_init(void)
 {
 	memset(devices, 0, sizeof(devices));
 	ndevices = 0;
+	index_clear(&index_live);
+	nconnectors = 0;
 }
 
 static int hex_val(char c)
@@ -135,12 +217,14 @@ const device_t *device_connector_for(struct in_addr dst)
 	int best_len = -1;
 	int i, k;
 
-	for (i = 0; i < ndevices; i++) {
-		for (k = 0; k < devices[i].n_connector; k++) {
-			const net_route_t *r = &devices[i].connector[k];
+	for (i = 0; i < nconnectors; i++) {
+		const device_t *d = &devices[connectors[i]];
+
+		for (k = 0; k < d->n_connector; k++) {
+			const net_route_t *r = &d->connector[k];
 
 			if ((dst.s_addr & prefix_mask(r->prefix_len)) == r->addr && r->prefix_len > best_len) {
-				best = &devices[i];
+				best = d;
 				best_len = r->prefix_len;
 			}
 		}
@@ -183,6 +267,7 @@ int device_load(const char *path)
 	}
 
 	nstaged = 0;
+	index_clear(&index_staged);
 
 	while (fgets(line, sizeof(line), fp) != NULL) {
 		device_t *d;
@@ -236,17 +321,16 @@ int device_load(const char *path)
 
 		/* 같은 ID 가 두 번 나오면 어느 키가 맞는지 정할 수 없고, 같은 터널 IP 를 두
 		 * 기기에 주면 서로의 세션을 밀어낸다. 조용히 한쪽을 고르지 않고 거부한다. */
-		for (i = 0; i < nstaged; i++) {
-			if (memcmp(staged[i].id, d->id, DEVICE_ID_LEN) == 0) {
-				fprintf(stderr, "device: line %d: duplicate id\n", lineno);
-				goto fail;
-			}
-			if (staged[i].tun_ip.s_addr == d->tun_ip.s_addr) {
-				fprintf(stderr, "device: line %d: tunnel ip %s already assigned\n", lineno, s_ip);
-				goto fail;
-			}
+		if (index_find_id(&index_staged, staged, d->id) >= 0) {
+			fprintf(stderr, "device: line %d: duplicate id\n", lineno);
+			goto fail;
+		}
+		if (index_find_ip(&index_staged, staged, d->tun_ip) >= 0) {
+			fprintf(stderr, "device: line %d: tunnel ip %s already assigned\n", lineno, s_ip);
+			goto fail;
 		}
 
+		index_add(&index_staged, staged, nstaged);
 		nstaged++;
 	}
 
@@ -254,6 +338,14 @@ int device_load(const char *path)
 
 	memcpy(devices, staged, sizeof(devices));
 	ndevices = nstaged;
+	index_live = index_staged;
+
+	nconnectors = 0;
+	for (i = 0; i < ndevices; i++) {
+		if (devices[i].n_connector != 0) {
+			connectors[nconnectors++] = i;
+		}
+	}
 
 	return ndevices;
 
@@ -264,15 +356,9 @@ fail:
 
 device_t *device_find(const uint8_t id[DEVICE_ID_LEN])
 {
-	int i;
+	int32_t i = index_find_id(&index_live, devices, id);
 
-	for (i = 0; i < ndevices; i++) {
-		if (memcmp(devices[i].id, id, DEVICE_ID_LEN) == 0) {
-			return &devices[i];
-		}
-	}
-
-	return NULL;
+	return i < 0 ? NULL : &devices[i];
 }
 
 int device_count(void)
@@ -306,13 +392,7 @@ void device_dump(void)
 /* 그 터널 주소를 가진 기기. 없으면 NULL. */
 device_t *device_find_ip(struct in_addr tun_ip)
 {
-	int i;
+	int32_t i = index_find_ip(&index_live, devices, tun_ip);
 
-	for (i = 0; i < ndevices; i++) {
-		if (devices[i].tun_ip.s_addr == tun_ip.s_addr) {
-			return &devices[i];
-		}
-	}
-
-	return NULL;
+	return i < 0 ? NULL : &devices[i];
 }
