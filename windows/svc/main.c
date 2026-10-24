@@ -196,6 +196,8 @@ static void remember(void)
 			(DWORD)((wcslen(run_cfg.adapter_name) + 1) * sizeof(wchar_t)));
 	RegSetValueExW(key, L"server", 0, REG_DWORD, (const BYTE *)&ip, sizeof(ip));
 	RegSetValueExW(key, L"port", 0, REG_DWORD, (const BYTE *)&port, sizeof(port));
+	RegSetValueExW(key, L"alt_servers", 0, REG_BINARY, (const BYTE *)run_cfg.alt_ips,
+			(DWORD)(run_cfg.n_alt * sizeof(run_cfg.alt_ips[0])));
 	RegSetValueExW(key, L"wanted", 0, REG_DWORD, (const BYTE *)&want, sizeof(want));
 	RegCloseKey(key);
 }
@@ -219,6 +221,11 @@ static int recall(void)
 
 	run_cfg.server_ip.s_addr = ip;
 	run_cfg.server_port = (uint16_t)port;
+	len = sizeof(run_cfg.alt_ips);
+	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"alt_servers", RRF_RT_REG_BINARY, NULL,
+				run_cfg.alt_ips, &len) == ERROR_SUCCESS) {
+		run_cfg.n_alt = (int)(len / sizeof(run_cfg.alt_ips[0]));
+	}
 
 	return want != 0 && ip != 0 && port != 0 && port <= 65535;
 }
@@ -621,6 +628,10 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 	wcscpy(run_cfg.adapter_name, c.adapter_name);
 	run_cfg.server_ip.s_addr = c.server_ip;
 	run_cfg.server_port = c.server_port;
+	run_cfg.n_alt = c.n_alt <= TUNNEL_ALT_SERVERS ? c.n_alt : TUNNEL_ALT_SERVERS;
+	for (int i = 0; i < run_cfg.n_alt; i++) {
+		run_cfg.alt_ips[i].s_addr = c.alt_ips[i];
+	}
 
 	err = tunnel_start();
 	if (err != 0) {
@@ -1331,8 +1342,18 @@ static int ctl(int argc, wchar_t **argv)
 	else if (wcscmp(argv[0], L"connect") == 0 && argc >= 4) {
 		memset(&c, 0, sizeof(c));
 		wcsncpy(c.adapter_name, argv[1], TUNNEL_ADAPTER_NAME_LEN - 1);
-		if (InetPtonW(AF_INET, argv[2], &c.server_ip) != 1) {
-			goto usage;
+		{
+			struct in_addr first, alt[TUNNEL_ALT_SERVERS];
+			int n_alt;
+
+			if (tunnel_parse_servers(argv[2], &first, alt, &n_alt) < 0) {
+				goto usage;
+			}
+			c.server_ip = first.s_addr;
+			c.n_alt = (uint16_t)n_alt;
+			for (int i = 0; i < n_alt; i++) {
+				c.alt_ips[i] = alt[i].s_addr;
+			}
 		}
 		c.server_port = (uint16_t)wcstoul(argv[3], NULL, 10);
 		verbose = 1;

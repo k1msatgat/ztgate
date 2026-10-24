@@ -298,9 +298,15 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	if (inet_pton(AF_INET, argv[2], &cfg.server_ip) != 1) {
-		fprintf(stderr, "invalid server ip : %s\n", argv[2]);
-		goto out;
+	{
+		wchar_t list[256];
+
+		/* 서버 여럿: 10.0.0.10,10.0.0.11 (tunnel.h 의 TUNNEL_ALT_SERVERS) */
+		if (MultiByteToWideChar(CP_ACP, 0, argv[2], -1, list, 256) == 0 ||
+				tunnel_parse_servers(list, &cfg.server_ip, cfg.alt_ips, &cfg.n_alt) < 0) {
+			fprintf(stderr, "invalid server ip : %s\n", argv[2]);
+			goto out;
+		}
 	}
 
 	server_port = strtol(argv[3], &end, 10);

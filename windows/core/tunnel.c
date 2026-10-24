@@ -94,6 +94,7 @@ typedef struct tunnel {
 	 * 패킷마다 len(2) 을 붙이고, 받은 스트림은 trbuf 에 모아 틀 하나씩 꺼낸다. */
 	int tcp;
 	int tcp_lost;			/* 연결이 끊겼다. 다시 열고 핸드셰이크한다 */
+	int cur_server;			/* 0 = cfg->server_ip, 1.. = cfg->alt_ips[i - 1] */
 	uint8_t trbuf[2 + BUF_SIZE];
 	size_t trlen;
 
@@ -216,7 +217,36 @@ static int route_usable(const tunnel_t *t, const net_route_t *r)
 
 	mask = htonl(0xFFFFFFFFu << (32 - r->prefix_len));
 
-	return (t->cfg->server_ip.s_addr & mask) != r->addr;
+	/* 서버를 여럿 적었으면 모두. 지금 서버만 빼면 다른 서버로 넘어갈 때 그리로 가는 패킷이 죽은
+	 * 터널로 들어간다. */
+	if ((t->cfg->server_ip.s_addr & mask) == r->addr) {
+		return 0;
+	}
+	for (int i = 0; i < t->cfg->n_alt; i++) {
+		if ((t->cfg->alt_ips[i].s_addr & mask) == r->addr) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int transport_switch(tunnel_t *t, int tcp);
+
+/* 다음 서버로 (서버를 여럿 적었을 때만). 새 서버로는 UDP 부터 해 본다. 1 이면 넘어갔다. */
+static int next_server(tunnel_t *t, char *server_str)
+{
+	char was[INET_ADDRSTRLEN];
+
+	if (t->cfg->n_alt == 0) {
+		return 0;
+	}
+	strcpy(was, server_str);
+	t->cur_server = (t->cur_server + 1) % (t->cfg->n_alt + 1);
+	t->session.server.sin_addr = t->cur_server == 0 ? t->cfg->server_ip : t->cfg->alt_ips[t->cur_server - 1];
+	inet_ntop(AF_INET, &t->session.server.sin_addr, server_str, INET_ADDRSTRLEN);
+	tlog(t, "[HS] %s does not answer, switching to %s", was, server_str);
+	transport_switch(t, 0);
+	return 1;
 }
 
 static void route_row(const tunnel_t *t, const net_route_t *r, MIB_IPFORWARD_ROW2 *row)
@@ -2162,11 +2192,19 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 	tlog(t, "[%ls] tunneling to %s:%u", cfg->adapter_name, server_str, cfg->server_port);
 
-	hs = do_handshake(t);
-	if (hs == HS_FAIL && WaitForSingleObject(t->stop_event, 0) != WAIT_OBJECT_0) {
-		tlog(t, "[HS] no answer over udp, trying tcp on the same port");
-		if (transport_switch(t, 1) == 0) {
-			hs = do_handshake(t);
+	/* 서버마다 UDP, 그다음 같은 번호의 TCP. 답하는 서버를 찾을 때까지 차례로. 거절은 답이다 —
+	 * 다른 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. */
+	for (int tries = 0; ; tries++) {
+		hs = do_handshake(t);
+		if (hs == HS_FAIL && WaitForSingleObject(t->stop_event, 0) != WAIT_OBJECT_0) {
+			tlog(t, "[HS] no answer over udp, trying tcp on the same port");
+			if (transport_switch(t, 1) == 0) {
+				hs = do_handshake(t);
+			}
+		}
+		if (hs != HS_FAIL || tries >= cfg->n_alt ||
+				WaitForSingleObject(t->stop_event, 0) == WAIT_OBJECT_0 || !next_server(t, server_str)) {
+			break;
 		}
 	}
 	if (hs != HS_OK) {
@@ -2302,14 +2340,21 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				break;
 			default:
 				t->hs_failed = 1;
-				/* 지금 전송으로 답이 없다. 다음에는 다른 쪽(UDP <-> TCP)으로 해 본다. */
-				transport_switch(t, !t->tcp);
+				/* 지금 전송으로 답이 없다. 다음에는 다른 쪽(UDP <-> TCP)으로 해 본다. TCP 로도 답이
+				 * 없었으면 다른 서버의 UDP 로 (서버를 여럿 적었을 때). */
 				tlog(t, "[HS] failed re-handshake[%s][%u], retry in %ds",
-						server_str, cfg->server_port, SERVER_TIMEOUT_SEC);
+						server_str, cfg->server_port, cfg->n_alt > 0 ? 2 : SERVER_TIMEOUT_SEC);
+				if (!t->tcp || !next_server(t, server_str)) {
+					transport_switch(t, !t->tcp);
+				}
 				break;
 			}
 			now = GetTickCount64();
 			session->last_rx_ms = now;
+			/* 다른 서버가 있으면 30초를 기다리지 않고 2초 뒤에 다시 해 본다. */
+			if (t->hs_failed && cfg->n_alt > 0) {
+				session->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 2000;
+			}
 		}
 
 		/* keepalive 는 이제 세 가지를 맡는다.

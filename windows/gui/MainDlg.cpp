@@ -270,7 +270,7 @@ bool CMainDlg::BuildConfig(tunnel_config_t &cfg)
 	/* adapter_name 은 wchar_t 배열이고 cfg 는 구조체째로 복사되므로
 	 * CString 의 수명에 의존하지 않는다. 값은 SettingsUsable 이 확인했다. */
 	wcscpy_s(cfg.adapter_name, TUNNEL_ADAPTER_NAME_LEN, m_adapter);
-	InetPtonW(AF_INET, m_server, &cfg.server_ip);
+	tunnel_parse_servers(m_server, &cfg.server_ip, cfg.alt_ips, &cfg.n_alt);
 	cfg.server_port = static_cast<uint16_t>(_ttoi(m_port));
 
 	/* 터널은 서비스가 연다. 이 프로그램은 어디로 붙을지만 알려 준다 — 기기의 키는
@@ -402,7 +402,8 @@ void CMainDlg::OnEnroll()
 	tunnel_config_t cfg;
 
 	ZeroMemory(&cfg, sizeof(cfg));
-	InetPtonW(AF_INET, m_server, &cfg.server_ip);
+	/* 서버를 여럿 적었으면 첫 서버에 올린다. 서버들은 같은 기기 목록을 쓴다. */
+	tunnel_parse_servers(m_server, &cfg.server_ip, cfg.alt_ips, &cfg.n_alt);
 	cfg.server_port = static_cast<uint16_t>(_ttoi(m_port));
 
 	int result;

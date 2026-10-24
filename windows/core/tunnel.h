@@ -3,6 +3,8 @@
 
 #include <winsock2.h>
 #include <windows.h>
+#include <ws2tcpip.h>
+#include <wchar.h>
 #include <stdint.h>
 
 #include "proto.h"
@@ -116,10 +118,16 @@ int tunnel_login_set(tunnel_login_t *l, const char *token, size_t len);
 
 /* 콜백은 tunnel_run()을 호출한 스레드에서 불린다.
  * GUI에서는 여기서 컨트롤을 직접 건드리지 말고 PostMessage로 넘겨야 한다. */
+/* 서버를 여럿 적으면(이중화) 첫 서버 말고 셋까지 더 둔다. 지금 서버가 UDP 로도 TCP 로도 답하지
+ * 않으면 다음 서버로 넘어간다. 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다. */
+#define TUNNEL_ALT_SERVERS	3
+
 typedef struct tunnel_config {
 	wchar_t adapter_name[TUNNEL_ADAPTER_NAME_LEN];
 	struct in_addr server_ip;
 	uint16_t server_port;		/* host byte order */
+	struct in_addr alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
+	int n_alt;
 
 	/* 기기 신원. 호출자가 device_load() 로 읽어 채운다. 포인터가 아니라 배열로 둬서
 	 * cfg 를 구조체째 복사해도 그대로 따라온다. */
@@ -183,6 +191,40 @@ int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
  * UI 가 ANSI 코드페이지로 변환하면서 깨진다. 화면에 쓸 라벨은 UI 가 enum 을
  * 보고 와이드 문자열로 직접 고른다. 이 함수는 콘솔 로그용이다. */
 const char *tunnel_verdict_name(int verdict);
+
+/* "10.0.0.10,10.0.0.11" 을 첫 서버와 나머지로 나눈다. 틀리면(주소가 아님, 넷보다 많음) -1. */
+static __inline int tunnel_parse_servers(const wchar_t *list, struct in_addr *first,
+		struct in_addr alt[TUNNEL_ALT_SERVERS], int *n_alt)
+{
+	wchar_t buf[256];
+	wchar_t *tok, *ctx = NULL;
+	int n = 0;
+
+	if (wcslen(list) >= sizeof(buf) / sizeof(buf[0])) {
+		return -1;
+	}
+	wcscpy_s(buf, sizeof(buf) / sizeof(buf[0]), list);
+	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL; tok = wcstok_s(NULL, L", ", &ctx)) {
+		struct in_addr a;
+
+		if (n > TUNNEL_ALT_SERVERS || InetPtonW(AF_INET, tok, &a) != 1) {
+			return -1;
+		}
+		if (n == 0) {
+			*first = a;
+		}
+		else {
+			alt[n - 1] = a;
+		}
+		n++;
+	}
+	if (n == 0) {
+		return -1;
+	}
+	*n_alt = n - 1;
+	return 0;
+}
+
 
 #ifdef __cplusplus
 }

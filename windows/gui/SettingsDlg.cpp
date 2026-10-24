@@ -22,12 +22,14 @@ void CSettingsDlg::PointAt(int id, const CString &message)
 bool CSettingsDlg::Check(const CString &server, const CString &port, const CString &adapter,
 		int *bad_id, CString *why)
 {
-	IN_ADDR addr;
+	struct in_addr first, alt[TUNNEL_ALT_SERVERS];
 	const int port_num = _ttoi(port);
+	int n_alt;
 
-	if (InetPtonW(AF_INET, server, &addr) != 1) {
+	if (tunnel_parse_servers(server, &first, alt, &n_alt) < 0) {
 		*bad_id = IDC_SERVER;
-		*why = _T("서버의 IPv4 주소를 적어 주세요. 예) 203.0.113.10");
+		*why = _T("서버의 IPv4 주소를 적어 주세요. 예) 203.0.113.10\n")
+			_T("서버가 여럿이면 쉼표로 넷까지: 203.0.113.10, 203.0.113.11");
 		return false;
 	}
 	if (port_num <= 0 || port_num > 65535) {
