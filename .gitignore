@@ -26,3 +26,8 @@ tools/loadgen/out/
 
 # 서버 패키지 (packaging/build.sh)
 packaging/out/
+
+# 에이전트 스킬 (npx skills add — 사용자 폴더 ~/.claude/skills 에 둔다)
+.agents/
+.claude/skills/
+skills-lock.json
