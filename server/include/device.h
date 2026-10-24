@@ -49,13 +49,10 @@ typedef struct device {
 	net_route_t connector[CONNECTOR_MAX_NETS];
 	uint8_t n_connector;
 
-	/* 진행 중인 핸드셰이크. CHALLENGE 로 내준 nonce 를 서명이 맞는 AUTH 가 오거나
-	 * 수명이 다할 때까지 기억한다. 그동안 다시 온 REQ 에는 같은 nonce 를 내준다.
-	 * 출발지 주소가 아니라 기기에 매달아 둔다 — NAT 뒤에서는 REQ 와 AUTH 사이에
-	 * 출발지 포트가 바뀔 수 있다. */
-	uint8_t nonce[AUTH_NONCE_LEN];
-	time_t nonce_at;	/* CLOCK_MONOTONIC 초 */
-	int nonce_valid;
+	/* 서명이 맞는 AUTH 로 마지막에 쓴 nonce 의 발급 시각 (CLOCK_MONOTONIC 마이크로초). 그보다
+	 * 늦게 발급된 nonce 만 받는다 — 엿들은 AUTH 를 다시 보내도 세션이 또 열리지 않는다. nonce 자체는
+	 * 서버가 기억하지 않는다 (server.c 의 nonce_check). */
+	uint64_t nonce_used;
 } device_t;
 
 void device_init(void);

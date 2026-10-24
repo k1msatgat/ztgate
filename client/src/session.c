@@ -194,16 +194,17 @@ static int send_all(vpn_session_t *s, const uint8_t *buf, size_t len)
 	return 0;
 }
 
-static int send_request(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN])
+/* REQ_HANDSHAKE: zero(80). 누구인지 밝히지 않는다 — 기기 ID 는 AUTH 에 감싸 보낸다. */
+static int send_request(vpn_session_t *s)
 {
 	uint8_t req[sizeof(msg_header_t) + REQ_HS_PAYLOAD_LEN];
 	msg_header_t h;
 
+	memset(req, 0, sizeof(req));
 	memset(&h, 0, sizeof(h));
 	h.version = PROTOCOL_VERSION;
 	h.type = MSG_TYPE_REQ_HANDSHAKE;
 	msg_encode(req, sizeof(req), &h);
-	memcpy(req + sizeof(msg_header_t), id, DEVICE_ID_LEN);
 
 	return send_all(s, req, sizeof(req));
 }
@@ -222,13 +223,16 @@ static void hs_reset(handshake_t *hs)
 	crypt_wipe(hs, sizeof(*hs));
 }
 
-/* AUTH: device_id(16) | nonce(16) | pub_c(64) | posture(8) | mac(32)
+/* AUTH: pub_c(64) | nonce(16) | sealed(device_id(16) | posture(8)) | tag(16) | mac(32)
+ *
+ * challenge 는 CHALLENGE 의 페이로드 nonce(16) | server_pub(64). 기기 ID 와 포스처는 server_pub 과
+ * 이번 일회용 키로 감싼다 (secure_auth_seal) — 엿보는 쪽에게는 매번 다른 바이트다.
  *
  * mac 은 헤더부터 그 앞까지 전체를 덮는다. 서버가 방금 준 nonce 가 들어가므로 이
  * 패킷은 이번 핸드셰이크에만 유효하다. 포스처와 pub_c 도 서명 범위 안이라 사이에 낀
  * 쪽이 "방화벽 꺼짐"을 "켜짐"으로, pub_c 를 자기 공개키로 바꾸면 서버가 받지 않는다. */
 static int send_auth(vpn_session_t *s, handshake_t *hs, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const uint8_t *nonce,
+		const uint8_t key[AUTH_KEY_LEN], const uint8_t *challenge,
 		const posture_report_t *posture)
 {
 	uint8_t *body = hs->auth + sizeof(msg_header_t);
@@ -239,8 +243,7 @@ static int send_auth(vpn_session_t *s, handshake_t *hs, const uint8_t id[DEVICE_
 	h.type = MSG_TYPE_AUTH;
 	msg_encode(hs->auth, sizeof(hs->auth), &h);
 
-	memcpy(body + AUTH_OFF_DEVICE_ID, id, DEVICE_ID_LEN);
-	memcpy(body + AUTH_OFF_NONCE, nonce, AUTH_NONCE_LEN);
+	memcpy(body + AUTH_OFF_NONCE, challenge, AUTH_NONCE_LEN);
 
 	/* 핸드셰이크마다 새 키 쌍이다. 다시 쓰면 "지난 세션은 풀리지 않는다"가 깨진다. */
 	hs->ecdh = crypt_ecdh_new(body + AUTH_OFF_PUB);
@@ -249,7 +252,12 @@ static int send_auth(vpn_session_t *s, handshake_t *hs, const uint8_t id[DEVICE_
 		return -1;
 	}
 
+	memcpy(body + AUTH_OFF_ID, id, DEVICE_ID_LEN);
 	posture_encode(body + AUTH_OFF_POSTURE, sizeof(*posture), posture);
+	if (secure_auth_seal(hs->ecdh, challenge + AUTH_NONCE_LEN, hs->auth) < 0) {
+		fprintf(stderr, "[HS] the server's public key is not usable\n");
+		return -1;
+	}
 
 	if (crypt_hmac(key, AUTH_KEY_LEN, hs->auth, AUTH_SIGNED_LEN, body + AUTH_OFF_MAC) < 0) {
 		fprintf(stderr, "[HS] hmac failed\n");
@@ -327,9 +335,9 @@ static int deny_verified(const handshake_t *hs, const uint8_t key[AUTH_KEY_LEN],
 	return crypt_equal(want, body + 1, AUTH_MAC_LEN);
 }
 
-/*   C -> S  REQ_HANDSHAKE     "나는 이 기기다"
- *   S -> C  CHALLENGE         "그렇다면 이 nonce 에 서명해 봐라"
- *   C -> S  AUTH              nonce + 내 일회용 공개키 + 포스처 + mac
+/*   C -> S  REQ_HANDSHAKE     "핸드셰이크를 하고 싶다" (누구인지는 아직 말하지 않는다)
+ *   S -> C  CHALLENGE         "이 nonce 에 서명해 봐라. ID 는 이 공개키로 감싸라"
+ *   C -> S  AUTH              내 일회용 공개키 + nonce + 감싼 기기 ID + 포스처 + mac
  *   S -> C  RES_HANDSHAKE     세션 idx + 서버의 일회용 공개키 + 설정 + tag   (또는 DENY 와 사유) */
 int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture)
@@ -353,7 +361,7 @@ int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 		printf("[HS] request %d/%d\n", tries, HS_RETRY);
 		hs_reset(&hs);
 		loose_deny = 0;
-		if (send_request(s, id) < 0) {
+		if (send_request(s) < 0) {
 			goto out;
 		}
 
@@ -374,7 +382,7 @@ int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 				case MSG_TYPE_CHALLENGE:
 					/* 한 번의 시도에 AUTH 는 하나다. 중복된 CHALLENGE 에 다시 답하면
 					 * 일회용 키가 바뀌어, 먼저 보낸 AUTH 에 대한 수락을 열지 못한다. */
-					if (body_len < AUTH_NONCE_LEN || hs.auth_sent) {
+					if (body_len < CHALLENGE_PAYLOAD_LEN || hs.auth_sent) {
 						continue;
 					}
 					if (send_auth(s, &hs, id, key, body, posture) < 0) {

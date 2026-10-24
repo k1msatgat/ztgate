@@ -159,24 +159,84 @@ static const char ENROLL_ID_LABEL[] = "ztgate enroll id";
 static const char ENROLL_KEY_LABEL[] = "ztgate enroll key";
 static const char STATIC_LABEL[] = "ztgate v8 static";
 
+/* ECDH(mine, peer_pub) 로 HMAC(secret, label | client_pub | server_pub). */
+static int pair_key(const char *label, size_t label_len, crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[VPN_HASH_LEN])
+{
+	uint8_t secret[VPN_SECRET_LEN];
+	uint8_t msg[32 + 2 * VPN_PUB_LEN];
+	int ret = -1;
+
+	if (label_len > 32 || crypt_ecdh_derive(mine, peer_pub, secret) < 0) {
+		goto out;
+	}
+	memcpy(msg, label, label_len);
+	memcpy(msg + label_len, client_pub, VPN_PUB_LEN);
+	memcpy(msg + label_len + VPN_PUB_LEN, server_pub, VPN_PUB_LEN);
+	ret = crypt_hmac(secret, sizeof(secret), msg, label_len + 2 * VPN_PUB_LEN, key);
+
+out:
+	crypt_wipe(secret, sizeof(secret));
+	return ret;
+}
+
 int secure_static_key(crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
 		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
 		uint8_t key[AUTH_KEY_LEN])
 {
-	uint8_t secret[VPN_SECRET_LEN];
-	uint8_t msg[sizeof(STATIC_LABEL) - 1 + 2 * VPN_PUB_LEN];
+	return pair_key(STATIC_LABEL, sizeof(STATIC_LABEL) - 1, mine, peer_pub, client_pub, server_pub, key);
+}
+
+static const char AUTH_LABEL[] = "ztgate v9 auth";
+
+/* 감싼 부분은 AUTH 의 헤더 | pub_c | nonce 를 aad 로 덮는다. 키는 일회용 키마다 새것이라 nonce 는 0. */
+#define AUTH_AAD_LEN	(sizeof(msg_header_t) + AUTH_OFF_ID)
+
+int secure_auth_seal(crypt_ecdh_t *eph, const uint8_t server_pub[VPN_PUB_LEN], uint8_t *auth)
+{
+	static const uint8_t nonce[VPN_NONCE_LEN] = { 0 };
+	uint8_t *body = auth + sizeof(msg_header_t);
+	uint8_t key[VPN_HASH_LEN];
+	crypt_aead_t *a = NULL;
 	int ret = -1;
 
-	if (crypt_ecdh_derive(mine, peer_pub, secret) < 0) {
+	if (pair_key(AUTH_LABEL, sizeof(AUTH_LABEL) - 1, eph, server_pub, body + AUTH_OFF_PUB, server_pub, key) < 0 ||
+			(a = crypt_aead_new(key)) == NULL) {
 		goto out;
 	}
-	memcpy(msg, STATIC_LABEL, sizeof(STATIC_LABEL) - 1);
-	memcpy(msg + sizeof(STATIC_LABEL) - 1, client_pub, VPN_PUB_LEN);
-	memcpy(msg + sizeof(STATIC_LABEL) - 1 + VPN_PUB_LEN, server_pub, VPN_PUB_LEN);
-	ret = crypt_hmac(secret, sizeof(secret), msg, sizeof(msg), key);
+	ret = crypt_aead_seal(a, nonce, auth, AUTH_AAD_LEN, body + AUTH_OFF_ID, AUTH_SEALED_PLAIN_LEN,
+			body + AUTH_OFF_TAG) < 0 ? -1 : 0;
 
 out:
-	crypt_wipe(secret, sizeof(secret));
+	crypt_aead_free(a);
+	crypt_wipe(key, sizeof(key));
+	return ret;
+}
+
+int secure_auth_open(crypt_ecdh_t *mine, const uint8_t server_pub[VPN_PUB_LEN],
+		const uint8_t *auth, uint8_t plain[AUTH_SEALED_PLAIN_LEN])
+{
+	static const uint8_t nonce[VPN_NONCE_LEN] = { 0 };
+	const uint8_t *body = auth + sizeof(msg_header_t);
+	uint8_t key[VPN_HASH_LEN];
+	crypt_aead_t *a = NULL;
+	int ret = -1;
+
+	if (pair_key(AUTH_LABEL, sizeof(AUTH_LABEL) - 1, mine, body + AUTH_OFF_PUB, body + AUTH_OFF_PUB, server_pub, key) < 0 ||
+			(a = crypt_aead_new(key)) == NULL) {
+		goto out;
+	}
+	memcpy(plain, body + AUTH_OFF_ID, AUTH_SEALED_PLAIN_LEN);
+	ret = crypt_aead_open(a, nonce, auth, AUTH_AAD_LEN, plain, AUTH_SEALED_PLAIN_LEN,
+			body + AUTH_OFF_TAG) < 0 ? -1 : 0;
+	if (ret < 0) {
+		crypt_wipe(plain, AUTH_SEALED_PLAIN_LEN);
+	}
+
+out:
+	crypt_aead_free(a);
+	crypt_wipe(key, sizeof(key));
 	return ret;
 }
 

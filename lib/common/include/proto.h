@@ -14,7 +14,7 @@ extern "C" {
 #define PROTO_STATIC_ASSERT _Static_assert
 #endif
 
-#define PROTOCOL_VERSION 8 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS, 8: 등록이 기기 공개키를 올리고 서버 공개키를 받는다 */
+#define PROTOCOL_VERSION 9 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS, 8: 등록이 기기 공개키를 올리고 서버 공개키를 받는다, 9: 핸드셰이크가 기기 ID 를 감싸 보낸다 */
 
 #define TUN_MTU		1400
 #define BUF_SIZE	2048
@@ -44,16 +44,34 @@ extern "C" {
  *
  * 핸드셰이크는 네 메시지다. 모두 msg_header(8B) 뒤에 아래 페이로드가 붙는다.
  *
- *   C -> S  REQ_HANDSHAKE  device_id(16)
- *   S -> C  CHALLENGE      nonce(16)
- *   C -> S  AUTH           device_id(16) | nonce(16) | pub_c(64) | posture(8) | mac(32)
+ *   C -> S  REQ_HANDSHAKE  zero(80)
+ *   S -> C  CHALLENGE      nonce(16) | server_pub(64)
+ *   C -> S  AUTH           pub_c(64) | nonce(16) | sealed(device_id(16) | posture(8)) | tag(16) | mac(32)
  *   S -> C  RES_HANDSHAKE  pub_s(64) | 암호화된 net_config | tag(16)     헤더의 session_idx 가 세션 번호
  *        또는 DENY          reason(1) | mac(32)          헤더의 session_idx 는 0
  *
  * AUTH 의 mac 은 HMAC-SHA256(기기 키, 헤더부터 mac 앞까지 112B) 이다. 서버가 매번 새로
- * 뽑은 nonce 가 들어가므로 예전 AUTH 를 녹화해 다시 보내도 통과하지 못한다. AUTH 가
- * device_id 를 다시 싣는 것은 서버가 출발지 주소로 "진행 중인 핸드셰이크"를
- * 찾지 않아도 되게 하려는 것이다. NAT 뒤에서는 두 메시지 사이에 출발지 포트가 바뀔 수 있다.
+ * 뽑은 nonce 가 들어가므로 예전 AUTH 를 녹화해 다시 보내도 통과하지 못한다.
+ *
+ * 기기 ID 와 포스처는 평문으로 다니지 않는다 (v9). 평문 ID 는 그 기기가 어느 망에서 언제
+ * 붙는지를, 평문 포스처는 그 PC 의 방화벽 / 백신 상태와 OS 빌드를 엿보는 누구에게나 알려
+ * 준다. AUTH 는 둘을 서버 공개키로 감싸 싣는다:
+ *
+ *   k      = HMAC-SHA256(ECDH(pub_c 의 비밀키, server_pub), "ztgate v9 auth" | pub_c | server_pub)
+ *   sealed = AES-256-GCM(k, nonce 0, aad = 헤더 | pub_c | nonce, device_id | posture)
+ *
+ * pub_c 는 세션 키를 뽑는 바로 그 일회용 키다. 서버는 자기 비밀키로 같은 k 를 얻어 ID 와
+ * 포스처를 풀고, 그다음은 전과 같다 (기기 키로 mac 확인). mac 은 감싼 바이트를 덮는다. server_pub 은 CHALLENGE 가 알려 준다 — 서버
+ * 키(-k)가 있으면 그 공개키, 없으면 서버가 뜰 때 만든 일회용 키의 것이다. 그 공개키는 확인되지
+ * 않은 채 오므로 사이에 끼어 공개키를 바꿔 끼우는 쪽에게는 ID 가 보인다. 숨기는 상대는 엿보기만
+ * 하는 쪽이다. 바꿔 끼워도 인증과 세션 키는 전과 같이 기기 키가 지킨다.
+ *
+ * REQ 에는 아무것도 없다. CHALLENGE 의 크기만큼 0 을 채우는 것은 출발지를 위조한 REQ 로
+ * 남에게 더 큰 답을 쏟게 하지 못하게 하려는 것이다 (증폭). 서버는 REQ 에 상태를 남기지 않는다.
+ * nonce 는 발급 시각(8, 마이크로초)과 그 시각 | 출발지 IP 에 서버만 아는 키로 붙인 mac(8)이다.
+ * 서버는 AUTH 에서 그 mac 과 수명(NONCE_TTL_SEC)을 확인하고, 기기마다 마지막으로 받아들인 nonce
+ * 의 시각을 기억해 그보다 늦게 발급된 것만 받는다 — 같은 AUTH 를 두 번 받지 않는다. 출발지
+ * 포트는 넣지 않는다. NAT 뒤에서는 두 메시지 사이에 출발지 포트가 바뀔 수 있다.
  *
  * pub_c / pub_s 는 이번 핸드셰이크에만 쓰고 버리는 ECDH P-256 공개키다. 둘로 합의한
  * 값과 기기 키에서 세션 키를 뽑는다 (secure.h). 기기 키가 들어가므로 그 키를 모르는
@@ -233,14 +251,19 @@ typedef enum LOGIN_STATUS {
 #define ECDH_PUB_LEN	64	/* P-256 공개키 X(32) | Y(32) */
 #define AEAD_TAG_LEN	16
 
-#define REQ_HS_PAYLOAD_LEN	DEVICE_ID_LEN
+/* CHALLENGE: nonce(16) | server_pub(64). REQ 는 그만큼의 0 이다 (증폭 방지). */
+#define CHALLENGE_PAYLOAD_LEN	(AUTH_NONCE_LEN + ECDH_PUB_LEN)
+#define REQ_HS_PAYLOAD_LEN	CHALLENGE_PAYLOAD_LEN
 
-/* AUTH 페이로드 안에서의 위치 (헤더 뒤부터). */
-#define AUTH_OFF_DEVICE_ID	0
-#define AUTH_OFF_NONCE		(AUTH_OFF_DEVICE_ID + DEVICE_ID_LEN)
-#define AUTH_OFF_PUB		(AUTH_OFF_NONCE + AUTH_NONCE_LEN)
-#define AUTH_OFF_POSTURE	(AUTH_OFF_PUB + ECDH_PUB_LEN)
-#define AUTH_OFF_MAC		(AUTH_OFF_POSTURE + sizeof(posture_report_t))
+/* AUTH 페이로드 안에서의 위치 (헤더 뒤부터). ID 와 포스처는 감싸기 전에 이 자리에 쓰고, 그 자리에서
+ * 암호문이 된다 (secure.h 의 secure_auth_seal). */
+#define AUTH_SEALED_PLAIN_LEN	(DEVICE_ID_LEN + sizeof(posture_report_t))
+#define AUTH_OFF_PUB		0
+#define AUTH_OFF_NONCE		(AUTH_OFF_PUB + ECDH_PUB_LEN)
+#define AUTH_OFF_ID		(AUTH_OFF_NONCE + AUTH_NONCE_LEN)
+#define AUTH_OFF_POSTURE	(AUTH_OFF_ID + DEVICE_ID_LEN)
+#define AUTH_OFF_TAG		(AUTH_OFF_ID + AUTH_SEALED_PLAIN_LEN)
+#define AUTH_OFF_MAC		(AUTH_OFF_TAG + AEAD_TAG_LEN)
 #define AUTH_PAYLOAD_LEN	(AUTH_OFF_MAC + AUTH_MAC_LEN)
 
 /* mac 이 덮는 범위와 패킷 전체. 둘 다 패킷의 첫 바이트(헤더)부터 잰 길이다. */

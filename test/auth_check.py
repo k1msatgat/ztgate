@@ -39,7 +39,7 @@ SERVER = os.path.join(ROOT, "server", "bin", "vpn_server")
 PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
 # ZTGATE_WORKERS=N 이면 시험 서버를 -w N 으로 띄운다 (워커 여럿에서도 같은 판정이 나오는가).
 WORKERS = ["-w", os.environ["ZTGATE_WORKERS"]] if os.environ.get("ZTGATE_WORKERS") else []
-VERSION = 8
+VERSION = 9
 
 REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
 DISCONNECT_CLIENT_EXIT, DISCONNECT_SERVER_SHUTDOWN = 1, 2
@@ -50,6 +50,9 @@ TYPE_NAME = {RES_HANDSHAKE: "RES_HANDSHAKE", DATA: "DATA", KEEPALIVE: "KEEPALIVE
              DISCONNECT: "DISCONNECT"}
 
 HDR_LEN, PUB_LEN, TAG_LEN, MAC_LEN = 8, 64, 16, 32
+NONCE_LEN = 16
+REQ_LEN = NONCE_LEN + PUB_LEN                   # REQ 는 CHALLENGE(nonce | server_pub) 만큼의 0 (v9)
+AUTH_LEN = PUB_LEN + NONCE_LEN + 16 + 8 + TAG_LEN + MAC_LEN
 
 DEV_ID = bytes(range(0x10, 0x20))
 DEV_KEY = bytes(range(0x40, 0x60))
@@ -278,9 +281,12 @@ def unseal(pkt):
 
 
 class Client:
-    def __init__(self):
+    def __init__(self, bind=None):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if bind:
+            self.sock.bind((bind, 0))
         self.sock.settimeout(1.0)
+        self.spub = None        # 마지막 CHALLENGE 가 알려 준 서버 공개키
         self.addr = ("127.0.0.1", PORT)
         self.raw = b""          # 마지막으로 받은 패킷 그대로
         self.auth_tag = b""     # 마지막으로 보낸 AUTH 의 mac
@@ -311,23 +317,37 @@ class Client:
             pass
         self.sock.settimeout(1.0)
 
-    def request(self, dev_id=DEV_ID):
+    def request(self, dev_id=None):
+        """REQ 를 보내고 CHALLENGE 를 받는다. REQ 는 기기를 밝히지 않는다 (v9) — dev_id 는 받기만
+        하고 쓰지 않는다. 누구인지는 AUTH 에 감싸 보낸다."""
         # 앞의 세션으로 받을 것이 남아 있을 수 있다 (막힌 패킷에 돌아온 ICMP 등). 핸드셰이크의 답과 섞이지 않게.
         self.drain()
-        self.send(header(REQ_HANDSHAKE) + dev_id)
-        return self.recv()
+        self.send(header(REQ_HANDSHAKE) + bytes(REQ_LEN))
+        r = self.recv()
+        if r and r[0] == CHALLENGE and len(r[2]) >= REQ_LEN:
+            self.spub = r[2][NONCE_LEN:REQ_LEN]
+        return r
 
-    def auth(self, challenge, key=DEV_KEY, dev_id=DEV_ID, post=None, tamper=None, pub=None):
+    def auth(self, challenge, key=DEV_KEY, dev_id=DEV_ID, post=None, tamper=None, pub=None, spub=None):
         """AUTH 를 보내고 답을 받는다. 수락이면 세션 키를 뽑아 SESSIONS 에 넣는다.
+
+        challenge 는 CHALLENGE 의 페이로드(nonce | server_pub) 또는 nonce 만. 기기 ID 와 포스처는
+        server_pub(spub 으로 바꿔 줄 수 있다)과 이번 일회용 키로 감싼다 (secure.h 의 secure_auth_seal).
 
         수락의 tag 가 맞지 않으면 body 를 None 으로 돌려준다. 진짜 클라이언트는 그런
         수락을 받지 않는다."""
         ecdh = Ecdh()
-        signed = header(AUTH) + dev_id + challenge + (pub or ecdh.pub) + (post or posture())
+        nonce_ = challenge[:NONCE_LEN]
+        spub = spub or (challenge[NONCE_LEN:REQ_LEN] if len(challenge) >= REQ_LEN else self.spub)
+        cpub = pub or ecdh.pub
+        head = header(AUTH) + cpub + nonce_
+        seal_key = mac(ecdh.secret(spub), b"ztgate v9 auth" + cpub + spub)
+        signed = head + gcm_seal(seal_key, bytes(12), head, dev_id + (post or posture()))
         self.auth_tag = mac(key, signed)
         if tamper:
             signed = tamper(signed)
         pkt = signed + self.auth_tag
+        self.last_auth = pkt
         self.send(pkt)
 
         r = self.recv()
@@ -391,12 +411,27 @@ def expect(name, got, want):
 def handshake_tests():
     c = Client()
 
-    check("unknown device id", c.request(dev_id=bytes(16)), "DENY(1)")
+    check("unknown device id", c.handshake(dev_id=bytes(16)), "DENY(1)")
     check("request too short", (c.send(header(REQ_HANDSHAKE) + DEV_ID[:8]), c.recv())[1], "no response")
-    check("old client (tunnel ip only, no device id)", (c.send(header(REQ_HANDSHAKE) + TUN_IP), c.recv())[1], "no response")
-    c.send(struct.pack("!BBHI", 3, REQ_HANDSHAKE, 0, 0) + TUN_IP + DEV_ID)
-    check("previous protocol version", c.recv(), "no response")
-    check("registered device gets a challenge", c.request(), "CHALLENGE")
+    check("request without the padding (v8 shape: device id only)",
+          (c.send(header(REQ_HANDSHAKE) + DEV_ID), c.recv())[1], "no response")
+    c.send(struct.pack("!BBHI", 8, REQ_HANDSHAKE, 0, 0) + DEV_ID)
+    check("previous protocol version (v8)", c.recv(), "no response")
+    r = c.request()
+    check("a request names no device and still gets a challenge", r, "CHALLENGE")
+    expect("the challenge is no bigger than the request (no amplification)", len(c.raw) <= HDR_LEN + REQ_LEN, True)
+    expect("the challenge carries the server's public key", c.spub == SERVER_PUB, True)
+
+    # 기기 ID 는 와이어에 평문으로 나오지 않는다. 같은 기기의 두 AUTH 는 그 자리가 매번 다르다.
+    c.handshake()
+    first = c.last_auth
+    c.handshake()
+    expect("the device id is not on the wire", DEV_ID in first or DEV_ID in c.last_auth, False)
+    expect("the posture is not on the wire", posture() in first, False)
+    expect("two AUTHs of one device, sealed parts", "differ" if first[HDR_LEN + 80:HDR_LEN + 120] !=
+           c.last_auth[HDR_LEN + 80:HDR_LEN + 120] else "same", "differ")
+    check("device id sealed to a key that is not the server's", c.handshake(spub=Ecdh().pub), "DENY(2)")
+    check("a nonce issued to another address", Client(bind="127.0.0.2").auth(c.request()[2]), "DENY(2)")
 
     check("correct key (and the server's answer verifies)", c.handshake(), "RES_HANDSHAKE")
     check("wrong key", c.handshake(key=bytes(32)), "DENY(2)")
@@ -412,15 +447,16 @@ def handshake_tests():
     time.sleep(6.5)
     check("AUTH after the nonce expired (6.5s)", c.auth(r[2]), "DENY(2)")
 
-    flip = lambda s: s[:-8] + posture(firewall=STATE_OFF)
-    check("posture changed after signing", c.handshake(tamper=flip), "DENY(2)")
+    # 포스처는 감싼 부분 안이다. 그 바이트를 바꾸면 서버가 풀지 못한다 (mac 도 틀린다).
+    flip = lambda s: s[:HDR_LEN + 100] + bytes([s[HDR_LEN + 100] ^ 0x01]) + s[HDR_LEN + 101:]
+    check("sealed posture changed after signing", c.handshake(tamper=flip), "DENY(2)")
 
     # 사이에 낀 쪽이 일회용 공개키를 자기 것으로 바꿔 끼운 경우. mac 이 공개키까지 덮는다.
-    swap = lambda s: s[:HDR_LEN + 32] + Ecdh().pub + s[HDR_LEN + 32 + PUB_LEN:]
+    swap = lambda s: s[:HDR_LEN] + Ecdh().pub + s[HDR_LEN + PUB_LEN:]
     check("ephemeral key replaced after signing", c.handshake(tamper=swap), "DENY(2)")
 
-    # 서명은 맞는데 공개키가 곡선 위의 점이 아니다. 계산해 주지 않는다.
-    check("ephemeral key that is not on the curve", c.handshake(pub=bytes(PUB_LEN - 1) + b"\x01"), "no response")
+    # 공개키가 곡선 위의 점이 아니다. 기기 ID 를 풀 수 없어 거기서 거절된다.
+    check("ephemeral key that is not on the curve", c.handshake(pub=bytes(PUB_LEN - 1) + b"\x01"), "DENY(2)")
 
     # 터널 주소는 클라이언트가 대지 않는다. 기기 목록에 적힌 것을 서버가 수락에 실어 준다.
     # 이 서버는 ACL 없이 떴으므로 터널 대역 밖으로 가는 경로는 없다.
@@ -444,13 +480,11 @@ def handshake_tests():
 
 
 def disruption_tests():
-    """기기 ID 만 아는 제3자가 진짜 기기의 핸드셰이크를 깨뜨릴 수 없는지."""
+    """제3자가 진짜 기기의 핸드셰이크를 깨뜨릴 수 없는지."""
     victim, attacker = Client(), Client()
 
+    # 서버는 REQ 에 상태를 남기지 않는다. 남이 보낸 REQ 가 내 nonce 를 밀어내지 못한다.
     r = victim.request()
-    again = attacker.request()
-    expect("REQ from elsewhere does not replace a live nonce",
-           "same nonce" if again[2] == r[2] else "nonce replaced", "same nonce")
     check("victim's AUTH after 20 foreign REQs",
           ([attacker.request() for _ in range(20)], victim.auth(r[2]))[1], "RES_HANDSHAKE")
 
@@ -712,7 +746,7 @@ def reload_tests(srv, path):
     # 거절을 세션 키로 감싸 보낼 수 있다.
     reload(LINE2)
     check("device removed: next keepalive of the open session", ka(keepalive(idx)), "DENY(1)")
-    check("device removed: new handshake", c.request(), "DENY(1)")
+    check("device removed: new handshake", c.handshake(), "DENY(1)")
 
     reload(LINE1, LINE2)
     idx = session(c)
@@ -745,6 +779,8 @@ class Server:
         self.key_path = tempfile.mktemp(prefix="vpn_server.", suffix=".key")
         out = subprocess.run([SERVER, "genkey", self.key_path], capture_output=True, text=True, check=True)
         self.server_pub = bytes.fromhex(out.stdout.strip())
+        global SERVER_PUB
+        SERVER_PUB = self.server_pub
         self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-v", "-s", self.status_path, "-a", self.audit_path,
                                       "-e", self.enroll_path, "-k", self.key_path] + WORKERS + list(opts) + [
                                       str(PORT)] + list(args),
@@ -1262,7 +1298,7 @@ def audit_tests(srv):
            (DEV_ID.hex(), "10.0.0.3", True, "on"))
 
     c.handshake(key=bytes(32))
-    c.request(dev_id=bytes(range(0xa0, 0xb0)))
+    c.handshake(dev_id=bytes(range(0xa0, 0xb0)))
     expect("audit: auth_denied for a wrong key", len(since("auth_denied", device=DEV_ID.hex(), reason="bad_auth")), 1)
     expect("audit: auth_denied for an unknown device, with the id it claimed",
            len(since("auth_denied", device=bytes(range(0xa0, 0xb0)).hex(), reason="unknown_device")), 1)
@@ -1310,12 +1346,12 @@ def audit_tests(srv):
     # 틀린 요청을 쏟아부어도 줄 수가 따라 늘지 않는다. 버린 만큼은 다음 줄에 적힌다.
     before = len(srv.events())
     for i in range(300):
-        c.send(header(REQ_HANDSHAKE) + bytes([0xee] * 15 + [i & 0xff]))
+        c.send(header(AUTH) + os.urandom(AUTH_LEN))
     time.sleep(1.2)
     c.drain()
-    c.request(dev_id=bytes([0xee] * 16))
+    c.handshake(dev_id=bytes([0xee] * 16))
     flood = srv.events()[before:]
-    expect("audit: 300 bad requests in a burst are not 300 lines",
+    expect("audit: 300 forged AUTHs in a burst are not 300 lines",
            "limited" if len(flood) < 80 else "%d lines" % len(flood), "limited")
     expect("audit: the suppressed count is written down",
            "counted" if any(e.get("suppressed", 0) > 0 for e in flood) else "lost", "counted")

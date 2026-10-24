@@ -520,51 +520,96 @@ static void send_session_deny(int32_t sock, peer_t *peer, const struct sockaddr_
 	}
 }
 
-/* REQ_HANDSHAKE: device_id(16)
+/* ---- 핸드셰이크의 nonce 와 기기 ID 감싸기 (proto.h, v9) ------------------------------- */
+
+/* nonce 의 mac 키. 뜰 때 한 번 뽑고 어디에도 남기지 않는다 — 다시 시작하면 이전의 nonce 는 모두
+ * 무효다. */
+static uint8_t cookie_key[VPN_KEY_LEN];
+
+/* 기기 목록이나 등록 대기 목록을 다시 읽은 시각. 다시 읽으면 기기마다 기억한 "마지막으로 쓴
+ * nonce" 가 사라지므로, 그 전에 발급한 nonce 는 받지 않는다 (진행 중이던 핸드셰이크는 다시 한다). */
+static uint64_t nonce_floor;
+
+/* 기기 ID 를 푸는 키 쌍. 서버 키(-k)가 있으면 그것, 없으면 뜰 때 만든 일회용 키다. */
+static crypt_ecdh_t *hs_key;
+static uint8_t hs_pub[VPN_PUB_LEN];
+
+static uint64_t mono_us(void)
+{
+	struct timespec ts;
+
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+/* nonce = 발급 시각(8, 빅엔디언) | HMAC(cookie_key, 발급 시각 | 출발지 IP) 의 앞 8B */
+static int nonce_make(uint64_t issued, const struct sockaddr_in *src, uint8_t out[AUTH_NONCE_LEN])
+{
+	uint8_t msg[8 + sizeof(src->sin_addr)];
+	uint8_t mac[VPN_HASH_LEN];
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		out[i] = (uint8_t)(issued >> (56 - 8 * i));
+	}
+	memcpy(msg, out, 8);
+	memcpy(msg + 8, &src->sin_addr, sizeof(src->sin_addr));
+	if (crypt_hmac(cookie_key, sizeof(cookie_key), msg, sizeof(msg), mac) < 0) {
+		return -1;
+	}
+	memcpy(out + 8, mac, AUTH_NONCE_LEN - 8);
+	return 0;
+}
+
+/* 이 서버가 이 출발지에 내준, 아직 살아 있는 nonce 면 발급 시각, 아니면 0. */
+static uint64_t nonce_check(const uint8_t n[AUTH_NONCE_LEN], const struct sockaddr_in *src)
+{
+	uint8_t want[AUTH_NONCE_LEN];
+	uint64_t issued = 0, now = mono_us();
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		issued = issued << 8 | n[i];
+	}
+	if (issued == 0 || issued <= nonce_floor || issued > now ||
+			now - issued > (uint64_t)NONCE_TTL_SEC * 1000000u ||
+			nonce_make(issued, src, want) < 0 || !crypt_equal(want, n, AUTH_NONCE_LEN)) {
+		return 0;
+	}
+	return issued;
+}
+
+static int handshake_init(void)
+{
+	if (crypt_random(cookie_key, sizeof(cookie_key)) < 0) {
+		return -1;
+	}
+	if (serverkey() != NULL) {
+		hs_key = serverkey();
+		memcpy(hs_pub, serverkey_pub(), VPN_PUB_LEN);
+		return 0;
+	}
+	hs_key = crypt_ecdh_new(hs_pub);
+	return hs_key != NULL ? 0 : -1;
+}
+
+/* REQ_HANDSHAKE: zero(80)
  *
- * 여기서는 아무것도 믿지 않는다. ID 는 공개된 이름표라 누구나 댈 수 있다. 그래서
- * 세션을 주지 않고 "그 기기라면 이 nonce 에 서명해 봐라"만 돌려준다. 키를 만들고
- * 합의하는 비싼 계산도 여기서는 하지 않는다 — 출발지를 위조한 REQ 를 쏟아부어 서버를
- * 바쁘게 만들 수 없다. */
+ * 여기서는 아무것도 믿지 않고 아무것도 남기지 않는다. 누가 왔는지도 묻지 않는다 — 기기 ID 는
+ * AUTH 에 감싸여 온다. "이 nonce 로 서명해 봐라"와 ID 를 감쌀 공개키만 돌려준다. 키를 만들고
+ * 합의하는 비싼 계산도, 기억할 상태도 없으므로 출발지를 위조한 REQ 를 쏟아부어 서버를 바쁘게
+ * 하거나 표를 채울 수 없다. 답은 REQ 보다 크지 않다. */
 static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 		const struct sockaddr_in *src, socklen_t srclen)
 {
-	char ids[DEVICE_ID_STRLEN];
-	uint8_t res[sizeof(msg_header_t) + AUTH_NONCE_LEN];
-	const uint8_t *body = packet + sizeof(msg_header_t);
+	uint8_t res[sizeof(msg_header_t) + CHALLENGE_PAYLOAD_LEN];
 	msg_header_t msg_header;
-	device_t *dev;
 	int32_t off;
 
+	(void)packet;
 	if (n < (int32_t)(sizeof(msg_header_t) + REQ_HS_PAYLOAD_LEN)) {
 		LOG_LIMITED(LOG_HS, "[HS] short request (%d bytes)\n", n);
 		return;
-	}
-
-	/* 등록된 기기가 아니면 등록하러 온 것일 수 있다. 등록 코드에서 뽑은 임시 ID 를
-	 * 대면 그 자리를 기기처럼 다룬다 — nonce 를 주고 서명을 받는 길이 같다. */
-	dev = device_find(body);
-	if (dev == NULL) {
-		dev = enroll_find(body);
-	}
-	if (dev == NULL) {
-		LOG_LIMITED(LOG_HS, "[HS] unknown device %s\n", device_id_str(body, ids));
-		audit_auth_denied(body, src, DENY_UNKNOWN_DEVICE);
-		send_deny(sock, src, srclen, DENY_UNKNOWN_DEVICE, NULL, NULL);
-		return;
-	}
-
-	/* nonce 는 기기마다 하나만 기억한다. 아직 살아 있는 것이 있으면 새로 뽑지 않고
-	 * 그것을 다시 내준다. 요청마다 덮어쓰면, 기기 ID(공개된 이름표)를 아는 누구나
-	 * REQ 를 계속 보내는 것만으로 진짜 기기가 서명 중인 nonce 를 무효로 만들 수 있다.
-	 * nonce 는 비밀이 아니다 — 남이 받아 가도 키가 없으면 서명하지 못한다. */
-	if (!dev->nonce_valid || mono_now() - dev->nonce_at > NONCE_TTL_SEC) {
-		if (crypt_random(dev->nonce, sizeof(dev->nonce)) < 0) {
-			perror("getrandom");
-			return;
-		}
-		dev->nonce_at = mono_now();
-		dev->nonce_valid = 1;
 	}
 
 	memset(&msg_header, 0, sizeof(msg_header));
@@ -572,8 +617,12 @@ static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 	msg_header.type = MSG_TYPE_CHALLENGE;
 
 	off = msg_encode(res, sizeof(res), &msg_header);
-	memcpy(res + off, dev->nonce, AUTH_NONCE_LEN);
+	if (nonce_make(mono_us(), src, res + off) < 0) {
+		return;
+	}
 	off += AUTH_NONCE_LEN;
+	memcpy(res + off, hs_pub, VPN_PUB_LEN);
+	off += VPN_PUB_LEN;
 
 	if (net_send(sock, res, off, src, srclen) < 0) {
 		perror("sendto challenge");
@@ -651,9 +700,10 @@ out:
 	return len;
 }
 
-/* AUTH: device_id(16) | nonce(16) | pub_c(64) | posture(8) | mac(32)
+/* AUTH: pub_c(64) | nonce(16) | sealed(device_id(16) | posture(8)) | tag(16) | mac(32)
  *
- * 검사 순서에 뜻이 있다. 키를 가졌다는 것(mac)을 확인하기 전에는 "포스처가 못
+ * 검사 순서에 뜻이 있다. nonce 를 먼저 본다 — 이 서버가 그 출발지에 방금 내준 것이 아니면
+ * ID 를 풀어 보는 계산(ECDH)도 하지 않는다. 키를 가졌다는 것(mac)을 확인하기 전에는 "포스처가 못
  * 미친다" 같은 구체적인 이유를 알려 주지 않는다. 인증되지 않은 상대에게 정책의
  * 내용을 흘리지 않기 위해서다. 키 합의도 그 뒤에 한다.
  *
@@ -667,9 +717,12 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	char ib[INET_ADDRSTRLEN];
 	uint8_t res[RES_HS_MIN_LEN + NET_CONFIG_MAX_LEN];
 	uint8_t mac[AUTH_MAC_LEN];
+	uint8_t plain[AUTH_SEALED_PLAIN_LEN];	/* 감싼 부분을 푼 것: device_id | posture */
+	uint8_t *id = plain;
 	const uint8_t *body = packet + sizeof(msg_header_t);
 	const uint8_t *auth_mac = body + AUTH_OFF_MAC;
 	posture_report_t posture;
+	uint64_t issued;
 	struct in_addr tun_ip;
 	device_t *dev;
 	peer_t *peer;
@@ -682,22 +735,39 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		return;
 	}
 
-	dev = device_find(body + AUTH_OFF_DEVICE_ID);
+	/* 기기를 모르는 채 거절하는 두 경우는 감사 로그에 기기 칸을 0 으로 적는다. */
+	issued = nonce_check(body + AUTH_OFF_NONCE, src);
+	if (issued == 0) {
+		LOG_LIMITED(LOG_HS, "[HS] auth with a stale or foreign nonce\n");
+		memset(id, 0, DEVICE_ID_LEN);
+		audit_auth_denied(id, src, DENY_BAD_AUTH);
+		send_deny(sock, src, srclen, DENY_BAD_AUTH, NULL, NULL);
+		return;
+	}
+	/* pub_c 가 곡선 위의 점이 아니어도 여기서 걸린다. */
+	if (secure_auth_open(hs_key, hs_pub, packet, plain) < 0) {
+		LOG_LIMITED(LOG_HS, "[HS] auth whose device id does not open\n");
+		memset(id, 0, DEVICE_ID_LEN);
+		audit_auth_denied(id, src, DENY_BAD_AUTH);
+		send_deny(sock, src, srclen, DENY_BAD_AUTH, NULL, NULL);
+		return;
+	}
+
+	dev = device_find(id);
 	if (dev == NULL) {
-		dev = enroll_find(body + AUTH_OFF_DEVICE_ID);
+		dev = enroll_find(id);
 		enrolling = dev != NULL;
 	}
 	if (dev == NULL) {
-		LOG_LIMITED(LOG_HS, "[HS] unknown device %s\n", device_id_str(body + AUTH_OFF_DEVICE_ID, ids));
-		audit_auth_denied(body + AUTH_OFF_DEVICE_ID, src, DENY_UNKNOWN_DEVICE);
+		LOG_LIMITED(LOG_HS, "[HS] unknown device %s\n", device_id_str(id, ids));
+		audit_auth_denied(id, src, DENY_UNKNOWN_DEVICE);
 		send_deny(sock, src, srclen, DENY_UNKNOWN_DEVICE, NULL, NULL);
 		return;
 	}
 	device_id_str(dev->id, ids);
 
-	fresh = dev->nonce_valid &&
-		mono_now() - dev->nonce_at <= NONCE_TTL_SEC &&
-		memcmp(body + AUTH_OFF_NONCE, dev->nonce, AUTH_NONCE_LEN) == 0;
+	/* 같은 nonce 는 한 번만: 이 기기가 마지막으로 쓴 것보다 늦게 발급된 것만 받는다. */
+	fresh = issued > dev->nonce_used;
 
 	/* 틀린 AUTH 는 nonce 를 건드리지 않는다. 받기만 하면 버리던 때에는 아무 값이나
 	 * 채운 AUTH 한 통으로 진짜 기기의 핸드셰이크를 깨뜨릴 수 있었다. 그 기기가 보냈다고
@@ -715,9 +785,9 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	}
 
 	/* 여기부터는 그 기기가 맞다. nonce 는 한 번만 쓴다 — 서명이 맞은 AUTH 를 받은
-	 * 순간, 뒤의 검사에서 거절되더라도 버린다. 남겨 두면 엿들은 AUTH 를 그대로 다시
-	 * 보내 세션을 또 열 수 있다. */
-	dev->nonce_valid = 0;
+	 * 순간, 뒤의 검사에서 거절되더라도 쓴 것으로 친다. 남겨 두면 엿들은 AUTH 를 그대로
+	 * 다시 보내 세션을 또 열 수 있다. */
+	dev->nonce_used = issued;
 
 	tun_ip = dev->tun_ip;
 
@@ -735,7 +805,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	/* 등록하러 온 기기는 여기서 걸러내지 않는다. 정책은 그 기기가 등록을 마치고 자기
 	 * 키로 터널을 열 때 건다. 등록까지 막으면 "방화벽을 켜고 다시 오라"는 말을 등록
 	 * 실패로 듣게 되고, 등록용 세션으로는 어차피 어디에도 닿을 수 없다. */
-	posture_decode(body + AUTH_OFF_POSTURE, sizeof(posture), &posture);
+	posture_decode(plain + DEVICE_ID_LEN, sizeof(posture), &posture);
 	if (!enrolling && !device_posture_ok(dev, &posture)) {
 		printf("[HS] device %s posture rejected (build=%u firewall=%u antivirus=%u)\n",
 				ids, posture.os_build, posture.firewall, posture.antivirus);
@@ -944,7 +1014,8 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 						device_id_str(body, ids), device_path);
 				status = ENROLL_CONFLICT;
 			}
-			else if (done < 0 || device_load(device_path) < 0 || device_find(body) == NULL) {
+			else if (done < 0 || (nonce_floor = mono_us(), device_load(device_path)) < 0 ||
+					device_find(body) == NULL) {
 				printf("[enroll] could not add device %s to %s\n",
 						device_id_str(body, ids), device_path);
 				status = ENROLL_FAILED;
@@ -1623,6 +1694,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	if (handshake_init() < 0) {
+		fprintf(stderr, "cannot set up the handshake keys\n");
+		return 1;
+	}
+
 	/* 기기 목록은 ACL 과 달리 생략할 수 없다. 없으면 누구도 받아 줄 수 없고,
 	 * "목록이 없으면 모두 허용"으로 두면 설정 실수가 곧 무인증 서버가 된다. */
 	nd = device_load(argv[2]);
@@ -1868,6 +1944,7 @@ int main(int argc, char *argv[])
 
 			/* 기기 목록보다 먼저 찍는다. 관리 도구는 "device:" 줄을 보고 다시 읽기가
 			 * 끝났다고 판단한다. */
+			nonce_floor = mono_us();
 			if (enroll_path != NULL) {
 				int ne = enroll_load(enroll_path);
 				if (ne < 0) {

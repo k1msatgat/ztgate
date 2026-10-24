@@ -82,6 +82,19 @@ int secure_static_key(crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
 		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
 		uint8_t key[AUTH_KEY_LEN]);
 
+/* AUTH 의 기기 ID 와 포스처를 감싸고 푼다 (proto.h 의 "기기 ID 와 포스처는 평문으로 다니지 않는다", v9).
+ *
+ *   k = HMAC-SHA256(ECDH, "ztgate v9 auth" | pub_c | server_pub)
+ *
+ * seal: 클라이언트. eph 는 AUTH 의 pub_c 의 짝(이번 핸드셰이크의 일회용 키). auth 의 헤더, pub_c,
+ *       nonce, 그리고 평문 ID(AUTH_OFF_ID)와 포스처(AUTH_OFF_POSTURE)를 먼저 채워 둔다. 그 자리에서
+ *       감싸고 tag 를 붙인다. mac 은 그 뒤에 만든다.
+ * open: 서버. mine 은 server_pub 의 짝. 받은 AUTH 는 그대로 두고 plain 에 ID | 포스처를 푼다.
+ *       tag 가 틀리거나 pub_c 가 곡선 위의 점이 아니면 -1. */
+int secure_auth_seal(crypt_ecdh_t *eph, const uint8_t server_pub[VPN_PUB_LEN], uint8_t *auth);
+int secure_auth_open(crypt_ecdh_t *mine, const uint8_t server_pub[VPN_PUB_LEN],
+		const uint8_t *auth, uint8_t plain[AUTH_SEALED_PLAIN_LEN]);
+
 /* ---- 열린 세션 -------------------------------------------------------------- */
 
 /* 이미 받은 counter 를 기억하는 창의 폭. UDP 는 순서를 바꿔 전달할 수 있으므로 가장

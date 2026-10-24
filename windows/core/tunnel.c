@@ -977,23 +977,20 @@ static int hs_recv(tunnel_t *t, uint64_t deadline, uint8_t *buf, int cap, msg_he
 	}
 }
 
-/* REQ_HANDSHAKE: device_id(16) */
+/* REQ_HANDSHAKE: zero(80). 누구인지 밝히지 않는다 — 기기 ID 는 AUTH 에 감싸 보낸다. */
 static void send_hs_request(tunnel_t *t)
 {
 	uint8_t req[sizeof(msg_header_t) + REQ_HS_PAYLOAD_LEN];
 	msg_header_t h;
-	int off;
 
+	memset(req, 0, sizeof(req));
 	memset(&h, 0, sizeof(h));
 	h.version = PROTOCOL_VERSION;
 	h.type = MSG_TYPE_REQ_HANDSHAKE;
+	msg_encode(req, sizeof(req), &h);
 
-	off = msg_encode(req, sizeof(req), &h);
-	memcpy(req + off, t->cfg->device_id, DEVICE_ID_LEN);
-	off += DEVICE_ID_LEN;
-
-	udp_send(t, req, off);
-	hs_emit(t, TUNNEL_DIR_TX, &h, req, off, NULL, 0);
+	udp_send(t, req, (int)sizeof(req));
+	hs_emit(t, TUNNEL_DIR_TX, &h, req, (int)sizeof(req), NULL, 0);
 }
 
 /* 진행 중인 핸드셰이크 한 번의 상태. 세션 키에는 내가 보낸 AUTH 의 바이트와 그때 쓴
@@ -1010,7 +1007,10 @@ static void hs_reset(handshake_t *hs)
 	memset(hs, 0, sizeof(*hs));
 }
 
-/* AUTH: device_id(16) | nonce(16) | pub_c(64) | posture(8) | mac(32)
+/* AUTH: pub_c(64) | nonce(16) | sealed(device_id(16) | posture(8)) | tag(16) | mac(32)
+ *
+ * challenge 는 CHALLENGE 의 페이로드 nonce(16) | server_pub(64). 기기 ID 와 포스처는 server_pub 과
+ * 이번 일회용 키로 감싼다 (secure_auth_seal) — 엿보는 쪽에게는 매번 다른 바이트다.
  *
  * mac 은 헤더부터 그 앞까지 전체를 덮는다. 서버가 방금 준 nonce 가 들어가므로 이
  * 패킷은 이번 핸드셰이크에만 유효하고, 포스처도 서명 범위 안이라 전달 도중에
@@ -1019,7 +1019,7 @@ static void hs_reset(handshake_t *hs)
  *
  * pub_c 도 서명 범위 안이다. 사이에 낀 쪽이 이것을 자기 공개키로 바꾸면 mac 이
  * 틀려 서버가 받지 않는다. */
-static int send_hs_auth(tunnel_t *t, handshake_t *hs, const uint8_t *nonce)
+static int send_hs_auth(tunnel_t *t, handshake_t *hs, const uint8_t *challenge)
 {
 	posture_report_t *report = &t->session.posture;
 	uint8_t *auth = hs->auth;
@@ -1031,8 +1031,7 @@ static int send_hs_auth(tunnel_t *t, handshake_t *hs, const uint8_t *nonce)
 	h.type = MSG_TYPE_AUTH;
 	msg_encode(auth, sizeof(hs->auth), &h);
 
-	memcpy(body + AUTH_OFF_DEVICE_ID, t->cfg->device_id, DEVICE_ID_LEN);
-	memcpy(body + AUTH_OFF_NONCE, nonce, AUTH_NONCE_LEN);
+	memcpy(body + AUTH_OFF_NONCE, challenge, AUTH_NONCE_LEN);
 
 	/* 핸드셰이크마다 새 키 쌍이다. 다시 쓰면 "지난 세션은 풀리지 않는다"가 깨진다. */
 	hs->ecdh = crypt_ecdh_new(body + AUTH_OFF_PUB);
@@ -1045,6 +1044,11 @@ static int send_hs_auth(tunnel_t *t, handshake_t *hs, const uint8_t *nonce)
 	posture_report_now(report);
 	t->session.last_posture_ms = GetTickCount64();
 	posture_encode(body + AUTH_OFF_POSTURE, sizeof(*report), report);
+	memcpy(body + AUTH_OFF_ID, t->cfg->device_id, DEVICE_ID_LEN);
+	if (secure_auth_seal(hs->ecdh, challenge + AUTH_NONCE_LEN, auth) < 0) {
+		tlog(t, "[HS] the server's public key is not usable");
+		return -1;
+	}
 
 	if (crypt_hmac(t->cfg->device_key, AUTH_KEY_LEN, auth, AUTH_SIGNED_LEN,
 				body + AUTH_OFF_MAC) < 0) {
@@ -1132,9 +1136,9 @@ static int deny_verified(const tunnel_t *t, const handshake_t *hs, const uint8_t
 }
 
 /* ---- protocol ------------------------------------------------------------ */
-/*   C -> S  REQ_HANDSHAKE     "나는 이 기기다"
- *   S -> C  CHALLENGE         "그렇다면 이 nonce 에 서명해 봐라"
- *   C -> S  AUTH              nonce + 내 일회용 공개키 + 포스처 + mac
+/*   C -> S  REQ_HANDSHAKE     "핸드셰이크를 하고 싶다" (누구인지는 아직 말하지 않는다)
+ *   S -> C  CHALLENGE         "이 nonce 에 서명해 봐라. ID 는 이 공개키로 감싸라"
+ *   C -> S  AUTH              내 일회용 공개키 + nonce + 감싼 기기 ID + 포스처 + mac
  *   S -> C  RES_HANDSHAKE     세션 idx + 서버의 일회용 공개키 + tag   (또는 DENY 와 사유)
  *
  * HS_OK / HS_FAIL / HS_DENIED 를 돌려준다. */
@@ -1176,7 +1180,7 @@ static int do_handshake(tunnel_t *t)
 			case MSG_TYPE_CHALLENGE:
 				/* 한 번의 시도에 AUTH 는 하나다. 중복된 CHALLENGE 에 다시 답하면
 				 * 일회용 키가 바뀌어, 먼저 보낸 AUTH 에 대한 수락을 열지 못한다. */
-				if (body_len < AUTH_NONCE_LEN || hs.auth_sent) {
+				if (body_len < CHALLENGE_PAYLOAD_LEN || hs.auth_sent) {
 					continue;
 				}
 				hs_emit(t, TUNNEL_DIR_RX, &h, res, n, NULL, 0);
