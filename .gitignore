@@ -23,3 +23,6 @@ mcp/node_modules/
 
 # 부하 측정 결과 (tools/loadgen/bench.sh)
 tools/loadgen/out/
+
+# 서버 패키지 (packaging/build.sh)
+packaging/out/
