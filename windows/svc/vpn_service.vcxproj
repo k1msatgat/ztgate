@@ -102,6 +102,9 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(RepoRoot)\server\include</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="..\core\posture.c" />
+    <ClCompile Include="..\core\update.c">
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(RepoRoot)\server\include</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="..\core\tpm.c" />
     <ClCompile Include="..\core\wfp.c" />
     <ClCompile Include="..\core\policy.c" />
@@ -115,6 +118,7 @@
   <ItemGroup>
     <ClInclude Include="..\core\tunnel.h" />
     <ClInclude Include="..\core\posture.h" />
+    <ClInclude Include="..\core\update.h" />
     <ClInclude Include="..\core\tpm.h" />
     <ClInclude Include="..\core\wfp.h" />
     <ClInclude Include="..\core\policy.h" />

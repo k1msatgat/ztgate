@@ -52,5 +52,13 @@
         <text id="ClientId" valueName="ClientId" />
       </elements>
     </policy>
+    <policy name="Update" class="Machine" displayName="$(string.Update)" explainText="$(string.Update_Help)"
+        presentation="$(presentation.Update)" key="SOFTWARE\Policies\ztgate">
+      <parentCategory ref="ztgate" />
+      <supportedOn ref="SUPPORTED_ZTGATE_09" />
+      <elements>
+        <text id="UpdateUrl" valueName="UpdateUrl" required="true" />
+      </elements>
+    </policy>
   </policies>
 </policyDefinitions>

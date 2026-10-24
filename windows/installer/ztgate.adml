@@ -13,6 +13,8 @@
       <string id="AlwaysOn_Help">서비스가 부팅하자마자 "연결할 서버"에 붙고, 끊기면 다시 붙습니다. 사용자는 연결을 끊을 수 없습니다. 기기가 아직 등록되지 않았으면 등록되는 대로 붙습니다.</string>
       <string id="BlockWhenDown">터널이 끊긴 동안 내부망 차단</string>
       <string id="BlockWhenDown_Help">연결을 원하는데(또는 항상 연결인데) 터널이 열려 있지 않은 동안, 내부망 대역으로 나가는 연결을 Windows 필터링 플랫폼으로 막습니다. 지금 붙어 있는 망(호텔, 카페)에서 누군가 사내 주소를 흉내 내는 것을 막습니다. 대역을 비워 두면 서버가 마지막으로 내려 준 경로와 터널 대역을 막습니다. 서버 주소는 늘 허용합니다.</string>
+      <string id="Update">자동 업데이트</string>
+      <string id="Update_Help">서비스가 6시간마다 이 HTTPS 주소의 매니페스트({"version", "msi", "sha256"})를 받아, 지금보다 새 버전이면 MSI 를 받아 SHA-256 을 맞춰 본 뒤 조용히 설치합니다.</string>
       <string id="Login">사용자 로그인 (IdP)</string>
       <string id="Login_Help">사용자 로그인에 쓸 IdP 의 issuer URL 과 이 앱의 클라이언트 ID 입니다. GUI 설정 대신 이것을 씁니다.</string>
     </stringTable>
@@ -23,6 +25,9 @@
       </presentation>
       <presentation id="BlockWhenDown">
         <textBox refId="InternalNetworks"><label>막을 대역 (예: 10.0.0.0/8, 172.16.0.0/12). 비우면 서버가 준 경로</label></textBox>
+      </presentation>
+      <presentation id="Update">
+        <textBox refId="UpdateUrl"><label>매니페스트 주소 (https://...)</label></textBox>
       </presentation>
       <presentation id="Login">
         <textBox refId="Issuer"><label>Issuer URL</label></textBox>

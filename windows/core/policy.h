@@ -12,6 +12,8 @@
  *     InternalNetworks  REG_SZ     "10.0.0.0/8, 172.16.0.0/12"     위에서 막을 대역. 비우면 서버가
  *                                      마지막으로 내려 준 경로와 터널 대역을 막는다
  *     Issuer, ClientId  REG_SZ     사용자 로그인의 IdP (GUI 설정 대신)
+ *     UpdateUrl         REG_SZ     자동 업데이트의 매니페스트 (https://..., update.h). 비우면 하지 않는다
+ *     UpdateAllowHttp   REG_DWORD  1   시험용: 평문 HTTP 매니페스트 / MSI 도 받는다
  *
  * Policies 아래는 관리자만 쓸 수 있고 모든 사용자가 읽을 수 있다 — 서비스와 GUI 가 같은 값을 본다.
  * 정책이 정한 것은 GUI 설정보다 앞서고, 사용자는 바꾸지 못한다. ADMX 템플릿은
@@ -45,6 +47,9 @@ typedef struct ztgate_policy {
 
 	wchar_t issuer[256];		/* 비어 있으면 정하지 않았다 */
 	wchar_t client_id[128];
+
+	wchar_t update_url[512];	/* 비어 있으면 자동 업데이트를 하지 않는다 */
+	int update_allow_http;
 } ztgate_policy_t;
 
 /* 읽는다. 정책이 하나라도 있으면 1, 없으면 0 (p 는 0 으로 채워진다). 틀린 값(주소가 아닌 서버,

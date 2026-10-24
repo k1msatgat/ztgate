@@ -91,6 +91,13 @@ int policy_load(ztgate_policy_t *p)
 	if (reg_str(L"ClientId", p->client_id, sizeof(p->client_id) / sizeof(p->client_id[0]))) {
 		any = 1;
 	}
+	if (reg_str(L"UpdateUrl", p->update_url, sizeof(p->update_url) / sizeof(p->update_url[0]))) {
+		any = 1;
+	}
+	if (reg_dword(L"UpdateAllowHttp", &v)) {
+		any = 1;
+		p->update_allow_http = v != 0;
+	}
 
 	/* 서버만 적고 포트를 빠뜨리면 쓸 수 없다. 기본 포트로 채운다. */
 	if (p->has_servers && p->port == 0) {

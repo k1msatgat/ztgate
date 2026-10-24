@@ -32,6 +32,7 @@
 #include "filelog.h"
 #include "policy.h"
 #include "wfp.h"
+#include "update.h"
 
 #define SERVICE_NAME	L"ztgate"
 #define SERVICE_DISPLAY	L"ztgate tunnel"
@@ -81,6 +82,15 @@ static int learned_dirty;
 static int blocking;			/* WFP 필터가 걸려 있다 */
 static net_route_t blocked[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
 static int n_blocked;
+
+/* 자동 업데이트 (update.h). 서비스가 뜬 지 2분 뒤, 그다음은 6시간마다. 네트워크를 기다리므로 따로
+ * 스레드에서 하고, 끝나면 그 스레드가 notify 로 알린다. */
+#define UPDATE_FIRST_MSEC	(2 * 60 * 1000)
+#define UPDATE_EVERY_MSEC	(6ull * 3600 * 1000)
+static ULONGLONG update_at;
+static HANDLE update_thread;
+static wchar_t update_url[512];
+static int update_http;
 
 /* 기록. GUI 가 붙어 있지 않을 때에도 쌓인다 — 나중에 붙은 GUI 가 그동안의 일을 본다.
  * seq 는 지금까지 쌓은 개수이고, 항목 i 는 [i % RING] 자리에 있다. */
@@ -1014,6 +1024,38 @@ static void block_sync(void)
 	}
 }
 
+static DWORD WINAPI update_main(LPVOID arg)
+{
+	(void)arg;
+	update_check(update_url, update_http, slog);
+	SetEvent(notify);
+	return 0;
+}
+
+/* 때가 됐으면 확인을 띄운다. 다음까지 남은 ms (없으면 INFINITE). */
+static DWORD update_tick(void)
+{
+	ULONGLONG now = GetTickCount64();
+
+	if (update_thread && WaitForSingleObject(update_thread, 0) == WAIT_OBJECT_0) {
+		CloseHandle(update_thread);
+		update_thread = NULL;
+	}
+	if (pol.update_url[0] == L'\0') {
+		return INFINITE;
+	}
+	if (update_at == 0) {
+		update_at = now + UPDATE_FIRST_MSEC;
+	}
+	if (now >= update_at && !update_thread) {
+		wcscpy(update_url, pol.update_url);
+		update_http = pol.update_allow_http;
+		update_at = now + UPDATE_EVERY_MSEC;
+		update_thread = CreateThread(NULL, 0, update_main, NULL, 0, NULL);
+	}
+	return update_at > now ? (DWORD)(update_at - now) : 0;
+}
+
 static void service_run(void)
 {
 	HANDLE waits[5];
@@ -1058,10 +1100,13 @@ static void service_run(void)
 			waits[nwaits++] = worker;
 		}
 
-		timeout = INFINITE;
+		timeout = update_tick();
 		if (retry_at != 0) {
+			DWORD r;
+
 			now = GetTickCount64();
-			timeout = retry_at > now ? (DWORD)(retry_at - now) : 0;
+			r = retry_at > now ? (DWORD)(retry_at - now) : 0;
+			timeout = r < timeout ? r : timeout;
 		}
 
 		w = WaitForMultipleObjects(nwaits, waits, FALSE, timeout);
@@ -1070,6 +1115,9 @@ static void service_run(void)
 			break;
 		}
 
+		if (w == WAIT_TIMEOUT && (retry_at == 0 || GetTickCount64() < retry_at)) {
+			continue;	/* 업데이트를 볼 때였다 (update_tick 이 다음 바퀴에 본다) */
+		}
 		if (w == WAIT_TIMEOUT) {
 			retry_at = 0;
 			err = tunnel_start();
