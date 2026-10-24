@@ -137,6 +137,32 @@ echo '{"keys": []}' > "$WORK/jwks.json"
 python3 "$ROOT_DIR/tools/idp/ztgate_jwks.py" "$WORK/idp.conf" --reload none > /dev/null
 check "keycloak: tools/idp/ztgate_jwks.py fetches the signing keys" "$(echo "$TOK" | verify)" "ok user=alice groups=ops"
 
+# ---- DPoP: 실제 IdP 가 이 기기의 키에 묶인 토큰을 주고, 서버는 그 키의 증명과 함께여야 받는다 ----
+python3 "$ROOT_DIR/tools/idp/mint.py" dpop-key "$WORK/dpop.pem" > /dev/null
+python3 - "$KC/realms/$REALM/protocol/openid-connect/token" "$WORK/dpop.pem" "$ROOT_DIR/tools/idp" > "$WORK/dpop.json" <<'EOF'
+import json, sys, urllib.parse, urllib.request
+sys.path.insert(0, sys.argv[3])
+import mint
+url, key = sys.argv[1], sys.argv[2]
+form = urllib.parse.urlencode({"client_id": "ztgate", "username": "alice", "password": "alice-pw",
+                               "grant_type": "password", "scope": "openid"}).encode()
+req = urllib.request.Request(url, data=form, headers={"DPoP": mint.dpop_proof(key, None, htm="POST", htu=url)})
+try:
+    print(urllib.request.urlopen(req, timeout=15).read().decode())
+except urllib.error.HTTPError as e:
+    print(json.dumps({"error": e.code, "body": e.read().decode()}))
+EOF
+DPTOK=$(json 'j.get("access_token", "")' < "$WORK/dpop.json")
+check "keycloak dpop: the token is a DPoP token" "$(json 'j.get("token_type", j.get("error"))' < "$WORK/dpop.json")" DPoP
+check "keycloak dpop: it is bound to this key (cnf.jkt)" \
+	"$(echo "$DPTOK" | cut -d. -f2 | python3 -c 'import base64, json, sys
+s = sys.stdin.read().strip(); print(json.loads(base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))).get("cnf", {}).get("jkt"))')" \
+	"$(cd "$ROOT_DIR/tools/idp" && python3 -c "import mint; print(mint.dpop_jkt('$WORK/dpop.pem'))")"
+check "keycloak dpop: the server accepts it with the key's proof" \
+	"$(printf '%s\n%s\n' "$DPTOK" "$(python3 "$ROOT_DIR/tools/idp/mint.py" dpop-proof "$WORK/dpop.pem" "$DPTOK")" | verify)" \
+	"ok user=alice groups=ops"
+check "keycloak dpop: ...and refuses it without the proof" "$(echo "$DPTOK" | verify)" "rejected: dpop"
+
 # ---- 6. 기기 인가의 첫 단계 -------------------------------------------------------------
 DEVICE=$(json 'j.get("device_authorization_endpoint", "")' < "$WORK/discovery.json")
 check "keycloak: discovery offers device authorization" "$([ -n "$DEVICE" ] && echo yes || echo no)" yes

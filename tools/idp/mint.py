@@ -86,8 +86,9 @@ def es256_sign(pem, signing_input):
 def dpop_proof(pem, tok, htm="LOGIN", htu="ztgate:login", iat=None, jti=None, ath=None, jwk=None, typ="dpop+jwt"):
     header = {"typ": typ, "alg": "ES256", "jwk": jwk or dpop_jwk(pem)}
     body = {"htm": htm, "htu": htu, "iat": int(time.time()) if iat is None else iat,
-            "jti": jti or b64url(os.urandom(16)),
-            "ath": ath or b64url(hashlib.sha256(tok.encode()).digest())}
+            "jti": jti or b64url(os.urandom(16))}
+    if tok is not None:     # 토큰 엔드포인트에 보내는 증명에는 아직 토큰이 없다
+        body["ath"] = ath or b64url(hashlib.sha256(tok.encode()).digest())
     signing_input = (b64url(json.dumps(header, separators=(",", ":")).encode()) + "." +
                      b64url(json.dumps(body, separators=(",", ":")).encode())).encode()
     return (signing_input + b"." + b64url(es256_sign(pem, signing_input)).encode()).decode()

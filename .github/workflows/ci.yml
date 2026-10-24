@@ -78,7 +78,7 @@ jobs:
         run: |
           docker run -d --name kc -p 8080:8080 \
             -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
-            quay.io/keycloak/keycloak:26.0.7 start-dev
+            quay.io/keycloak/keycloak:26.0.7 start-dev --features=dpop
 
       - name: Tokens from a real IdP (test/keycloak_check.sh)
         run: test/keycloak_check.sh
