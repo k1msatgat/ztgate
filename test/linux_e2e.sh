@@ -29,6 +29,7 @@
 #      막히면 다음 서버로 넘어간다 (서버 veth 에 붙인 두 번째 주소를 두 번째 서버로 쓴다).
 #  10. DPoP -> 기기 키에 묶인 토큰은 그 키(-D) 없이 보내면 거절되고, ztgate_login --dpop-key 로 받아
 #      같은 키로 보내면 받아들여진다.
+#  11. IPv6 -> veth 양쪽에 IPv6 주소를 붙이고, 서버의 IPv6 주소로 붙어 터널(IPv4)이 그대로 된다.
 #
 # 사용자 네임스페이스 안에서는 nft 규칙셋이 그 네임스페이스의 것이라 방화벽 포스처를
 # 마음대로 켜고 끌 수 있다. 실제 장비에서는 그 장비의 nftables / firewalld 를 읽는다.
@@ -230,7 +231,7 @@ echo "     (denied after $(( $(date +%s) - t0 ))s)"
 check "posture: no traffic while denied" ping_fails "$SRV_TUN"
 check "posture: tun stays up while denied" in_cli ip link show "$CLI_IF"
 
-# 인바운드 기본 거부. 터널(서버의 UDP, 7단계의 TCP, tun)과 lo 만 받는다. conntrack 을 쓰지 않는 것은
+# 인바운드 기본 거부. 터널(서버의 UDP, 7단계의 TCP, tun)과 lo, IPv6 의 이웃 탐색(11단계)만 받는다. conntrack 을 쓰지 않는 것은
 # 사용자 네임스페이스에서 모듈을 올릴 수 없어서다.
 in_cli nft -f - <<EOF
 table inet e2e {
@@ -239,6 +240,7 @@ table inet e2e {
 		iif lo accept
 		udp sport $PORT accept
 		tcp sport $TCP_PORT accept
+		meta l4proto ipv6-icmp accept
 		iifname "$CLI_IF" accept
 	}
 }
@@ -438,6 +440,19 @@ check "failover: connected again through the other server" \
 	wait_for 10 sh -c "[ \$(grep -c '] connected' '$WORK/client-fo.log') -ge 2 ]"
 check "failover: ping through the tunnel after the switch" ping_ok "$SRV_TUN"
 in_cli nft delete table inet e2e_fo
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+
+echo "== 11. ipv6"
+SRV_V6=fd00:e2e::1
+in_cli ip -6 addr add fd00:e2e::2/64 dev v-cli nodad
+ip -6 addr add "$SRV_V6/64" dev v-srv nodad
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$IDENT" -i "$CLI_IF" \
+	run "$SRV_V6" "$PORT" > "$WORK/client-v6.log" 2>&1 &
+CLI_PID=$!
+check "ipv6: the client reaches the server over IPv6" wait_for 10 log_has "$WORK/client-v6.log" "] connected"
+check "ipv6: ...and says where" log_has "$WORK/client-v6.log" "tunneling to [$SRV_V6]:$PORT"
+check "ipv6: the server sees an IPv6 endpoint" log_has "$SLOG" "<- [fd00:e2e::2]:"
+check "ipv6: ping through the tunnel" ping_ok "$SRV_TUN"
 kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 
 echo "== 10. dpop"

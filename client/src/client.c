@@ -46,6 +46,30 @@
 /* 답이 없는 LOGIN 을 다시 보내는 간격. keepalive 보다 짧게 잡아 로그인이 늦지 않게 한다. */
 #define LOGIN_RETRY_MSEC	3000
 
+/* 서버 주소. IPv4 와 IPv6 를 그 패밀리 그대로 둔다 — IPv6 가 꺼진 장비에서도 IPv4 는 그대로 돈다. */
+typedef union server_addr {
+	struct sockaddr sa;
+	struct sockaddr_in v4;
+	struct sockaddr_in6 v6;
+} server_addr_t;
+
+static socklen_t server_len(const server_addr_t *a)
+{
+	return a->sa.sa_family == AF_INET6 ? sizeof(a->v6) : sizeof(a->v4);
+}
+
+/* 로그에 쓸 "주소:포트" 또는 "[주소]:포트". port 가 0 이 아니면 그 포트로 (TCP). */
+static const char *server_str(const server_addr_t *a, int port, char *out, size_t cap)
+{
+	char ib[INET6_ADDRSTRLEN];
+	int v6 = a->sa.sa_family == AF_INET6;
+
+	inet_ntop(a->sa.sa_family, v6 ? (const void *)&a->v6.sin6_addr : (const void *)&a->v4.sin_addr, ib, sizeof(ib));
+	snprintf(out, cap, v6 ? "[%s]:%u" : "%s:%u", ib,
+			port ? (unsigned)port : (unsigned)ntohs(v6 ? a->v6.sin6_port : a->v4.sin_port));
+	return out;
+}
+
 typedef struct client {
 	vpn_session_t session;
 	identity_t ident;
@@ -62,12 +86,12 @@ typedef struct client {
 	/* TCP 로 붙는다 (-T <port>). UDP 가 막힌 곳을 위한 것이다. 연결이 끊기면 다시 열고 핸드셰이크한다. */
 	int tcp_port;
 	int transport_down;		/* TCP 연결이 끊겼다 */
-	struct sockaddr_in server;	/* 지금 붙는 서버. 다시 열 때 쓴다 */
+	server_addr_t server;		/* 지금 붙는 서버. 다시 열 때 쓴다 */
 
 	/* 서버 여럿 (run 10.0.0.10,10.0.0.11 9000). 지금 서버가 답하지 않으면 다음 서버로 넘어간다.
 	 * 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다 — 세션은 서버마다 따로라 넘어가면 새로
 	 * 핸드셰이크한다. */
-	struct sockaddr_in servers[NETCFG_SERVERS_MAX];
+	server_addr_t servers[NETCFG_SERVERS_MAX];
 	int n_servers;
 	int cur_server;
 	int epfd;			/* 다시 연 소켓을 걸 epoll */
@@ -479,20 +503,25 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 /* TCP 로 서버에 붙는다 (-T). 연결을 기다리는 것은 5초까지 — 막힌 곳에서 몇 분씩 매달리지 않게. */
 static int open_tcp(client_t *c)
 {
-	struct sockaddr_in to = c->server;
+	server_addr_t to = c->server;
 	struct timeval tv = { 5, 0 };
 	int one = 1;
 	int sock;
 
-	to.sin_port = htons((uint16_t)c->tcp_port);
-	sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (to.sa.sa_family == AF_INET6) {
+		to.v6.sin6_port = htons((uint16_t)c->tcp_port);
+	}
+	else {
+		to.v4.sin_port = htons((uint16_t)c->tcp_port);
+	}
+	sock = socket(to.sa.sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (sock < 0) {
 		perror("socket");
 		return -1;
 	}
 	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-	if (connect(sock, (const struct sockaddr *)&to, sizeof(to)) < 0) {
+	if (connect(sock, &to.sa, server_len(&to)) < 0) {
 		perror("connect (tcp)");
 		close(sock);
 		return -1;
@@ -532,23 +561,27 @@ static int open_transport(client_t *c)
 	return 0;
 }
 
-static int open_socket(const struct sockaddr_in *server);
+static int open_socket(const server_addr_t *server);
 
 /* 다음 서버로 넘어간다 (서버를 여럿 적었을 때만). UDP 는 서버에 connect 해 둔 소켓이라 새로 열어
  * 바꿔 끼운다. TCP 는 다음 핸드셰이크 앞에서 open_transport 가 새 서버로 연다. */
 static void next_server(client_t *c)
 {
-	char a[INET_ADDRSTRLEN], b[INET_ADDRSTRLEN];
+	char a[INET6_ADDRSTRLEN + 16], b[INET6_ADDRSTRLEN + 16];
 	struct epoll_event ev;
 	int sock;
 
 	if (c->n_servers < 2) {
 		return;
 	}
-	ip_str(c->server.sin_addr, a);
+	server_str(&c->server, 0, a, sizeof(a));
 	c->cur_server = (c->cur_server + 1) % c->n_servers;
 	c->server = c->servers[c->cur_server];
-	printf("[HS] %s does not answer, switching to %s\n", a, ip_str(c->server.sin_addr, b));
+	/* 주소만 적는다 (포트는 모두 같다). */
+	*strrchr(a, ':') = '\0';
+	server_str(&c->server, 0, b, sizeof(b));
+	*strrchr(b, ':') = '\0';
+	printf("[HS] %s does not answer, switching to %s\n", a, b);
 
 	if (c->tcp_port) {
 		return;
@@ -572,18 +605,18 @@ static void next_server(client_t *c)
 	}
 }
 
-static int open_socket(const struct sockaddr_in *server)
+static int open_socket(const server_addr_t *server)
 {
 	int32_t sock;
 
-	sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	sock = socket(server->sa.sa_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 	if (sock < 0) {
 		perror("socket");
 		return -1;
 	}
 
 	/* connect 해 두면 서버가 아닌 곳에서 온 UDP 는 커널이 걸러 준다. */
-	if (connect(sock, (const struct sockaddr *)server, sizeof(*server)) < 0) {
+	if (connect(sock, &server->sa, server_len(server)) < 0) {
 		perror("connect");
 		close(sock);
 		return -1;
@@ -594,7 +627,7 @@ static int open_socket(const struct sockaddr_in *server)
 
 static int run(client_t *c, const char *ifname)
 {
-	char sb[INET_ADDRSTRLEN];
+	char sb[INET6_ADDRSTRLEN + 16];
 	uint8_t packet[BUF_SIZE];
 	struct epoll_event ev;
 	struct epoll_event events[MAX_EVENTS];
@@ -621,8 +654,7 @@ static int run(client_t *c, const char *ifname)
 		if (c->tcp_port ? open_transport(c) : (c->session.sock = open_socket(&c->server)) < 0) {
 			continue;
 		}
-		printf("tunneling to %s:%u%s\n", ip_str(c->server.sin_addr, sb),
-				c->tcp_port ? (unsigned)c->tcp_port : ntohs(c->server.sin_port), c->tcp_port ? " (tcp)" : "");
+		printf("tunneling to %s%s\n", server_str(&c->server, c->tcp_port, sb, sizeof(sb)), c->tcp_port ? " (tcp)" : "");
 		hs = handshake(c);
 		if (hs != HS_FAIL) {
 			break;
@@ -634,10 +666,13 @@ static int run(client_t *c, const char *ifname)
 	}
 
 	strncpy(c->net.ifname, ifname, IFNAMSIZ - 1);
+	/* 터널 경로가 덮으면 안 되는 서버 주소. 경로는 IPv4 라 IPv6 서버는 덮일 일이 없다. */
+	c->net.n_servers = 0;
 	for (i = 0; i < c->n_servers; i++) {
-		c->net.servers[i] = c->servers[i].sin_addr;
+		if (c->servers[i].sa.sa_family == AF_INET) {
+			c->net.servers[c->net.n_servers++] = c->servers[i].v4.sin_addr;
+		}
 	}
-	c->net.n_servers = c->n_servers;
 	tun_fd = tun_alloc(c->net.ifname);
 	if (tun_fd < 0) {
 		fprintf(stderr, "tun_alloc failed\n");
@@ -753,8 +788,8 @@ static int run(client_t *c, const char *ifname)
 					if (!running) {
 						break;
 					}
-					fprintf(stderr, "[HS] failed re-handshake[%s][%u], retry in %ds\n",
-							ip_str(c->server.sin_addr, sb), ntohs(c->server.sin_port),
+					fprintf(stderr, "[HS] failed re-handshake[%s], retry in %ds\n",
+							server_str(&c->server, 0, sb, sizeof(sb)),
 							c->n_servers > 1 ? 2 : SERVER_TIMEOUT_SEC);
 					hs = HS_FAIL;
 					break;
@@ -837,7 +872,7 @@ out:
 }
 
 /* 새 ID 와 키를 만들어 등록 코드로 서버에 올리고, 서버가 받아 준 뒤에 저장한다. */
-static int enroll(client_t *c, const struct sockaddr_in *server, const char *code,
+static int enroll(client_t *c, const server_addr_t *server, const char *code,
 		const char *path, int force)
 {
 	identity_t existing;
@@ -935,31 +970,48 @@ static void usage(const char *prog)
 		prog, prog, prog, prog, prog, IDENTITY_FILE_DEFAULT, TUN_IFNAME_DEFAULT);
 }
 
-static int parse_server(const char *ip, const char *port, struct sockaddr_in *out)
+/* IPv4 (203.0.113.10) 또는 IPv6 (2001:db8::10, [2001:db8::10]). */
+static int parse_server(const char *ip, const char *port, server_addr_t *out)
 {
+	char host[INET6_ADDRSTRLEN + 2];
+	size_t n = strlen(ip);
 	char *end;
 	long p;
 
 	memset(out, 0, sizeof(*out));
-	out->sin_family = AF_INET;
 
 	p = strtol(port, &end, 10);
 	if (*end != '\0' || p <= 0 || p > 65535) {
 		fprintf(stderr, "invalid port : %s\n", port);
 		return -1;
 	}
-	out->sin_port = htons((uint16_t)p);
 
-	if (inet_pton(AF_INET, ip, &out->sin_addr) != 1) {
-		fprintf(stderr, "invalid server ip : %s\n", ip);
-		return -1;
+	if (n >= 2 && ip[0] == '[' && ip[n - 1] == ']' && n - 2 < sizeof(host)) {
+		memcpy(host, ip + 1, n - 2);
+		host[n - 2] = '\0';
 	}
-
-	return 0;
+	else if (n < sizeof(host)) {
+		strcpy(host, ip);
+	}
+	else {
+		host[0] = '\0';
+	}
+	if (inet_pton(AF_INET, host, &out->v4.sin_addr) == 1) {
+		out->v4.sin_family = AF_INET;
+		out->v4.sin_port = htons((uint16_t)p);
+		return 0;
+	}
+	if (inet_pton(AF_INET6, host, &out->v6.sin6_addr) == 1) {
+		out->v6.sin6_family = AF_INET6;
+		out->v6.sin6_port = htons((uint16_t)p);
+		return 0;
+	}
+	fprintf(stderr, "invalid server ip : %s\n", ip);
+	return -1;
 }
 
 /* "10.0.0.10,10.0.0.11" 을 서버 목록으로. 개수, 틀리면 -1. */
-static int parse_servers(const char *list, const char *port, struct sockaddr_in *out, int max)
+static int parse_servers(const char *list, const char *port, server_addr_t *out, int max)
 {
 	char buf[256];
 	char *tok, *save = NULL;
@@ -992,7 +1044,7 @@ int main(int argc, char *argv[])
 	const char *ident_path = IDENTITY_FILE_DEFAULT;
 	const char *ifname = TUN_IFNAME_DEFAULT;
 	struct sigaction sa;
-	struct sockaddr_in server;
+	server_addr_t server;
 	client_t client;
 	const char *cmd;
 	int force = 0;
