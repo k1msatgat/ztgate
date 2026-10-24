@@ -144,6 +144,68 @@ jobs:
           path: bench-out/
           if-no-files-found: ignore
 
+  # 서버 패키지 (packaging/). 설치하면 설정과 서버 키가 생기고 서비스가 뜨는지, 다시 설치해도
+  # 서버 키가 그대로인지, 지워도 /etc/ztgate 가 남는지를 실제로 설치해서 본다.
+  deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make server CFLAGS="-Wall -Wextra -Werror -O2 -g"
+
+      - name: Package (packaging/build.sh deb)
+        run: packaging/build.sh deb out
+
+      - name: Install, start, reinstall, remove
+        run: |
+          set -x
+          sudo apt-get install -y -qq ./out/ztgate-server_*.deb > /dev/null
+          sudo test -s /etc/ztgate/server.key
+          key=$(sudo sha256sum /etc/ztgate/server.key)
+          sudo systemctl start ztgate
+          sleep 2
+          systemctl is-active ztgate
+          echo '{"cmd":"status"}' | sudo /usr/sbin/ztgate_ctl
+          sudo apt-get install -y -qq --reinstall ./out/ztgate-server_*.deb > /dev/null
+          systemctl is-active ztgate
+          [ "$(sudo sha256sum /etc/ztgate/server.key)" = "$key" ]
+          sudo apt-get purge -y -qq ztgate-server > /dev/null
+          if systemctl is-active --quiet ztgate; then exit 1; fi
+          [ "$(sudo sha256sum /etc/ztgate/server.key)" = "$key" ]
+          test ! -e /opt/ztgate/server/bin/vpn_server
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ztgate-server-deb
+          path: out/*.deb
+
+  # RPM 은 Rocky Linux 9 (개발 서버와 같은 배포판) 컨테이너에서 만들고 설치한다. 컨테이너에는
+  # systemd 가 없어 서비스는 띄우지 않는다 — postinst 가 그 경우를 건너뛰는지도 여기서 본다.
+  rpm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, package, install, remove (rockylinux:9)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rockylinux:9 bash -euxc '
+            dnf -y -q install gcc make openssl-devel rpm-build > /dev/null
+            make server CFLAGS="-Wall -Wextra -Werror -O2 -g"
+            packaging/build.sh rpm out
+            dnf -y -q install ./out/ztgate-server-*.rpm > /dev/null
+            test -s /etc/ztgate/server.key
+            /opt/ztgate/server/bin/vpn_server selftest | tail -n 1
+            rpm -e ztgate-server
+            test -s /etc/ztgate/server.key
+            test ! -e /opt/ztgate/server/bin/vpn_server
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ztgate-server-rpm
+          path: out/*.rpm
+
   windows:
     runs-on: windows-2022
     steps:
