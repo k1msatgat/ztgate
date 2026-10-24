@@ -11,7 +11,11 @@
 
     tools/idp/mint.py token <dir> <user> [--groups dev,ops] [--ttl 600] [--alg RS256|ES256]
         표준 출력으로 토큰 한 줄. 시험을 위해 클레임을 틀리게 만드는 옵션이 있다
-        (--iss, --aud, --exp, --nbf, --kid, --header-alg, --claim k=v).
+        (--iss, --aud, --exp, --nbf, --kid, --header-alg, --claim k=v). --dpop-key <pem> 이면 그 키에
+        묶인 토큰(cnf.jkt)을 만든다.
+
+    tools/idp/mint.py dpop-key <pem>              기기의 DPoP 키(P-256)를 만들고 지문(jkt)을 찍는다
+    tools/idp/mint.py dpop-proof <pem> <token>    LOGIN 에 실을 증명 한 줄 (proto.h 의 "DPoP")
 
 표준 라이브러리와 openssl 명령만 쓴다. 서명은 `openssl dgst -sign` 이 하고, ES256 은 그
 결과(DER)를 JWS 의 r | s 형식으로 바꾼다.
@@ -19,6 +23,7 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -52,6 +57,40 @@ def der_items(der):
         out.append((tag, der[i:i + n]))
         i += n
     return out
+
+
+def ec_point(pem):
+    """P-256 개인키 파일의 공개키 (X, Y)."""
+    point = openssl("ec", "-in", pem, "-pubout", "-outform", "DER")[-65:]
+    return point[1:33], point[33:65]
+
+
+def dpop_jwk(pem):
+    x, y = ec_point(pem)
+    return {"kty": "EC", "crv": "P-256", "x": b64url(x), "y": b64url(y)}
+
+
+def dpop_jkt(pem):
+    """RFC 7638 지문: 정해진 키들만, 사전 순서로, 공백 없이 쓴 JSON 의 SHA-256."""
+    j = dpop_jwk(pem)
+    canon = '{"crv":"%s","kty":"%s","x":"%s","y":"%s"}' % (j["crv"], j["kty"], j["x"], j["y"])
+    return b64url(hashlib.sha256(canon.encode()).digest())
+
+
+def es256_sign(pem, signing_input):
+    der = openssl("dgst", "-sha256", "-sign", pem, data=signing_input)
+    r, s = (v for _, v in der_items(der))
+    return int.from_bytes(r, "big").to_bytes(32, "big") + int.from_bytes(s, "big").to_bytes(32, "big")
+
+
+def dpop_proof(pem, tok, htm="LOGIN", htu="ztgate:login", iat=None, jti=None, ath=None, jwk=None, typ="dpop+jwt"):
+    header = {"typ": typ, "alg": "ES256", "jwk": jwk or dpop_jwk(pem)}
+    body = {"htm": htm, "htu": htu, "iat": int(time.time()) if iat is None else iat,
+            "jti": jti or b64url(os.urandom(16)),
+            "ath": ath or b64url(hashlib.sha256(tok.encode()).digest())}
+    signing_input = (b64url(json.dumps(header, separators=(",", ":")).encode()) + "." +
+                     b64url(json.dumps(body, separators=(",", ":")).encode())).encode()
+    return (signing_input + b"." + b64url(es256_sign(pem, signing_input)).encode()).decode()
 
 
 def rsa_jwk(pem, kid):
@@ -138,11 +177,25 @@ def main():
     t.add_argument("--kid")
     t.add_argument("--header-alg")
     t.add_argument("--claim", action="append", default=[], help="k=v (v 는 JSON 이면 JSON 으로)")
+    t.add_argument("--dpop-key", help="이 키(P-256 PEM)에 묶는다 (cnf.jkt)")
+    dk = sub.add_parser("dpop-key")
+    dk.add_argument("pem")
+    dp = sub.add_parser("dpop-proof")
+    dp.add_argument("pem")
+    dp.add_argument("token")
     a = p.parse_args()
 
     if a.cmd == "keys":
         make_keys(a.dir)
         print("keys, jwks.json and idp.conf written to %s" % a.dir)
+        return
+    if a.cmd == "dpop-key":
+        openssl("genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", a.pem)
+        os.chmod(a.pem, 0o600)
+        print(dpop_jkt(a.pem))
+        return
+    if a.cmd == "dpop-proof":
+        print(dpop_proof(a.pem, a.token))
         return
 
     claims = {}
@@ -152,6 +205,8 @@ def main():
             claims[key] = json.loads(val)
         except ValueError:
             claims[key] = val
+    if a.dpop_key:
+        claims["cnf"] = {"jkt": dpop_jkt(a.dpop_key)}
     print(token(a.dir, a.user, [g for g in a.groups.split(",") if g], a.ttl, a.alg, a.iss, a.aud,
                 a.exp, a.nbf, a.kid, a.header_alg, claims))
 

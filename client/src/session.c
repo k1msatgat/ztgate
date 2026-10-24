@@ -37,6 +37,7 @@ const char *session_login_name(uint8_t status)
 		case LOGIN_WRONG_TOKEN:	return "token is for another issuer or audience";
 		case LOGIN_EXPIRED:	return "token expired or not yet valid";
 		case LOGIN_BAD_USER:	return "no usable user name in the token";
+		case LOGIN_DPOP:	return "the token is bound to a device key and the proof is missing or wrong";
 		default:		return "?";
 	}
 }

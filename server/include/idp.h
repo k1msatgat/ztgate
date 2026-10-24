@@ -17,6 +17,8 @@
  *   user-claim    preferred_username                     사용자 이름을 읽을 클레임 (기본 sub)
  *   groups-claim  groups                                 그룹 목록을 읽을 클레임 (기본 groups)
  *   leeway        30                                     exp / nbf 에 봐주는 초 (기본 30)
+ *   dpop          required                               기기에 묶인 토큰(cnf.jkt)만 받는다 (기본 optional:
+ *                                                        묶인 토큰은 증명을 보고, 묶이지 않은 토큰도 받는다)
  *
  * 받는 토큰
  *   - alg 는 RS256 과 ES256 만. "none" 이나 HS256 은 받지 않는다. 특히 HS256 을 받으면
@@ -38,8 +40,10 @@ int idp_load(const char *path);
 /* idp_load 가 한 번이라도 성공했으면 1. */
 int idp_enabled(void);
 
-/* 토큰을 확인하고 사용자를 꺼낸다. now 는 벽시계 초. login_status_t 를 돌려준다. */
-int idp_verify(const char *token, size_t len, int64_t now, user_identity_t *out);
+/* 토큰을 확인하고 사용자를 꺼낸다. proof 는 DPoP 증명 (없으면 NULL, proto.h 의 "DPoP"). now 는
+ * 벽시계 초. login_status_t 를 돌려준다. */
+int idp_verify(const char *token, size_t len, const char *proof, size_t proof_len, int64_t now,
+		user_identity_t *out);
 
 /* 사람이 읽을 이름 (로그, 감사 로그). */
 const char *idp_status_name(int status);

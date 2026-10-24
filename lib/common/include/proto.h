@@ -249,8 +249,26 @@ typedef enum LOGIN_STATUS {
 	LOGIN_UNTRUSTED,	/* 받지 않는 알고리즘, 모르는 키, 서명이 맞지 않는다 */
 	LOGIN_WRONG_TOKEN,	/* 서명은 맞지만 다른 서비스나 다른 IdP 에 준 토큰이다 (iss / aud) */
 	LOGIN_EXPIRED,		/* 만료됐거나 아직 쓸 수 없는 토큰이다 (exp / nbf) */
-	LOGIN_BAD_USER		/* 사용자 이름이 없거나 쓸 수 없는 글자가 있다 */
+	LOGIN_BAD_USER,		/* 사용자 이름이 없거나 쓸 수 없는 글자가 있다 */
+	LOGIN_DPOP		/* 기기에 묶인 토큰인데 증명이 없거나 맞지 않는다, 또는 묶이지 않은 토큰을 받지 않는다 */
 } login_status_t;
+
+/* DPoP — 토큰을 이 기기의 키에 묶는다 (RFC 9449 를 터널에 맞춘 것).
+ *
+ * IdP 에 토큰을 청할 때 기기의 서명 키(P-256)로 만든 증명을 붙이면 IdP 는 그 키의 지문(RFC 7638 의
+ * JWK SHA-256 thumbprint)을 토큰의 cnf.jkt 에 적어 준다. 그런 토큰은 그 키를 가진 쪽만 쓸 수 있다.
+ * LOGIN 에 토큰과 함께 새 증명을 싣는다 — 둘 사이는 공백 하나:
+ *
+ *   암호문 = 토큰 [ " " 증명 ]
+ *   증명 = ES256 JWS. 헤더 {"typ":"dpop+jwt","alg":"ES256","jwk":{공개키}},
+ *          본문 {"htm":"LOGIN","htu":"ztgate:login","iat":<지금>,"jti":<한 번만>,"ath":<b64url(SHA-256(토큰))>}
+ *
+ * 서버는 증명의 서명, jwk 의 지문 == 토큰의 cnf.jkt, ath, iat(앞뒤 DPOP_IAT_WINDOW 초), jti 의 재사용을
+ * 본다. 훔친 토큰은 그 기기의 키 없이는 증명을 만들 수 없어 쓸 수 없다. 묶이지 않은 토큰은 서버
+ * 설정(idp.conf 의 dpop required)이 아니면 지금처럼 받는다. */
+#define DPOP_HTM		"LOGIN"
+#define DPOP_HTU		"ztgate:login"
+#define DPOP_IAT_WINDOW		120
 
 #define ECDH_PUB_LEN	64	/* P-256 공개키 X(32) | Y(32) */
 #define AEAD_TAG_LEN	16

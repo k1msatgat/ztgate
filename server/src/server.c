@@ -1067,7 +1067,14 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 	int status, same, i;
 
 	device_id_str(peer->device_id, ids);
-	status = idp_verify((const char *)body, (size_t)n, (int64_t)time(NULL), &who);
+	/* 토큰 [ " " DPoP 증명 ] (proto.h). JWT 에는 공백이 없다. */
+	{
+		const char *sp = memchr(body, ' ', (size_t)n);
+		size_t tl = sp != NULL ? (size_t)(sp - (const char *)body) : (size_t)n;
+
+		status = idp_verify((const char *)body, tl, sp != NULL ? sp + 1 : NULL,
+				sp != NULL ? (size_t)n - tl - 1 : 0, (int64_t)time(NULL), &who);
+	}
 
 	if (status == LOGIN_OK) {
 		/* 답이 사라져 같은 토큰이 다시 온 것이면 다시 기록하지 않는다. */
@@ -1109,7 +1116,8 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 }
 
 /* vpn_server verify-token <idp-file> < token
- * 받으면 "ok user=... groups=... expires_in=...s" 와 0, 아니면 "rejected: <사유>" 와 1. */
+ * 받으면 "ok user=... groups=... expires_in=...s" 와 0, 아니면 "rejected: <사유>" 와 1. 기기에 묶인
+ * 토큰이면 토큰 뒤에 공백(또는 줄바꿈)과 DPoP 증명을 이어 준다. */
 static int verify_token(const char *idp_file)
 {
 	static char token[LOGIN_TOKEN_MAX + 2];
@@ -1126,7 +1134,21 @@ static int verify_token(const char *idp_file)
 		n--;
 	}
 
-	status = idp_verify(token, n, (int64_t)time(NULL), &who);
+	{
+		char *sp = memchr(token, ' ', n);
+		char *nl = memchr(token, '\n', n);
+		size_t tl;
+
+		if (sp == NULL || (nl != NULL && nl < sp)) {
+			sp = nl;
+		}
+		tl = sp != NULL ? (size_t)(sp - token) : n;
+		while (tl > 0 && token[tl - 1] == '\r') {
+			tl--;
+		}
+		status = idp_verify(token, tl, sp != NULL ? sp + 1 : NULL, sp != NULL ? n - (size_t)(sp + 1 - token) : 0,
+				(int64_t)time(NULL), &who);
+	}
 	if (status != LOGIN_OK) {
 		printf("rejected: %s\n", idp_status_name(status));
 		return 1;

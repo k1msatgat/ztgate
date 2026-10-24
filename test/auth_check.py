@@ -1890,7 +1890,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools", "idp"))
 import mint     # noqa: E402  시험용 IdP: 서명 키, JWKS, 토큰
 
 LOGIN_OK, LOGIN_NO_IDP, LOGIN_MALFORMED, LOGIN_UNTRUSTED, LOGIN_WRONG_TOKEN, LOGIN_EXPIRED, \
-    LOGIN_BAD_USER = range(7)
+    LOGIN_BAD_USER, LOGIN_DPOP = range(8)
 
 
 def login(c, idx, token):
@@ -1912,6 +1912,60 @@ def login_no_idp_tests():
 
 def b64(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def dpop_tests(srv, idp_dir):
+    """기기에 묶인 토큰(cnf.jkt)은 그 키의 증명과 함께여야 받는다 (proto.h 의 "DPoP")."""
+    c = Client()
+    idx = session(c)
+    key = os.path.join(idp_dir, "dpop.pem")
+    other = os.path.join(idp_dir, "dpop-other.pem")
+    for k in (key, other):
+        subprocess.run(["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+                        "-out", k], check=True, capture_output=True)
+    jkt = mint.dpop_jkt(key)
+    bound = mint.token(idp_dir, "frank", groups=["ops"], claims={"cnf": {"jkt": jkt}})
+    status = lambda r: r[0] if r else "no response"
+    send = lambda tok, proof=None: status(login(c, idx, tok + (" " + proof if proof else "")))
+    now = int(time.time())
+
+    expect("dpop: a bound token without a proof", send(bound), LOGIN_DPOP)
+    expect("dpop: a bound token with its key's proof", send(bound, mint.dpop_proof(key, bound)), LOGIN_OK)
+    jti = "fixed-jti-1"
+    expect("dpop: a proof with a fresh jti", send(bound, mint.dpop_proof(key, bound, jti=jti)), LOGIN_OK)
+    expect("dpop: the same proof again (jti replay)", send(bound, mint.dpop_proof(key, bound, jti=jti)), LOGIN_DPOP)
+    for name, proof in [
+        ("a proof made with another key", mint.dpop_proof(other, bound)),
+        ("another key's jwk in the header, signed by it", mint.dpop_proof(other, bound, jwk=mint.dpop_jwk(other))),
+        ("this key's jwk, signed by another key", mint.dpop_proof(other, bound, jwk=mint.dpop_jwk(key))),
+        ("a proof for another token (ath)", mint.dpop_proof(key, bound, ath=b64(hashlib.sha256(b"x").digest()))),
+        ("a proof from 10 minutes ago", mint.dpop_proof(key, bound, iat=now - 600)),
+        ("a proof for another method", mint.dpop_proof(key, bound, htm="GET")),
+        ("a proof for another target", mint.dpop_proof(key, bound, htu="https://evil.test/")),
+        ("typ is not dpop+jwt", mint.dpop_proof(key, bound, typ="JWT")),
+        ("garbage", "a.b.c"),
+    ]:
+        expect("dpop rejects: " + name, send(bound, proof), LOGIN_DPOP)
+    expect("dpop: cnf without jkt", send(mint.token(idp_dir, "frank", claims={"cnf": {}})), LOGIN_MALFORMED)
+    plain = mint.token(idp_dir, "gina")
+    expect("dpop optional: an unbound token is still accepted", send(plain), LOGIN_OK)
+    expect("dpop: an unbound token with a proof is accepted (the proof is not needed)",
+           send(plain, mint.dpop_proof(key, plain)), LOGIN_OK)
+
+    # dpop required: 묶이지 않은 토큰은 받지 않는다.
+    conf = os.path.join(idp_dir, "idp.conf")
+    saved = open(conf).read()
+    with open(conf, "a") as f:
+        f.write("dpop required\n")
+    srv.reload()
+    expect("dpop required: an unbound token is refused", send(mint.token(idp_dir, "gina")), LOGIN_DPOP)
+    expect("dpop required: a bound token with its proof", send(bound, mint.dpop_proof(key, bound)), LOGIN_OK)
+    with open(conf, "w") as f:
+        f.write(saved)
+    srv.reload()
+    r = subprocess.run([SERVER, "verify-token", conf], input=bound + "\n" + mint.dpop_proof(key, bound),
+                       capture_output=True, text=True)
+    expect("verify-token takes the proof after the token", r.stdout.split(" ")[0], "ok")
 
 
 def login_tests(srv, acl_path, idp_dir):
@@ -2115,6 +2169,7 @@ def main():
         srv_idp = Server(path, acl_path, opts=["-u", os.path.join(idp_dir, "idp.conf")])
         try:
             login_tests(srv_idp, acl_path, idp_dir)
+            dpop_tests(srv_idp, idp_dir)
             jwks_refresh_tests(idp_dir)
         finally:
             srv_idp.stop()

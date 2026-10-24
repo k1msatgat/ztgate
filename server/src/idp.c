@@ -40,6 +40,7 @@ typedef struct idp_conf {
 	char user_claim[IDP_CLAIM_MAX];
 	char groups_claim[IDP_CLAIM_MAX];
 	int64_t leeway;
+	int dpop_required;
 	idp_key_t keys[IDP_MAX_KEYS];
 	int n_keys;
 } idp_conf_t;
@@ -408,6 +409,13 @@ int idp_load(const char *path)
 		else if (strcmp(key, "groups-claim") == 0) {
 			if (set_str(staged.groups_claim, sizeof(staged.groups_claim), val, key, lineno) < 0) goto fail;
 		}
+		else if (strcmp(key, "dpop") == 0) {
+			if (strcmp(val, "required") != 0 && strcmp(val, "optional") != 0) {
+				fprintf(stderr, "idp: line %d: dpop must be required or optional\n", lineno);
+				goto fail;
+			}
+			staged.dpop_required = strcmp(val, "required") == 0;
+		}
 		else if (strcmp(key, "leeway") == 0) {
 			staged.leeway = strtol(val, &end, 10);
 			if (*end != '\0' || staged.leeway < 0 || staged.leeway > 300) {
@@ -480,6 +488,7 @@ const char *idp_status_name(int status)
 		case LOGIN_WRONG_TOKEN:	return "wrong_token";
 		case LOGIN_EXPIRED:	return "expired";
 		case LOGIN_BAD_USER:	return "bad_user";
+		case LOGIN_DPOP:	return "dpop";
 		default:		return "other";
 	}
 }
@@ -595,7 +604,141 @@ static int read_groups(const char *s, const json_tok_t *t, int obj, user_identit
 	return 0;
 }
 
-int idp_verify(const char *token, size_t len, int64_t now, user_identity_t *out)
+/* ---- DPoP (proto.h) ---------------------------------------------------------- */
+
+static void b64url_encode(const uint8_t *in, size_t len, char *out)
+{
+	static const char a[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+	size_t i, o = 0;
+
+	for (i = 0; i + 2 < len; i += 3) {
+		out[o++] = a[in[i] >> 2];
+		out[o++] = a[(in[i] & 3) << 4 | in[i + 1] >> 4];
+		out[o++] = a[(in[i + 1] & 15) << 2 | in[i + 2] >> 6];
+		out[o++] = a[in[i + 2] & 63];
+	}
+	if (len - i == 1) {
+		out[o++] = a[in[i] >> 2];
+		out[o++] = a[(in[i] & 3) << 4];
+	}
+	else if (len - i == 2) {
+		out[o++] = a[in[i] >> 2];
+		out[o++] = a[(in[i] & 3) << 4 | in[i + 1] >> 4];
+		out[o++] = a[(in[i + 1] & 15) << 2];
+	}
+	out[o] = '\0';
+}
+
+static int sha256_b64(const void *data, size_t len, char out[44])
+{
+	uint8_t h[32];
+	unsigned int hl = 0;
+
+	if (EVP_Digest(data, len, h, &hl, EVP_sha256(), NULL) != 1 || hl != 32) {
+		return -1;
+	}
+	b64url_encode(h, sizeof(h), out);
+	return 0;
+}
+
+/* 최근에 받은 증명의 jti. 같은 증명을 두 번 받지 않는다 (DPOP_IAT_WINDOW 안에서만 기억하면 된다). */
+#define JTI_RING	512
+static struct { char h[44]; int64_t at; } jti_seen[JTI_RING];
+static int jti_next;
+
+static int jti_fresh(const char *jti, int64_t now)
+{
+	char h[44];
+	int i;
+
+	if (sha256_b64(jti, strlen(jti), h) < 0) {
+		return 0;
+	}
+	for (i = 0; i < JTI_RING; i++) {
+		if (jti_seen[i].at != 0 && now - jti_seen[i].at <= 2 * DPOP_IAT_WINDOW && strcmp(jti_seen[i].h, h) == 0) {
+			return 0;
+		}
+	}
+	strcpy(jti_seen[jti_next].h, h);
+	jti_seen[jti_next].at = now;
+	jti_next = (jti_next + 1) % JTI_RING;
+	return 1;
+}
+
+/* 증명이 이 토큰(ath)과 이 키(jkt)의 것이고 지금 만든 것인가. */
+static int dpop_ok(const char *proof, size_t len, const char *token, size_t token_len, const char *jkt, int64_t now)
+{
+	static uint8_t header[2048], payload[2048], sig[128];
+	static json_tok_t t[64];
+	char x[64], y[64], thumb_in[200], thumb[44], ath[44], s[256];
+	uint8_t xb[64], yb[64];
+	const char *dot1, *dot2;
+	idp_key_t k;
+	int64_t iat;
+	int hl, pl, sl, jwk, v, ok = 0;
+
+	dot1 = memchr(proof, '.', len);
+	dot2 = dot1 != NULL ? memchr(dot1 + 1, '.', len - (size_t)(dot1 + 1 - proof)) : NULL;
+	if (dot1 == NULL || dot2 == NULL) {
+		return 0;
+	}
+	hl = b64url_decode(proof, (size_t)(dot1 - proof), header, sizeof(header) - 1);
+	pl = b64url_decode(dot1 + 1, (size_t)(dot2 - dot1 - 1), payload, sizeof(payload) - 1);
+	sl = b64url_decode(dot2 + 1, len - (size_t)(dot2 + 1 - proof), sig, sizeof(sig));
+	if (hl <= 0 || pl <= 0 || sl != 64) {
+		return 0;
+	}
+
+	/* 헤더: typ, alg, 그리고 증명한 키 그 자체. */
+	if (json_parse((const char *)header, (size_t)hl, t, 64) < 0 || t[0].type != JSON_OBJECT ||
+			(v = json_get((const char *)header, t, 0, "typ")) < 0 || !json_eq((const char *)header, t, v, "dpop+jwt") ||
+			(v = json_get((const char *)header, t, 0, "alg")) < 0 || !json_eq((const char *)header, t, v, "ES256") ||
+			(jwk = json_get((const char *)header, t, 0, "jwk")) < 0 || t[jwk].type != JSON_OBJECT ||
+			(v = json_get((const char *)header, t, jwk, "kty")) < 0 || !json_eq((const char *)header, t, v, "EC") ||
+			(v = json_get((const char *)header, t, jwk, "crv")) < 0 || !json_eq((const char *)header, t, v, "P-256") ||
+			json_b64((const char *)header, t, json_get((const char *)header, t, jwk, "x"), xb, sizeof(xb)) != 32 ||
+			json_b64((const char *)header, t, json_get((const char *)header, t, jwk, "y"), yb, sizeof(yb)) != 32) {
+		return 0;
+	}
+
+	/* 지문은 키의 값으로 다시 만든다 (RFC 7638: 정해진 순서와 모양의 JSON 의 SHA-256). 적혀 온 글자를
+	 * 그대로 쓰면 같은 키의 다른 표기가 다른 지문이 된다. */
+	b64url_encode(xb, 32, x);
+	b64url_encode(yb, 32, y);
+	snprintf(thumb_in, sizeof(thumb_in), "{\"crv\":\"P-256\",\"kty\":\"EC\",\"x\":\"%s\",\"y\":\"%s\"}", x, y);
+	if (sha256_b64(thumb_in, strlen(thumb_in), thumb) < 0 || strcmp(thumb, jkt) != 0) {
+		return 0;
+	}
+
+	k.alg = ALG_ES256;
+	k.pkey = p256_key(xb, yb);
+	if (k.pkey == NULL) {
+		return 0;
+	}
+	if (!signature_ok(&k, proof, (size_t)(dot2 - proof), sig, (size_t)sl)) {
+		goto out;
+	}
+
+	/* 본문: 무엇에 대한 증명인가, 언제 만든 것인가. */
+	if (json_parse((const char *)payload, (size_t)pl, t, 64) < 0 || t[0].type != JSON_OBJECT ||
+			(v = json_get((const char *)payload, t, 0, "htm")) < 0 || !json_eq((const char *)payload, t, v, DPOP_HTM) ||
+			(v = json_get((const char *)payload, t, 0, "htu")) < 0 || !json_eq((const char *)payload, t, v, DPOP_HTU) ||
+			(v = json_get((const char *)payload, t, 0, "iat")) < 0 || json_int64((const char *)payload, t, v, &iat) < 0 ||
+			iat > now + DPOP_IAT_WINDOW || iat < now - DPOP_IAT_WINDOW ||
+			(v = json_get((const char *)payload, t, 0, "ath")) < 0 || json_string((const char *)payload, t, v, s, sizeof(s)) <= 0 ||
+			sha256_b64(token, token_len, ath) < 0 || strcmp(s, ath) != 0 ||
+			(v = json_get((const char *)payload, t, 0, "jti")) < 0 || json_string((const char *)payload, t, v, s, sizeof(s)) <= 0) {
+		goto out;
+	}
+	ok = jti_fresh(s, now);
+
+out:
+	EVP_PKEY_free(k.pkey);
+	return ok;
+}
+
+int idp_verify(const char *token, size_t len, const char *proof, size_t proof_len, int64_t now,
+		user_identity_t *out)
 {
 	static uint8_t header[JWT_PART_MAX], payload[JWT_PART_MAX], sig[JWT_PART_MAX];
 	static json_tok_t t[JWT_TOKENS];
@@ -712,6 +855,22 @@ int idp_verify(const char *token, size_t len, int64_t now, user_identity_t *out)
 	if (read_groups((const char *)payload, t, 0, out) < 0) {
 		memset(out, 0, sizeof(*out));
 		return LOGIN_MALFORMED;
+	}
+
+	/* 기기에 묶인 토큰이면 그 키의 증명이 있어야 한다. 묶이지 않은 토큰은 설정에 따라. */
+	v = json_get((const char *)payload, t, 0, "cnf");
+	{
+		char jkt[64] = "";
+		int j = v >= 0 && t[v].type == JSON_OBJECT ? json_get((const char *)payload, t, v, "jkt") : -1;
+
+		if (v >= 0 && (j < 0 || json_string((const char *)payload, t, j, jkt, sizeof(jkt)) <= 0)) {
+			memset(out, 0, sizeof(*out));
+			return LOGIN_MALFORMED;
+		}
+		if (jkt[0] != '\0' ? proof == NULL || !dpop_ok(proof, proof_len, token, len, jkt, now) : conf.dpop_required) {
+			memset(out, 0, sizeof(*out));
+			return LOGIN_DPOP;
+		}
 	}
 
 	/* 봐주는 시간은 받을 때만 쓴다. 세션에 붙여 둔 사용자는 토큰에 적힌 그 순간에 끝난다. */
