@@ -218,7 +218,56 @@ def view_enroll(c, csrf, made=None):
     return "%s%s<h2>기다리는 등록</h2>%s" % (code, form, pending)
 
 
-def view_acl(c):
+def rule_line(rule):
+    """acl_get 의 규칙 하나를 파일과 같은 한 줄로."""
+    t = [rule.get("src"), rule.get("dst"), rule.get("proto"), rule.get("dport"), rule.get("action")]
+    req = req_text(rule.get("require"))
+    if req:
+        t.append(req)
+    u = rule.get("users") or {}
+    t += ["user=" + n for n in u.get("users", [])] + ["group=" + n for n in u.get("groups", [])]
+    t += ["tag=" + n for n in rule.get("tags", [])]
+    return " ".join(str(x) for x in t)
+
+
+def parse_rules(text):
+    """편집한 줄들을 acl_set 의 규칙으로. (규칙들, 오류 글) — 검증 자체는 ztgate_ctl 이 한 번 더 한다."""
+    rules = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        tok = line.split()
+        if len(tok) < 5:
+            return None, "%d번째 줄: 출발지 목적지 프로토콜 포트 판정, 다섯 칸이 필요합니다" % n
+        rule = {"src": tok[0], "dst": tok[1], "proto": tok[2], "dport": tok[3], "action": tok[4]}
+        req, users, groups, tags = {}, [], [], []
+        for t in tok[5:]:
+            if t in ("firewall=on", "antivirus=on", "disk=on"):
+                req[t.split("=")[0]] = True
+            elif t.startswith("min-build=") and t[10:].isdigit():
+                req["min_build"] = int(t[10:])
+            elif t.startswith("user="):
+                users.append(t[5:])
+            elif t.startswith("group="):
+                groups.append(t[6:])
+            elif t.startswith("tag="):
+                tags.append(t[4:])
+            else:
+                return None, "%d번째 줄: 모르는 조건 '%s'" % (n, t)
+        if req:
+            rule["require"] = req
+        if users or groups:
+            rule["users"] = {"users": users, "groups": groups}
+        if tags:
+            rule["tags"] = tags
+        rules.append(rule)
+    if not rules:
+        return None, "규칙이 하나도 없습니다 (ACL 을 끄는 것은 이 화면에서 하지 않습니다)"
+    return rules, None
+
+
+def view_acl(c, csrf=None, draft=None):
     r = c.call("acl_get")
     if not r.get("ok"):
         return '<div class="msg err">%s</div>' % e(r.get("error"))
@@ -236,9 +285,18 @@ def view_acl(c):
             i, e(rule.get("src")), e(rule.get("dst")), e(rule.get("proto")), e(rule.get("dport")),
             '<span class="%s">%s</span>' % ("ok" if rule.get("action") == "allow" else "bad", e(rule.get("action"))),
             e(" ".join(x for x in cond if x))))
-    return ("<h2>ACL (위에서부터 첫 일치)</h2><table><tr><th>#</th><th>출발지</th><th>목적지</th><th>프로토콜</th>"
-            "<th>포트</th><th>판정</th><th>조건</th></tr>%s</table><p class=\"muted\">규칙을 바꾸는 것은 MCP 의 acl_set "
-            "또는 /etc/ztgate/acl.conf 를 고친 뒤 reload 입니다.</p>" % "".join(rows))
+    text = draft if draft is not None else "\n".join(rule_line(x) for x in r.get("rules") or [])
+    edit = ('<h2>고치기</h2><form method="post" action="/acl/set"><input type="hidden" name="csrf" value="%s">'
+            '<textarea name="rules" rows="%d" style="width:100%%;font:12px monospace">%s</textarea>'
+            '<p class="muted">한 줄에 규칙 하나, 파일과 같은 모양: <code>출발지 목적지 프로토콜 포트 allow|deny '
+            '[firewall=on antivirus=on disk=on min-build=N user=이름 group=이름 tag=역할]</code>. 저장하면 서버가 '
+            '바로 다시 읽습니다. 맨 끝에 <code>any any any any deny</code> 를 두는 것을 잊지 마세요.</p>'
+            '<button>저장</button></form>') % (e(csrf), max(6, text.count("\n") + 3), e(text)) if csrf else ""
+    note = ""
+    if r.get("restart_required"):
+        note = '<div class="msg err">ACL 을 켜거나 끈 것은 서버를 다시 시작해야 반영됩니다.</div>'
+    return ("%s<h2>ACL (위에서부터 첫 일치)</h2><table><tr><th>#</th><th>출발지</th><th>목적지</th><th>프로토콜</th>"
+            "<th>포트</th><th>판정</th><th>조건</th></tr>%s</table>%s" % (note, "".join(rows), edit))
 
 
 def view_audit(c, q):
@@ -310,7 +368,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(200 if url.path in ("/", "/login") else 401, page("/login", LOGIN))
             return
         views = {"/": lambda: view_overview(c), "/devices": lambda: view_devices(c, csrf),
-                 "/enroll": lambda: view_enroll(c, csrf), "/acl": lambda: view_acl(c), "/audit": lambda: view_audit(c, q)}
+                 "/enroll": lambda: view_enroll(c, csrf), "/acl": lambda: view_acl(c, csrf), "/audit": lambda: view_audit(c, q)}
         if url.path not in views:
             self.send(404, page(url.path, "<p>없는 페이지입니다.</p>", csrf))
             return
@@ -356,6 +414,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/enroll/revoke":
             r = c.call("enroll_revoke", id=form.get("id", ""))
             self.done("/enroll", r, "등록 코드를 거뒀습니다")
+            return
+        if path == "/acl/set":
+            rules, err = parse_rules(form.get("rules", ""))
+            if err is None:
+                r = c.call("acl_set", rules=rules)
+                if r.get("ok"):
+                    self.redirect("/acl?" + urllib.parse.urlencode({"ok": "ACL 을 저장했습니다 (%d 규칙)" % len(rules)}))
+                    return
+                err = r.get("error") or "실패"
+            # 고친 글을 잃지 않게 그대로 다시 보여 준다.
+            self.send(400, page("/acl", view_acl(c, csrf, draft=form.get("rules", "")), csrf, ("err", err)))
             return
         if path == "/enroll/create":
             args = {"requirements": {k: True for k in ("firewall", "antivirus", "disk") if form.get(k)}}

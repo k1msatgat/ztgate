@@ -39,7 +39,9 @@ answers = {
     "enroll_create": {"ok": True, "code": "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE", "enrollment": {"tunnel_ip": "10.0.0.9"}},
     "device_remove": {"ok": True, "removed": req.get("id")},
     "acl_get": {"ok": True, "enabled": True, "rules": [{"src": "10.0.0.0/24", "dst": "10.0.0.1", "proto": "icmp",
-                                                        "dport": "any", "action": "allow"}]},
+                                                        "dport": "any", "action": "allow",
+                                                        "require": {"firewall": True}, "tags": ["eng"]}]},
+    "acl_set": {"ok": True, "enabled": True, "rules": req.get("rules", [])},
     "audit": {"ok": True, "events": [{"time": "2026-10-25T00:00:00Z", "event": "session_open", "device": "ab" * 16}]},
 }
 print(json.dumps(answers.get(req["cmd"], {"ok": False, "error": "unknown command"})))
@@ -149,6 +151,22 @@ def main():
         expect("...with what was filled in", ctl_cmds()[-2] if ctl_cmds()[-1]["cmd"] == "enroll_list" else ctl_cmds()[-1],
                {"requirements": {"firewall": True, "disk": True}, "label": "kim", "tags": ["eng", "laptop"],
                 "ttl_minutes": 30, "cmd": "enroll_create"})
+
+        st, _, body = req("GET", "/acl", cookie=sid)
+        expect("acl: the editor shows the rules as file lines",
+               "10.0.0.0/24 10.0.0.1 icmp any allow firewall=on tag=eng" in body, True)
+        text = ("10.0.0.0/24 10.0.0.1 tcp 22 allow firewall=on disk=on group=ops tag=eng  # ssh\n"
+                "\n# 주석만 있는 줄\nany any any any deny\n")
+        st, _, _ = req("POST", "/acl/set", {"csrf": csrf, "rules": text}, cookie=sid)
+        expect("acl: save", (st, ctl_cmds()[-1]["cmd"]), (303, "acl_set"))
+        expect("acl: ...the lines became rules", ctl_cmds()[-1]["rules"], [
+            {"src": "10.0.0.0/24", "dst": "10.0.0.1", "proto": "tcp", "dport": "22", "action": "allow",
+             "require": {"firewall": True, "disk": True}, "users": {"users": [], "groups": ["ops"]}, "tags": ["eng"]},
+            {"src": "any", "dst": "any", "proto": "any", "dport": "any", "action": "deny"}])
+        n = len(ctl_cmds())
+        st, _, body = req("POST", "/acl/set", {"csrf": csrf, "rules": "any any any any allow firewal=on"}, cookie=sid)
+        expect("acl: a misspelled condition is refused before ztgate_ctl", (st, len(ctl_cmds()) - n), (400, 1))
+        expect("...and the text is kept", "firewal=on" in body, True)
 
         st, _, _ = req("POST", "/logout", {"csrf": csrf}, cookie=sid)
         expect("log out", st, 303)
