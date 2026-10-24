@@ -8,6 +8,7 @@
 #include "common.h"
 #include "peer.h"
 #include "audit.h"
+#include "tcp.h"
 
 static peer_t peers[MAX_PEERS];
 
@@ -109,10 +110,8 @@ void peer_touch(peer_t *peer, const struct sockaddr_in *outer, socklen_t len) {
 
 	/* 주소, 포트에 더해 종류(UDP / TCP 연결)와 TCP 연결의 세대까지 같아야 같은 곳이다 (tcp.h). */
 	if (memcmp(&peer->outer, outer, sizeof(*outer)) != 0) {
-		printf("[peer] rebind %s: %s:%d -> %s:%d\n",
-				ip4(peer->inner, ib),
-				ip4(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
-				ip4(outer->sin_addr, nb),   ntohs(outer->sin_port));
+		printf("[peer] rebind %s: %s -> %s\n", ip4(peer->inner, ib),
+				endpoint_str(&peer->outer, ob, sizeof(ob)), endpoint_str(outer, nb, sizeof(nb)));
 		peer->outer = *outer;
 		peer->outer_len = len;
 	}
@@ -163,7 +162,7 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 		const struct sockaddr_in *outer, socklen_t len)
 {
 	char ib[INET_ADDRSTRLEN];
-	char ob[INET_ADDRSTRLEN];
+	char ob[INET6_ADDRSTRLEN];
 	peer_t *peer;
 	uint32_t idx;
 	int32_t i;
@@ -220,9 +219,8 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 	peer->established_at = peer->last_seen;
 	index_add(slot);
 
-	printf("[peer] register %s <- %s:%d idx=%08x\n",
-			ip4(inner, ib), ip4(outer->sin_addr, ob),
-			ntohs(outer->sin_port), idx);
+	printf("[peer] register %s <- %s idx=%08x\n",
+			ip4(inner, ib), endpoint_str(outer, ob, sizeof(ob)), idx);
 
 	return peer;
 }
