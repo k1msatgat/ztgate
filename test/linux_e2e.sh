@@ -35,6 +35,7 @@ SERVER="$ROOT_DIR/server/bin/vpn_server"
 CLIENT="$ROOT_DIR/client/bin/vpn_client"
 
 PORT=9000
+TCP_PORT=9443
 SRV_VETH=192.0.2.1
 CLI_VETH=192.0.2.2
 SRV_TUN=10.0.0.1
@@ -163,7 +164,7 @@ before=$(ip -o link show type tun | awk -F': ' '{print $2}')
 python3 "$ROOT_DIR/tools/idp/mint.py" keys "$IDP" > /dev/null || { echo "mint.py keys failed"; exit 1; }
 # 서버 키: 등록 코드로 올라오는 기기는 공개키 기기라 -e 에는 -k 가 있어야 한다 (v8).
 "$SERVER" genkey "$WORK/server.key" > /dev/null || { echo "genkey failed"; exit 1; }
-stdbuf -oL "$SERVER" -v ${ZTGATE_WORKERS:+-w "$ZTGATE_WORKERS"} -e "$ENROLL" -k "$WORK/server.key" -u "$IDP/idp.conf" -d "$WORK/dns.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
+stdbuf -oL "$SERVER" -v ${ZTGATE_WORKERS:+-w "$ZTGATE_WORKERS"} -e "$ENROLL" -k "$WORK/server.key" -t "$TCP_PORT" -u "$IDP/idp.conf" -d "$WORK/dns.conf" "$PORT" "$DEVICES" "$ACL" > "$SLOG" 2>&1 &
 SRV_PID=$!
 wait_for 5 sh -c "ip -o link show type tun | grep -q ." || { echo "server did not start"; cat "$SLOG"; exit 1; }
 SRV_IF=$(ip -o link show type tun | awk -F': ' '{print $2}' | grep -vxF "$before" | head -n 1)
@@ -363,6 +364,25 @@ check "connector: the server drops its session right away (DISCONNECT)" \
 check "connector: its nft table is removed when it stops" \
 	sh -c "! nsenter -t $NS2_PID -n --preserve-credentials nft list table ip ztgate_connector"
 check "connector: with the connector gone, its network is unreachable again" ping_fails "$RESOURCE"
+
+echo "== 7. tcp"
+# UDP 가 막힌 네트워크: 클라이언트 쪽에서 서버로 가는 UDP 를 버리고, 같은 기기로 TCP(-T) 로 다시 붙는다.
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+in_cli nft -f - <<EOF
+table inet e2e_noudp {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		udp dport $PORT drop
+	}
+}
+EOF
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$IDENT" -i "$CLI_IF" -T "$TCP_PORT" \
+	run "$SRV_VETH" "$PORT" > "$WORK/client-tcp.log" 2>&1 &
+CLI_PID=$!
+check "tcp: with udp blocked the client connects over tcp" wait_for 10 log_has "$WORK/client-tcp.log" "] connected"
+check "tcp: ping $SRV_TUN through the tunnel over tcp" ping_ok "$SRV_TUN"
+check "tcp: the server sees it as a tcp session" log_has "$SLOG" "(tcp) idx="
+in_cli nft delete table inet e2e_noudp
 
 echo
 if [ "$failed" -eq 0 ]; then

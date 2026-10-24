@@ -11,6 +11,7 @@
  * 패킷은 커널이 걸러 준다 (Windows 는 같은 확인을 from_server 로 직접 한다). */
 
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "proto.h"
 #include "secure.h"
@@ -37,7 +38,20 @@ typedef struct vpn_session {
 	secure_session_t secure;
 	net_config_t cfg;		/* 수락에 실려 온 터널 설정 */
 	uint8_t deny_reason;		/* HS_DENIED 일 때 서버가 댄 사유 */
+
+	/* TCP 로 붙었다 (vpn_client -T, server/include/tcp.h). 패킷마다 len(2) 을 붙여 보내고, 받은
+	 * 스트림은 rbuf 에 모아 틀 하나씩 꺼낸다. */
+	int tcp;
+	uint8_t rbuf[2 + BUF_SIZE];
+	size_t rlen;
 } vpn_session_t;
+
+/* 받은 패킷 하나를 buf 에. 길이, 지금 받을 것이 없으면 0, 연결이 끊겼거나 오류면 -1. UDP 는 데이터그램
+ * 하나, TCP 는 다 들어온 틀 하나다. */
+ssize_t session_recv(vpn_session_t *s, uint8_t *buf, size_t cap);
+
+/* TCP 로 받아 둔 것 중에 다 들어온 틀이 더 있으면 1. 소켓이 다시 깨우지 않으므로 부르는 쪽이 비운다. */
+int session_pending(const vpn_session_t *s);
 
 /* 등록된 기기로 세션을 연다. 열려 있던 세션은 닫고 새로 연다. posture 는 AUTH 에 실을
  * 이번 보고다. HS_OK / HS_FAIL / HS_DENIED. */

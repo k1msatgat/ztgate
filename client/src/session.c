@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <sys/uio.h>
 #include <poll.h>
 #include <stdio.h>
 #include <string.h>
@@ -59,7 +60,8 @@ static int hs_recv(vpn_session_t *s, uint64_t deadline, uint8_t *buf, size_t cap
 			return 0;
 		}
 
-		r = poll(&pfd, 1, (int)(deadline - now));
+		/* TCP 로 받아 둔 틀이 있으면 소켓을 기다리지 않는다. */
+		r = session_pending(s) ? 1 : poll(&pfd, 1, (int)(deadline - now));
 		if (r < 0) {
 			if (errno == EINTR) {
 				return HS_FAIL;	/* 종료 신호. 부르는 쪽이 running 을 본다 */
@@ -71,13 +73,13 @@ static int hs_recv(vpn_session_t *s, uint64_t deadline, uint8_t *buf, size_t cap
 			return 0;
 		}
 
-		n = recv(s->sock, buf, cap, 0);
+		n = session_recv(s, buf, cap);
 		if (n < 0) {
-			if (errno == ECONNREFUSED || errno == EAGAIN || errno == EINTR) {
-				continue;
-			}
 			perror("recv");
 			return HS_FAIL;
+		}
+		if (n == 0) {
+			continue;
 		}
 
 		if (msg_decode(buf, (size_t)n, h) < 0 || h->version != PROTOCOL_VERSION) {
@@ -88,8 +90,98 @@ static int hs_recv(vpn_session_t *s, uint64_t deadline, uint8_t *buf, size_t cap
 	}
 }
 
+#define FRAME_HDR 2
+
+int session_pending(const vpn_session_t *s)
+{
+	size_t n;
+
+	if (!s->tcp || s->rlen < FRAME_HDR) {
+		return 0;
+	}
+	n = (size_t)(s->rbuf[0] << 8 | s->rbuf[1]);
+	return s->rlen >= FRAME_HDR + n;
+}
+
+ssize_t session_recv(vpn_session_t *s, uint8_t *buf, size_t cap)
+{
+	ssize_t n;
+	size_t len;
+
+	if (!s->tcp) {
+		n = recv(s->sock, buf, cap, MSG_DONTWAIT);
+		if (n < 0) {
+			/* 서버 포트가 닫혀 있다는 ICMP. 서버가 재시작하는 중일 수 있다. */
+			return errno == ECONNREFUSED || errno == EAGAIN || errno == EINTR ? 0 : -1;
+		}
+		return n;
+	}
+
+	if (!session_pending(s)) {
+		n = recv(s->sock, s->rbuf + s->rlen, sizeof(s->rbuf) - s->rlen, MSG_DONTWAIT);
+		if (n == 0) {
+			return -1;	/* 서버가 연결을 닫았다 */
+		}
+		if (n < 0) {
+			return errno == EAGAIN || errno == EINTR ? 0 : -1;
+		}
+		s->rlen += (size_t)n;
+	}
+	if (s->rlen < FRAME_HDR) {
+		return 0;
+	}
+	len = (size_t)(s->rbuf[0] << 8 | s->rbuf[1]);
+	if (len == 0 || len > BUF_SIZE || len > cap) {
+		return -1;	/* 틀이 깨졌다. 다시 맞출 방법이 없으니 연결을 새로 연다 */
+	}
+	if (s->rlen < FRAME_HDR + len) {
+		return 0;
+	}
+	memcpy(buf, s->rbuf + FRAME_HDR, len);
+	memmove(s->rbuf, s->rbuf + FRAME_HDR + len, s->rlen - FRAME_HDR - len);
+	s->rlen -= FRAME_HDR + len;
+	return (ssize_t)len;
+}
+
 static int send_all(vpn_session_t *s, const uint8_t *buf, size_t len)
 {
+	if (s->tcp) {
+		uint8_t hdr[FRAME_HDR] = { (uint8_t)(len >> 8), (uint8_t)len };
+		struct iovec iov[2] = { { hdr, FRAME_HDR }, { (void *)buf, len } };
+		struct msghdr msg;
+		size_t left = FRAME_HDR + len;
+		ssize_t n;
+
+		memset(&msg, 0, sizeof(msg));
+		msg.msg_iov = iov;
+		msg.msg_iovlen = 2;
+		/* 틀 하나는 끝까지 보낸다. 반만 보내면 뒤의 틀이 모두 어긋난다. */
+		while (left > 0) {
+			n = sendmsg(s->sock, &msg, MSG_NOSIGNAL);
+			if (n < 0) {
+				if (errno == EINTR) {
+					continue;
+				}
+				perror("send (tcp)");
+				return -1;
+			}
+			left -= (size_t)n;
+			while (n > 0 && msg.msg_iovlen > 0) {
+				if ((size_t)n >= msg.msg_iov[0].iov_len) {
+					n -= (ssize_t)msg.msg_iov[0].iov_len;
+					msg.msg_iov++;
+					msg.msg_iovlen--;
+				}
+				else {
+					msg.msg_iov[0].iov_base = (uint8_t *)msg.msg_iov[0].iov_base + n;
+					msg.msg_iov[0].iov_len -= (size_t)n;
+					n = 0;
+				}
+			}
+		}
+		return 0;
+	}
+
 	if (send(s->sock, buf, len, 0) < 0) {
 		/* 지난번 보낸 것에 대한 ICMP 가 남아 있으면 send 도 ECONNREFUSED 로 끝난다. */
 		if (errno == ECONNREFUSED) {

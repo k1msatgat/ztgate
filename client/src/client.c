@@ -4,6 +4,7 @@
 #include <string.h>
 #include <signal.h>
 #include <errno.h>
+#include <netinet/tcp.h>
 #include <time.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -56,6 +57,12 @@ typedef struct client {
 	int denied;			/* 서버가 세션을 거절했다. 터널은 두고 패킷만 막는다 */
 	int readdress;			/* 서버가 다른 터널 주소를 주었다. 다시 핸드셰이크한다 */
 	int server_closed;		/* 서버가 DISCONNECT 로 세션을 끝냈다. 다시 핸드셰이크한다 */
+
+	/* TCP 로 붙는다 (-T <port>). UDP 가 막힌 곳을 위한 것이다. 연결이 끊기면 다시 열고 핸드셰이크한다. */
+	int tcp_port;
+	int transport_down;		/* TCP 연결이 끊겼다 */
+	struct sockaddr_in server;	/* 다시 열 때 쓴다 */
+	int epfd;			/* 다시 연 소켓을 걸 epoll */
 
 	/* 사용자 로그인 (-t). 토큰 파일이 바뀌거나 세션을 새로 열 때마다 보낸다. */
 	const char *token_path;
@@ -355,10 +362,17 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 	ssize_t wire;
 	int n;
 
-	wire = recv(c->session.sock, packet, cap, 0);
+	wire = session_recv(&c->session, packet, cap);
+	if (wire == 0) {
+		return 0;
+	}
 	if (wire < 0) {
-		/* 서버 포트가 닫혀 있다는 ICMP. 서버가 재시작하는 중일 수 있다. */
-		if (errno == ECONNREFUSED || errno == EAGAIN || errno == EINTR) {
+		if (c->session.tcp) {
+			/* 연결이 끊겼다. 다음 틱에 다시 열고 핸드셰이크한다 (open_transport). */
+			if (!c->transport_down) {
+				printf("[tcp] connection to the server closed\n");
+			}
+			c->transport_down = 1;
 			return 0;
 		}
 		perror("recv");
@@ -439,6 +453,62 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 	return 0;
 }
 
+/* TCP 로 서버에 붙는다 (-T). 연결을 기다리는 것은 5초까지 — 막힌 곳에서 몇 분씩 매달리지 않게. */
+static int open_tcp(client_t *c)
+{
+	struct sockaddr_in to = c->server;
+	struct timeval tv = { 5, 0 };
+	int one = 1;
+	int sock;
+
+	to.sin_port = htons((uint16_t)c->tcp_port);
+	sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (sock < 0) {
+		perror("socket");
+		return -1;
+	}
+	setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+	setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	if (connect(sock, (const struct sockaddr *)&to, sizeof(to)) < 0) {
+		perror("connect (tcp)");
+		close(sock);
+		return -1;
+	}
+	return sock;
+}
+
+/* TCP 면 연결을 새로 열어 바꿔 끼운다 (epoll 에 건 것도). UDP 는 그대로 둔다. */
+static int open_transport(client_t *c)
+{
+	struct epoll_event ev;
+	int sock;
+
+	if (!c->tcp_port) {
+		return 0;
+	}
+	sock = open_tcp(c);
+	if (sock < 0) {
+		return -1;
+	}
+	if (c->session.sock >= 0) {
+		if (c->epfd >= 0) {
+			epoll_ctl(c->epfd, EPOLL_CTL_DEL, c->session.sock, NULL);
+		}
+		close(c->session.sock);
+	}
+	c->session.sock = sock;
+	c->session.tcp = 1;
+	c->session.rlen = 0;
+	c->transport_down = 0;
+	if (c->epfd >= 0) {
+		memset(&ev, 0, sizeof(ev));
+		ev.events = EPOLLIN;
+		ev.data.fd = sock;
+		epoll_ctl(c->epfd, EPOLL_CTL_ADD, sock, &ev);
+	}
+	return 0;
+}
+
 static int open_socket(const struct sockaddr_in *server)
 {
 	int32_t sock;
@@ -470,12 +540,15 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 	uint64_t now;
 	int ret = 1;
 
-	c->session.sock = open_socket(server);
-	if (c->session.sock < 0) {
+	c->server = *server;
+	c->epfd = -1;
+	c->session.sock = -1;
+	if (c->tcp_port ? open_transport(c) : (c->session.sock = open_socket(server)) < 0) {
 		return 1;
 	}
 
-	printf("tunneling to %s:%u\n", ip_str(server->sin_addr, sb), ntohs(server->sin_port));
+	printf("tunneling to %s:%u%s\n", ip_str(server->sin_addr, sb),
+			c->tcp_port ? (unsigned)c->tcp_port : ntohs(server->sin_port), c->tcp_port ? " (tcp)" : "");
 
 	/* 서버가 받아 준 뒤에 tun 을 만든다. 순서를 반대로 하면 거절당하는 경우에도 장치와
 	 * 터널 대역 경로가 잠깐 생겼다 사라진다. 접근이 허락되기 전에는 터널이 없는 편이 맞다. */
@@ -515,6 +588,7 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 		perror("epoll_create1");
 		goto out;
 	}
+	c->epfd = epfd;	/* TCP 연결을 다시 열면 여기에 다시 건다 */
 
 	ev.events = EPOLLIN;
 	ev.data.fd = tun_fd;
@@ -555,7 +629,7 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 		 *    기다리지 않고 바로 다시 물어본다.
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다 다시
 		 * 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
-		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress || c->server_closed ||
+		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress || c->server_closed || c->transport_down ||
 				(c->denied && changed)) {
 			if (c->denied) {
 				printf("[HS] retry after deny\n");
@@ -573,6 +647,14 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 			/* 실패해도 여기서 다시 묻지 않는다. 그대로 두면 매 틱마다 핸드셰이크한다. */
 			c->readdress = 0;
 			c->server_closed = 0;
+			/* TCP 는 연결부터 새로 연다. 끊긴 연결로는 핸드셰이크가 갈 수 없다. */
+			if (c->tcp_port && open_transport(c) < 0) {
+				c->transport_down = 1;
+				now = get_current_time_ms();
+				c->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 5000;	/* 5초 뒤 다시 */
+				c->last_ka_ms = now;
+				continue;
+			}
 			switch (handshake(c)) {
 				case HS_OK:
 					if (apply_session_config(c) < 0) {
@@ -638,6 +720,12 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 				if (pump_udp(c, tun_fd, packet, sizeof(packet)) < 0) {
 					goto out;
 				}
+				/* TCP 는 한 번 읽은 것에 틀이 여럿 들어 있을 수 있다. 소켓이 다시 깨우지 않는다. */
+				while (session_pending(&c->session)) {
+					if (pump_udp(c, tun_fd, packet, sizeof(packet)) < 0) {
+						goto out;
+					}
+				}
 			}
 		}
 	}
@@ -683,8 +771,10 @@ static int enroll(client_t *c, const struct sockaddr_in *server, const char *cod
 		return 1;
 	}
 
-	c->session.sock = open_socket(server);
-	if (c->session.sock < 0) {
+	c->server = *server;
+	c->epfd = -1;
+	c->session.sock = -1;
+	if (c->tcp_port ? open_transport(c) : (c->session.sock = open_socket(server)) < 0) {
 		return 1;
 	}
 
@@ -747,6 +837,7 @@ static void usage(const char *prog)
 		"  -k  device identity file (default %s)\n"
 		"  -i  tun device name (default %s)\n"
 		"  -t  log in as the user whose token (JWT) is in this file; sent again when it changes\n"
+		"  -T  reach the server over TCP on this port (vpn_server -t) where UDP is blocked\n"
 		"  -f  replace an existing identity when enrolling\n"
 		"  -v  log every packet\n"
 		"  connector: forward what the server relays to this device onto <lan-ifname> (NAT,\n"
@@ -793,11 +884,12 @@ int main(int argc, char *argv[])
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	memset(&client, 0, sizeof(client));
 
-	while ((opt = getopt(argc, argv, "+k:i:t:vf")) != -1) {
+	while ((opt = getopt(argc, argv, "+k:i:t:T:vf")) != -1) {
 		switch (opt) {
 			case 'k': ident_path = optarg; break;
 			case 'i': ifname = optarg; break;
 			case 't': client.token_path = optarg; break;
+			case 'T': client.tcp_port = atoi(optarg); break;
 			case 'v': client.verbose = 1; break;
 			case 'f': force = 1; break;
 			default: usage(argv[0]); return 1;
