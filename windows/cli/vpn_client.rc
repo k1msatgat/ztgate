@@ -1,0 +1,3 @@
+#define ZTGATE_FILE_DESC "ztgate console client"
+#define ZTGATE_FILE_NAME "vpn_client.exe"
+#include "../version.rc"

@@ -115,3 +115,7 @@ BEGIN
     DEFPUSHBUTTON   "서버에 등록", IDOK, 150, 86, 70, 18
     PUSHBUTTON      "취소", IDCANCEL, 224, 86, 62, 18
 END
+
+#define ZTGATE_FILE_DESC "ztgate"
+#define ZTGATE_FILE_NAME "vpn_gui.exe"
+#include "../version.rc"

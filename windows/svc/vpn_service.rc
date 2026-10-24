@@ -1,0 +1,3 @@
+#define ZTGATE_FILE_DESC "ztgate tunnel service"
+#define ZTGATE_FILE_NAME "vpn_service.exe"
+#include "../version.rc"

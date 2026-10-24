@@ -89,6 +89,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="vpn_client.rc" />
     <!-- tunnel.c 는 서버의 LOGIN 답이 지금 토큰의 것인지 보려고 토큰의 exp 를 읽는다. 서버가
          JWT 를 읽는 파서를 그대로 쓴다. 서버의 헤더 폴더에는 이름이 같은 헤더(device.h)가 있어
          이 두 파일에만, 맨 뒤에 붙인다. -->
