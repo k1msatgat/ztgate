@@ -46,6 +46,12 @@ jobs:
           sudo apt-get install -y -qq nftables > /dev/null
           sudo test/linux_e2e.sh
 
+      # 같은 시험을 워커 셋(-w 3)으로. 잠금이 빠진 곳이 있으면 판정이 어긋나거나 세션이 섞인다.
+      - name: Protocol checks and end-to-end with 3 workers
+        run: |
+          sudo ZTGATE_WORKERS=3 python3 test/auth_check.py
+          sudo ZTGATE_WORKERS=3 test/linux_e2e.sh
+
       - name: MCP server syntax
         working-directory: mcp
         run: |
@@ -112,6 +118,14 @@ jobs:
             echo "::notice title=perf (56B, server log to file)::$(grep -v '^#' bench-out/perf.txt | grep -v '^$' | head -n 25 | enc)"
           fi
           cat bench-out/result.md >> "$GITHUB_STEP_SUMMARY"
+
+      # 워커 수에 따른 처리량. 세션 넷을 동시에 보낸다 (세션 하나는 늘 한 워커로 간다).
+      - name: Workers (tools/loadgen/bench_workers.sh)
+        run: |
+          sudo WORKERS="1 2" tools/loadgen/bench_workers.sh bench-out
+          enc() { sed -e 's/%/%25/g' | sed -e ':a;N;$!ba;s/\n/%0A/g'; }
+          echo "::notice title=workers::$(enc < bench-out/workers.md)"
+          cat bench-out/workers.md >> "$GITHUB_STEP_SUMMARY"
 
       # 위의 값은 서버 혼자의 한계다. 사용자가 보는 속도(클라이언트의 TCP 가 터널을 지나
       # 얼마나 나오는가)는 실제 클라이언트를 띄워 iperf3 로, 같은 veth 의 직결 값과 함께 잰다.

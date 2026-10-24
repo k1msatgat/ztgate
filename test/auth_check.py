@@ -37,6 +37,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(ROOT, "server", "bin", "vpn_server")
 PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
+# ZTGATE_WORKERS=N 이면 시험 서버를 -w N 으로 띄운다 (워커 여럿에서도 같은 판정이 나오는가).
+WORKERS = ["-w", os.environ["ZTGATE_WORKERS"]] if os.environ.get("ZTGATE_WORKERS") else []
 VERSION = 8
 
 REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
@@ -744,7 +746,7 @@ class Server:
         out = subprocess.run([SERVER, "genkey", self.key_path], capture_output=True, text=True, check=True)
         self.server_pub = bytes.fromhex(out.stdout.strip())
         self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-v", "-s", self.status_path, "-a", self.audit_path,
-                                      "-e", self.enroll_path, "-k", self.key_path] + list(opts) + [
+                                      "-e", self.enroll_path, "-k", self.key_path] + WORKERS + list(opts) + [
                                       str(PORT)] + list(args),
                                      stdout=self.log, stderr=subprocess.STDOUT)
         time.sleep(0.7)
