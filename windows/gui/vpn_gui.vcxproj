@@ -134,6 +134,7 @@
     <ClCompile Include="..\core\vpn_remote.c" />
     <ClCompile Include="..\core\ipc.c" />
     <ClCompile Include="..\core\posture.c" />
+    <ClCompile Include="..\core\policy.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
@@ -154,6 +155,7 @@
     <ClInclude Include="..\core\ipc.h" />
     <ClInclude Include="..\core\tunnel.h" />
     <ClInclude Include="..\core\posture.h" />
+    <ClInclude Include="..\core\policy.h" />
     <ClInclude Include="..\..\lib\common\include\crypt.h" />
     <ClInclude Include="..\..\lib\common\include\secure.h" />
     <ClInclude Include="..\core\device.h" />

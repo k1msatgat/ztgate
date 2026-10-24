@@ -138,7 +138,8 @@ typedef enum ipc_error_code {
 	IPC_ERR_BUSY = 1,		/* 터널이 열려 있다. 먼저 해제해야 한다 */
 	IPC_ERR_NOT_ENROLLED,		/* 등록되지 않은 기기다 */
 	IPC_ERR_BAD_REQUEST,		/* 내용의 길이나 값이 맞지 않는다 */
-	IPC_ERR_INTERNAL
+	IPC_ERR_INTERNAL,
+	IPC_ERR_POLICY			/* 관리 정책이 막는다 (AlwaysOn 인데 해제하라고 했다) */
 } ipc_error_code_t;
 
 typedef struct ipc_error {

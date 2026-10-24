@@ -152,6 +152,10 @@ typedef struct tunnel_config {
 	 * 실패면 0), user 는 성공했을 때의 사용자 이름이고 실패면 "". */
 	void (*on_login)(void *ctx, int status, int64_t expires, const char *user);
 
+	/* 서버가 준 터널 설정을 어댑터에 맞췄다 (처음과 바뀔 때마다). 서비스가 터널이 끊긴 동안 막을
+	 * 내부 대역을 여기서 배운다 (wfp.h). NULL 이면 부르지 않는다. */
+	void (*on_config)(void *ctx, const net_config_t *cfg);
+
 	void *ctx;
 } tunnel_config_t;
 

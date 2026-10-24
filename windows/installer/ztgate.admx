@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ztgate 관리 정책 (windows/core/policy.h). C:\Windows\PolicyDefinitions 에 이 파일을, 그 아래
+     ko-KR 에 ztgate.adml 을 두면 그룹 정책 편집기의 "컴퓨터 구성 > 관리 템플릿 > ztgate" 에 보인다. -->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="ztgate" namespace="ztgate.Policies.ztgate" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_ZTGATE_09" displayName="$(string.SUPPORTED_ZTGATE_09)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="ztgate" displayName="$(string.ztgate)" />
+  </categories>
+  <policies>
+    <policy name="Servers" class="Machine" displayName="$(string.Servers)" explainText="$(string.Servers_Help)"
+        presentation="$(presentation.Servers)" key="SOFTWARE\Policies\ztgate">
+      <parentCategory ref="ztgate" />
+      <supportedOn ref="SUPPORTED_ZTGATE_09" />
+      <elements>
+        <text id="Servers" valueName="Servers" required="true" />
+        <decimal id="Port" valueName="Port" minValue="1" maxValue="65535" />
+      </elements>
+    </policy>
+    <policy name="AlwaysOn" class="Machine" displayName="$(string.AlwaysOn)" explainText="$(string.AlwaysOn_Help)"
+        key="SOFTWARE\Policies\ztgate" valueName="AlwaysOn">
+      <parentCategory ref="ztgate" />
+      <supportedOn ref="SUPPORTED_ZTGATE_09" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="BlockWhenDown" class="Machine" displayName="$(string.BlockWhenDown)" explainText="$(string.BlockWhenDown_Help)"
+        presentation="$(presentation.BlockWhenDown)" key="SOFTWARE\Policies\ztgate" valueName="BlockWhenDown">
+      <parentCategory ref="ztgate" />
+      <supportedOn ref="SUPPORTED_ZTGATE_09" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+      <elements>
+        <text id="InternalNetworks" valueName="InternalNetworks" />
+      </elements>
+    </policy>
+    <policy name="Login" class="Machine" displayName="$(string.Login)" explainText="$(string.Login_Help)"
+        presentation="$(presentation.Login)" key="SOFTWARE\Policies\ztgate">
+      <parentCategory ref="ztgate" />
+      <supportedOn ref="SUPPORTED_ZTGATE_09" />
+      <elements>
+        <text id="Issuer" valueName="Issuer" required="true" />
+        <text id="ClientId" valueName="ClientId" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

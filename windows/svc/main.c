@@ -30,6 +30,8 @@
 #include "crypt.h"
 #include "ipc.h"
 #include "filelog.h"
+#include "policy.h"
+#include "wfp.h"
 
 #define SERVICE_NAME	L"ztgate"
 #define SERVICE_DISPLAY	L"ztgate tunnel"
@@ -65,6 +67,20 @@ static ULONGLONG retry_at;	/* 0 이 아니면 그때 다시 올린다 */
 static uint32_t state = TUNNEL_STATE_STOPPED;
 static ULONGLONG connected_at;	/* 처음 연결된 때 (GetTickCount64). 0 이면 연결되지 않았다 */
 static int state_dirty;
+
+/* 관리 정책 (policy.h). 바뀌면 policy_event 가 깨운다. */
+static ztgate_policy_t pol;
+static HANDLE policy_event;
+static HKEY policy_watch;
+
+/* 터널이 끊긴 동안 막을 내부 대역: 정책의 InternalNetworks, 없으면 서버가 마지막으로 내려 준 경로와
+ * 터널 대역 (on_config 가 배우고 레지스트리에 남긴다 — 부팅 직후 아직 붙기 전에도 막으려고). */
+static net_route_t learned[NET_MAX_ROUTES + 1];
+static int n_learned;
+static int learned_dirty;
+static int blocking;			/* WFP 필터가 걸려 있다 */
+static net_route_t blocked[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
+static int n_blocked;
 
 /* 기록. GUI 가 붙어 있지 않을 때에도 쌓인다 — 나중에 붙은 GUI 가 그동안의 일을 본다.
  * seq 는 지금까지 쌓은 개수이고, 항목 i 는 [i % RING] 자리에 있다. */
@@ -166,6 +182,23 @@ static void on_login(void *ctx, int status, int64_t expires, const char *user)
 	SetEvent(notify);
 }
 
+static void on_config(void *ctx, const net_config_t *cfg)
+{
+	(void)ctx;
+
+	EnterCriticalSection(&lock);
+	n_learned = 0;
+	learned[n_learned].addr = cfg->tun_ip & htonl(0xFFFFFFFFu << (32 - cfg->prefix_len));
+	learned[n_learned].prefix_len = cfg->prefix_len;
+	n_learned++;
+	for (int i = 0; i < cfg->n_routes && n_learned < NET_MAX_ROUTES + 1; i++) {
+		learned[n_learned++] = cfg->routes[i];
+	}
+	learned_dirty = 1;
+	LeaveCriticalSection(&lock);
+	SetEvent(notify);
+}
+
 static void on_packet(void *ctx, const tunnel_packet_t *p)
 {
 	(void)ctx;
@@ -238,6 +271,21 @@ static DWORD WINAPI worker_main(LPVOID arg)
 	return (DWORD)tunnel_run(&run_cfg, tunnel_stop);
 }
 
+/* 정책이 서버를 정했으면 GUI 가 무엇을 보냈든 그곳으로 간다. */
+static void policy_servers(void)
+{
+	if (!pol.has_servers) {
+		return;
+	}
+	run_cfg.server_ip = pol.server_ip;
+	run_cfg.server_port = pol.port;
+	run_cfg.n_alt = pol.n_alt;
+	memcpy(run_cfg.alt_ips, pol.alt_ips, sizeof(run_cfg.alt_ips));
+	if (run_cfg.adapter_name[0] == L'\0') {
+		wcscpy(run_cfg.adapter_name, L"ztgate");
+	}
+}
+
 /* run_cfg 에 적힌 곳으로 터널을 올린다. 0 성공, 아니면 ipc_error_code_t. */
 static int tunnel_start(void)
 {
@@ -262,6 +310,7 @@ static int tunnel_start(void)
 	run_cfg.on_packet = on_packet;
 	run_cfg.login = &login;
 	run_cfg.on_login = on_login;
+	run_cfg.on_config = on_config;
 	run_cfg.ctx = NULL;
 
 	ResetEvent(tunnel_stop);
@@ -632,6 +681,7 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 	for (int i = 0; i < run_cfg.n_alt; i++) {
 		run_cfg.alt_ips[i].s_addr = c.alt_ips[i];
 	}
+	policy_servers();
 
 	err = tunnel_start();
 	if (err != 0) {
@@ -647,6 +697,10 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 
 static int cmd_disconnect(void)
 {
+	if (pol.always_on) {
+		slog("disconnect refused: the AlwaysOn policy keeps the tunnel up");
+		return send_error(IPC_ERR_POLICY);
+	}
 	wanted = 0;
 	retry_at = 0;
 	remember();
@@ -724,6 +778,10 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 	SecureZeroMemory(&e, sizeof(e));
 
 	slog("enroll: result %d", result);
+	/* AlwaysOn 은 등록되기를 기다리고 있었다. 바로 붙어 본다. */
+	if (result == TUNNEL_ENROLL_OK && wanted && !worker) {
+		retry_at = GetTickCount64();
+	}
 	ret = send_enroll_result(result, &dev, 0);
 	SecureZeroMemory(&dev, sizeof(dev));
 
@@ -814,8 +872,9 @@ static int service_init(void)
 	tunnel_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
 	notify = CreateEventW(NULL, FALSE, FALSE, NULL);
 	pipe_ov.hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+	policy_event = CreateEventW(NULL, FALSE, FALSE, NULL);
 
-	if (!stop_all || !tunnel_stop || !notify || !pipe_ov.hEvent) {
+	if (!stop_all || !tunnel_stop || !notify || !pipe_ov.hEvent || !policy_event) {
 		return -1;
 	}
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -828,14 +887,134 @@ static int service_init(void)
 	return 0;
 }
 
+/* ---- 관리 정책과 끊긴 동안의 차단 -------------------------------------------- */
+static void learned_save(void)
+{
+	HKEY key;
+
+	if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, 0, NULL, 0, KEY_SET_VALUE,
+				NULL, &key, NULL) != ERROR_SUCCESS) {
+		return;
+	}
+	RegSetValueExW(key, L"internal_nets", 0, REG_BINARY, (const BYTE *)learned,
+			(DWORD)(n_learned * sizeof(learned[0])));
+	RegCloseKey(key);
+}
+
+static void learned_load(void)
+{
+	DWORD len = sizeof(learned);
+
+	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"internal_nets", RRF_RT_REG_BINARY, NULL,
+				learned, &len) == ERROR_SUCCESS) {
+		n_learned = (int)(len / sizeof(learned[0]));
+	}
+}
+
+/* 정책 키(Policies 전체)가 바뀌면 policy_event 가 울린다. 한 번 울리면 다시 걸어야 한다. */
+static void policy_arm(void)
+{
+	if (!policy_watch &&
+			RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies", 0, KEY_NOTIFY, &policy_watch) != ERROR_SUCCESS) {
+		policy_watch = NULL;
+		return;
+	}
+	RegNotifyChangeKeyValue(policy_watch, TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET,
+			policy_event, TRUE);
+}
+
+/* 정책을 읽고 그대로 따른다. AlwaysOn 이면 원하지 않았어도 연결한다 (이미 열려 있으면 그대로 —
+ * 서버가 바뀐 정책은 다음에 다시 열 때 따른다). */
+static void policy_apply(int startup)
+{
+	ztgate_policy_t was = pol;
+
+	policy_load(&pol);
+	if (!startup && memcmp(&was, &pol, sizeof(pol)) == 0) {
+		return;
+	}
+	slog("policy: servers=%s always_on=%d block_when_down=%d internal_networks=%d",
+			pol.has_servers ? "set" : "-", pol.always_on, pol.block_when_down, pol.n_internal);
+
+	if (pol.always_on && pol.has_servers && !wanted) {
+		if (!worker) {
+			memset(&run_cfg, 0, sizeof(run_cfg));
+		}
+		policy_servers();
+		wanted = 1;
+		remember();
+		if (!worker && tunnel_start() != 0) {
+			retry_at = GetTickCount64() + RETRY_MSEC;
+			set_state(TUNNEL_STATE_RECONNECTING);
+		}
+	}
+}
+
+/* 막아야 하는 때: 정책이 BlockWhenDown 이고, 연결을 원하는데 터널이 열려 있지 않다. */
+static void block_sync(void)
+{
+	struct in_addr allow[1 + TUNNEL_ALT_SERVERS];
+	net_route_t want[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
+	int n = 0, n_allow = 0, on, saved = 0;
+	uint32_t s;
+
+	EnterCriticalSection(&lock);
+	s = state;
+	if (learned_dirty) {
+		learned_dirty = 0;
+		saved = 1;
+	}
+	if (pol.n_internal > 0) {
+		memcpy(want, pol.internal, pol.n_internal * sizeof(want[0]));
+		n = pol.n_internal;
+	}
+	else {
+		memcpy(want, learned, n_learned * sizeof(want[0]));
+		n = n_learned;
+	}
+	LeaveCriticalSection(&lock);
+	if (saved) {
+		learned_save();
+	}
+
+	on = pol.block_when_down && wanted && s != TUNNEL_STATE_CONNECTED && n > 0;
+	if (!on) {
+		if (blocking) {
+			wfp_clear();
+			blocking = 0;
+			slog("policy: internal networks unblocked");
+		}
+		return;
+	}
+	if (blocking && n == n_blocked && memcmp(want, blocked, n * sizeof(want[0])) == 0) {
+		return;
+	}
+
+	allow[n_allow++] = run_cfg.server_ip;
+	for (int i = 0; i < run_cfg.n_alt; i++) {
+		allow[n_allow++] = run_cfg.alt_ips[i];
+	}
+	if (wfp_block(want, n, allow, n_allow) == 0) {
+		blocking = 1;
+		memcpy(blocked, want, n * sizeof(want[0]));
+		n_blocked = n;
+		slog("policy: %d internal networks blocked while the tunnel is down", n);
+	}
+	else {
+		blocking = 0;
+		slog("policy: cannot block the internal networks (WFP)");
+	}
+}
+
 static void service_run(void)
 {
-	HANDLE waits[4];
+	HANDLE waits[5];
 	ULONGLONG now;
 	DWORD nwaits, timeout, w, n;
 	int err;
 
 	slog("started");
+	learned_load();
 
 	pipe = pipe_create();
 	if (pipe == INVALID_HANDLE_VALUE) {
@@ -855,13 +1034,18 @@ static void service_run(void)
 		}
 	}
 
+	/* 지난번에 원하지 않았어도 AlwaysOn 이면 여기서 붙는다. */
+	policy_arm();
+	policy_apply(1);
+	block_sync();
+
 	for (;;) {
 		nwaits = 0;
 		waits[nwaits++] = stop_all;
 		waits[nwaits++] = pipe_ov.hEvent;
-		if (client_ready) {
-			waits[nwaits++] = notify;
-		}
+		/* GUI 가 없어도 깨어난다 — 상태가 바뀌면 차단을 맞춰야 한다. */
+		waits[nwaits++] = notify;
+		waits[nwaits++] = policy_event;
 		if (worker) {
 			waits[nwaits++] = worker;
 		}
@@ -892,7 +1076,11 @@ static void service_run(void)
 			break;
 		}
 
-		if (worker && waits[w - WAIT_OBJECT_0] == worker) {
+		if (waits[w - WAIT_OBJECT_0] == policy_event) {
+			policy_arm();
+			policy_apply(0);
+		}
+		else if (worker && waits[w - WAIT_OBJECT_0] == worker) {
 			worker_exited();
 		}
 		else if (waits[w - WAIT_OBJECT_0] == pipe_ov.hEvent) {
@@ -915,6 +1103,8 @@ static void service_run(void)
 			}
 		}
 
+		block_sync();
+
 		/* 무엇 때문에 깨어났든, 붙어 있는 GUI 에게 밀린 것을 보낸다. */
 		if (client_ready && client_flush() < 0) {
 			client_drop();
@@ -924,6 +1114,7 @@ static void service_run(void)
 
 	slog("stopping");
 	worker_stop_and_wait();
+	wfp_clear();
 
 	if (client_on) {
 		client_drop();
@@ -1286,7 +1477,8 @@ static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 		printf("error: %u (%s)\n", e.code,
 				e.code == IPC_ERR_BUSY ? "the tunnel is up, disconnect first" :
 				e.code == IPC_ERR_NOT_ENROLLED ? "this device is not enrolled" :
-				e.code == IPC_ERR_BAD_REQUEST ? "bad request" : "internal");
+				e.code == IPC_ERR_BAD_REQUEST ? "bad request" :
+				e.code == IPC_ERR_POLICY ? "refused by policy" : "internal");
 		break;
 	}
 	default:

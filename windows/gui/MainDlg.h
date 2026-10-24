@@ -7,6 +7,7 @@
 
 #include "vpn_remote.h"
 #include "posture.h"
+#include "policy.h"
 #include <deque>
 
 #include "PacketStore.h"
@@ -193,6 +194,7 @@ private:
 
 	/* 연결 설정 (레지스트리에 둔다). 설정 창에서만 바뀐다. */
 	CString m_server;
+	ztgate_policy_t m_policy;	/* 관리 정책 (policy.h). 정한 것은 설정보다 앞선다 */
 	CString m_port;
 	CString m_adapter;
 	int m_link;			/* 서비스와의 연결 (vpn_remote_link_t) */

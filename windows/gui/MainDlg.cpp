@@ -172,11 +172,35 @@ void CMainDlg::LoadSettings()
 	m_issuer = app->GetProfileString(_T("login"), _T("issuer"), _T(""));
 	m_client_id = app->GetProfileString(_T("login"), _T("client_id"), _T("ztgate"));
 	m_scope = app->GetProfileString(_T("login"), _T("scope"), _T("openid"));
+
+	/* 정책이 정한 것은 그대로 쓴다. 사용자 설정에는 덮어쓰지 않는다 — 정책이 빠지면 원래대로. */
+	policy_load(&m_policy);
+	if (m_policy.has_servers) {
+		m_server = m_policy.servers_text;
+		m_port.Format(_T("%u"), (unsigned)m_policy.port);
+	}
+	if (m_policy.issuer[0] != L'\0') {
+		m_issuer = m_policy.issuer;
+		if (m_policy.client_id[0] != L'\0') {
+			m_client_id = m_policy.client_id;
+		}
+	}
+}
+
+/* 정책이 연결 설정을 정했다. */
+static bool PolicyManaged(const ztgate_policy_t &p)
+{
+	return p.has_servers || p.issuer[0] != L'\0';
 }
 
 void CMainDlg::SaveSettings()
 {
 	CWinApp *app = AfxGetApp();
+
+	/* 정책 값을 사용자 설정으로 남기지 않는다. */
+	if (PolicyManaged(m_policy)) {
+		return;
+	}
 
 	app->WriteProfileString(_T("conn"), _T("adapter"), m_adapter);
 	app->WriteProfileString(_T("conn"), _T("server"), m_server);
@@ -235,6 +259,12 @@ void CMainDlg::OnSettings()
 {
 	if (m_state != TUNNEL_STATE_STOPPED) {
 		AfxMessageBox(_T("연결 중에는 설정을 바꿀 수 없습니다.\n먼저 [연결 해제] 를 누른 뒤 다시 열어 주세요."),
+				MB_ICONINFORMATION);
+		return;
+	}
+
+	if (PolicyManaged(m_policy)) {
+		AfxMessageBox(_T("이 PC 의 연결 설정은 회사 정책으로 관리됩니다.\n바꿔야 하면 관리자에게 문의하세요."),
 				MB_ICONINFORMATION);
 		return;
 	}
@@ -298,6 +328,11 @@ void CMainDlg::OnConnect()
 	tunnel_config_t cfg;
 
 	if (vpn_session_active(m_session)) {
+		if (m_policy.always_on) {
+			AfxMessageBox(_T("회사 정책으로 이 PC 는 늘 연결되어 있어야 합니다.\n연결을 끊을 수 없습니다."),
+					MB_ICONINFORMATION);
+			return;
+		}
 		RequestDisconnect();
 		return;
 	}
@@ -630,6 +665,11 @@ LRESULT CMainDlg::OnVpnError(WPARAM wParam, LPARAM)
 		break;
 	case 2:		/* IPC_ERR_NOT_ENROLLED */
 		AppendLog(_T("[gui] 서비스: 등록되지 않은 기기입니다"));
+		break;
+	case 5:		/* IPC_ERR_POLICY */
+		AppendLog(_T("[gui] 서비스: 회사 정책(AlwaysOn)으로 연결을 끊을 수 없습니다"));
+		m_stopping = false;
+		SetUiState(m_state);
 		break;
 	default:
 		AppendLog(_T("[gui] 서비스가 요청을 받지 않았습니다"));

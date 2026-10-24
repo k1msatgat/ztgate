@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    revision="1.0" schemaVersion="1.0" xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>ztgate</displayName>
+  <description>ztgate 클라이언트 관리 정책</description>
+  <resources>
+    <stringTable>
+      <string id="ztgate">ztgate</string>
+      <string id="SUPPORTED_ZTGATE_09">ztgate 0.9 이상</string>
+      <string id="Servers">연결할 서버</string>
+      <string id="Servers_Help">이 PC 가 붙을 ztgate 서버의 IPv4 주소입니다. 서버를 여럿 두면 쉼표로 넷까지 적습니다(예: 203.0.113.10, 203.0.113.11). 지금 서버가 답하지 않으면 다음 서버로 넘어갑니다. 사용자는 GUI 설정에서 바꿀 수 없습니다.</string>
+      <string id="AlwaysOn">항상 연결 (Always-on)</string>
+      <string id="AlwaysOn_Help">서비스가 부팅하자마자 "연결할 서버"에 붙고, 끊기면 다시 붙습니다. 사용자는 연결을 끊을 수 없습니다. 기기가 아직 등록되지 않았으면 등록되는 대로 붙습니다.</string>
+      <string id="BlockWhenDown">터널이 끊긴 동안 내부망 차단</string>
+      <string id="BlockWhenDown_Help">연결을 원하는데(또는 항상 연결인데) 터널이 열려 있지 않은 동안, 내부망 대역으로 나가는 연결을 Windows 필터링 플랫폼으로 막습니다. 지금 붙어 있는 망(호텔, 카페)에서 누군가 사내 주소를 흉내 내는 것을 막습니다. 대역을 비워 두면 서버가 마지막으로 내려 준 경로와 터널 대역을 막습니다. 서버 주소는 늘 허용합니다.</string>
+      <string id="Login">사용자 로그인 (IdP)</string>
+      <string id="Login_Help">사용자 로그인에 쓸 IdP 의 issuer URL 과 이 앱의 클라이언트 ID 입니다. GUI 설정 대신 이것을 씁니다.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="Servers">
+        <textBox refId="Servers"><label>서버 주소 (쉼표로 넷까지)</label></textBox>
+        <decimalTextBox refId="Port" defaultValue="9000">포트</decimalTextBox>
+      </presentation>
+      <presentation id="BlockWhenDown">
+        <textBox refId="InternalNetworks"><label>막을 대역 (예: 10.0.0.0/8, 172.16.0.0/12). 비우면 서버가 준 경로</label></textBox>
+      </presentation>
+      <presentation id="Login">
+        <textBox refId="Issuer"><label>Issuer URL</label></textBox>
+        <textBox refId="ClientId"><label>클라이언트 ID</label></textBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

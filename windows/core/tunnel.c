@@ -517,6 +517,9 @@ static int netcfg_apply(tunnel_t *t)
 	*cur = *want;
 	t->has_applied = 1;
 	t->bcast = subnet_broadcast(cur->tun_ip, cur->prefix_len);
+	if (t->cfg->on_config) {
+		t->cfg->on_config(t->cfg->ctx, cur);
+	}
 
 	return 0;
 }
@@ -2345,7 +2348,11 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				tlog(t, "[HS] failed re-handshake[%s][%u], retry in %ds",
 						server_str, cfg->server_port, cfg->n_alt > 0 ? 2 : SERVER_TIMEOUT_SEC);
 				if (!t->tcp || !next_server(t, server_str)) {
-					transport_switch(t, !t->tcp);
+					/* TCP 로 연결조차 안 되면 소켓 없이 남지 않게 UDP 로 돌아간다. 비워 두면 다음
+					 * 보내기가 실패해 터널이 끝나 버린다 (10057). */
+					if (transport_switch(t, !t->tcp) < 0) {
+						transport_switch(t, 0);
+					}
 				}
 				break;
 			}
