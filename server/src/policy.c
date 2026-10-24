@@ -18,6 +18,10 @@ int posture_req_parse(const char *tok, posture_req_t *req)
 		req->need_antivirus = 1;
 		return 0;
 	}
+	if (strcmp(tok, "disk=on") == 0) {
+		req->need_disk = 1;
+		return 0;
+	}
 	if (strncmp(tok, "min-build=", 10) == 0 && tok[10] != '\0') {
 		v = strtoul(tok + 10, &end, 10);
 		if (*end != '\0' || v > 0xFFFFFFFFul) {
@@ -41,6 +45,9 @@ int posture_req_ok(const posture_req_t *req, const posture_report_t *posture)
 	if (req->need_antivirus && posture->antivirus != POSTURE_STATE_ON) {
 		return 0;
 	}
+	if (req->need_disk && posture->disk != POSTURE_STATE_ON) {
+		return 0;
+	}
 	if (posture->os_build < req->min_build) {
 		return 0;
 	}
@@ -50,7 +57,7 @@ int posture_req_ok(const posture_req_t *req, const posture_report_t *posture)
 
 int posture_req_empty(const posture_req_t *req)
 {
-	return !req->need_firewall && !req->need_antivirus && req->min_build == 0;
+	return !req->need_firewall && !req->need_antivirus && !req->need_disk && req->min_build == 0;
 }
 
 int user_name_valid(const char *name)

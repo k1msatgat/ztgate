@@ -1,7 +1,10 @@
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/utsname.h>
 #include <sys/wait.h>
 
@@ -107,10 +110,77 @@ static uint8_t collect_firewall(void)
 	return found ? POSTURE_STATE_ON : POSTURE_STATE_OFF;
 }
 
+#define DISK_DEPTH_MAX	8	/* dm 장치를 몇 겹까지 따라 내려가는가 (LUKS 위 LVM 위 RAID ...) */
+
+/* /sys/dev/block/<maj:min> 또는 그 아래 slaves/<name> 인 dir 이 dm-crypt 이거나, 그 아래 어딘가에
+ * dm-crypt 가 있으면 1. 없으면 0, 읽지 못했으면 -1. */
+static int disk_crypt_under(const char *dir, int depth)
+{
+	char path[512], uuid[64];
+	struct dirent *e;
+	FILE *fp;
+	DIR *d;
+	int found = 0;
+
+	if (depth > DISK_DEPTH_MAX) {
+		return -1;
+	}
+
+	/* dm 장치만 dm/uuid 가 있다. 일반 파티션이면 없고, 그 아래 slaves 도 비어 있다. */
+	snprintf(path, sizeof(path), "%s/dm/uuid", dir);
+	fp = fopen(path, "r");
+	if (fp != NULL) {
+		if (fgets(uuid, sizeof(uuid), fp) != NULL && strncmp(uuid, "CRYPT-", 6) == 0) {
+			fclose(fp);
+			return 1;
+		}
+		fclose(fp);
+	}
+
+	snprintf(path, sizeof(path), "%s/slaves", dir);
+	d = opendir(path);
+	if (d == NULL) {
+		return 0;	/* slaves 가 없는 장치 (파티션이면 그 위가 디스크다 — 암호화는 dm 에서만 본다) */
+	}
+	while (found == 0 && (e = readdir(d)) != NULL) {
+		char sub[512];
+
+		if (e->d_name[0] == '.') {
+			continue;
+		}
+		snprintf(sub, sizeof(sub), "%s/slaves/%s", dir, e->d_name);
+		found = disk_crypt_under(sub, depth + 1);
+	}
+	closedir(d);
+
+	return found;
+}
+
+static uint8_t collect_disk(void)
+{
+	char dir[64];
+	struct stat st;
+	int r;
+
+	/* / 의 st_dev 가 그 파일 시스템이 놓인 블록 장치다. major 0 은 블록 장치가 아닌 것(btrfs 의
+	 * 부속 볼륨, overlay, tmpfs 등)이라 sysfs 에서 찾을 수 없다. */
+	if (stat("/", &st) < 0 || major(st.st_dev) == 0) {
+		return POSTURE_STATE_UNKNOWN;
+	}
+	snprintf(dir, sizeof(dir), "/sys/dev/block/%u:%u", major(st.st_dev), minor(st.st_dev));
+	if (access(dir, F_OK) < 0) {
+		return POSTURE_STATE_UNKNOWN;
+	}
+
+	r = disk_crypt_under(dir, 0);
+	return r > 0 ? POSTURE_STATE_ON : r == 0 ? POSTURE_STATE_OFF : POSTURE_STATE_UNKNOWN;
+}
+
 void posture_collect(posture_report_t *out)
 {
 	memset(out, 0, sizeof(*out));
 	out->os_build = kernel_version();
 	out->firewall = collect_firewall();
 	out->antivirus = POSTURE_STATE_UNKNOWN;
+	out->disk = collect_disk();
 }

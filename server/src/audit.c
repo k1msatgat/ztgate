@@ -147,9 +147,9 @@ void audit_session_open(const peer_t *peer)
 
 	begin("session_open");
 	session_fields(peer);
-	field("\"posture\":{\"os_build\":%u,\"firewall\":\"%s\",\"antivirus\":\"%s\"}",
+	field("\"posture\":{\"os_build\":%u,\"firewall\":\"%s\",\"antivirus\":\"%s\",\"disk\":\"%s\"}",
 			peer->posture.os_build, state_name(peer->posture.firewall),
-			state_name(peer->posture.antivirus));
+			state_name(peer->posture.antivirus), state_name(peer->posture.disk));
 	end();
 }
 

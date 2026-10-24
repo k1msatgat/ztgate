@@ -125,7 +125,7 @@ function wantId(v) {
 
 /* 조건은 통째로 받는다. 빠진 항목은 "검사하지 않음"이다. */
 function wantRequirements(v) {
-	const r = { firewall: false, antivirus: false, min_build: 0 };
+	const r = { firewall: false, antivirus: false, disk: false, min_build: 0 };
 
 	if (v === undefined || v === null) {
 		return r;
@@ -136,7 +136,7 @@ function wantRequirements(v) {
 
 	for (const k of Object.keys(v)) {
 		if (!(k in r)) {
-			fail(`unknown requirement '${k}' (firewall, antivirus, min_build)`);
+			fail(`unknown requirement '${k}' (firewall, antivirus, disk, min_build)`);
 		}
 	}
 	if (v.firewall !== undefined) {
@@ -146,6 +146,10 @@ function wantRequirements(v) {
 	if (v.antivirus !== undefined) {
 		if (typeof v.antivirus !== 'boolean') fail('requirements.antivirus must be a boolean');
 		r.antivirus = v.antivirus;
+	}
+	if (v.disk !== undefined) {
+		if (typeof v.disk !== 'boolean') fail('requirements.disk must be a boolean');
+		r.disk = v.disk;
 	}
 	if (v.min_build !== undefined) {
 		r.min_build = wantInt(v.min_build, 'requirements.min_build', 0, 0xFFFFFFFF);
@@ -160,6 +164,7 @@ function reqTokens(r) {
 
 	if (r.firewall) t.push('firewall=on');
 	if (r.antivirus) t.push('antivirus=on');
+	if (r.disk) t.push('disk=on');
 	if (r.min_build > 0) t.push(`min-build=${r.min_build}`);
 
 	return t;
@@ -167,7 +172,7 @@ function reqTokens(r) {
 
 /* 파일에서 읽은 단어를 조건으로. 모르는 단어면 null. */
 function parseReq(tokens) {
-	const r = { firewall: false, antivirus: false, min_build: 0 };
+	const r = { firewall: false, antivirus: false, disk: false, min_build: 0 };
 
 	for (const t of tokens) {
 		const m = /^min-build=(\d+)$/.exec(t);
@@ -176,6 +181,8 @@ function parseReq(tokens) {
 			r.firewall = true;
 		} else if (t === 'antivirus=on') {
 			r.antivirus = true;
+		} else if (t === 'disk=on') {
+			r.disk = true;
 		} else if (m) {
 			r.min_build = Number(m[1]);
 		} else {
@@ -187,7 +194,7 @@ function parseReq(tokens) {
 }
 
 function reqEmpty(r) {
-	return !r.firewall && !r.antivirus && r.min_build === 0;
+	return !r.firewall && !r.antivirus && !r.disk && r.min_build === 0;
 }
 
 /* 이름은 줄 끝의 주석으로 들어간다. '#' 나 줄바꿈이 섞이면 파일 형식이 깨진다. */
@@ -384,7 +391,7 @@ function readEnroll() {
 			key: tok[1],
 			tunnel_ip: tok[2],
 			expires: Number(tok[3]),
-			requirements: parseReq(splitConnector(tok.slice(4)).rest) || { firewall: false, antivirus: false, min_build: 0 },
+			requirements: parseReq(splitConnector(tok.slice(4)).rest) || { firewall: false, antivirus: false, disk: false, min_build: 0 },
 			connector: splitConnector(tok.slice(4)).connector,
 			tags: splitConnector(tok.slice(4)).tags,
 			label: /^[A-Za-z0-9 _.-]{1,32}$/.test(label) ? label : '',

@@ -305,6 +305,7 @@ int main(int argc, char *argv[])
 		.os_build = 0,
 		.firewall = POSTURE_STATE_ON,
 		.antivirus = POSTURE_STATE_ON,
+		.disk = POSTURE_STATE_ON,
 	};
 	struct timeval tv = { 0, 200000 };
 	int bufsize = 4 << 20;

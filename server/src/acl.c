@@ -339,9 +339,10 @@ void acl_dump(void)
 				r->proto, r->dport_lo, r->dport_hi,
 				r->action == ACL_ALLOW ? "allow" : "deny");
 		if (!posture_req_empty(&r->require)) {
-			printf("  require: firewall=%s antivirus=%s min-build=%u",
+			printf("  require: firewall=%s antivirus=%s disk=%s min-build=%u",
 					r->require.need_firewall ? "on" : "-",
 					r->require.need_antivirus ? "on" : "-",
+					r->require.need_disk ? "on" : "-",
 					r->require.min_build);
 		}
 		for (k = 0; k < r->users.n; k++) {

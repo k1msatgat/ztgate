@@ -197,8 +197,8 @@ def header(msg_type, session_idx=0):
     return struct.pack("!BBHI", VERSION, msg_type, 0, session_idx)
 
 
-def posture(build=26200, firewall=STATE_ON, antivirus=STATE_ON):
-    return struct.pack("!IBB2x", build, firewall, antivirus)
+def posture(build=26200, firewall=STATE_ON, antivirus=STATE_ON, disk=STATE_ON):
+    return struct.pack("!IBBBx", build, firewall, antivirus, disk)
 
 
 def mac(key, data):
@@ -515,13 +515,15 @@ def strict(c, **post):
 def posture_tests():
     c = Client()
 
-    # 두 번째 기기: firewall=on antivirus=on min-build=22000
+    # 두 번째 기기: firewall=on antivirus=on disk=on min-build=22000
     check("strict device, everything on", strict(c), "RES_HANDSHAKE")
     r = strict(c, firewall=STATE_OFF)
     check("strict device, firewall off", r, "DENY(4)")
     expect("that denial is signed with the device key", c.deny_mac_ok(r, DEV2_KEY), True)
     check("strict device, firewall unknown", strict(c, firewall=STATE_UNKNOWN), "DENY(4)")
     check("strict device, antivirus off", strict(c, antivirus=STATE_OFF), "DENY(4)")
+    check("strict device, disk not encrypted", strict(c, disk=STATE_OFF), "DENY(4)")
+    check("strict device, disk unknown (an older client sends 0)", strict(c, disk=STATE_UNKNOWN), "DENY(4)")
     check("strict device, build below minimum", strict(c, build=19045), "DENY(4)")
     check("strict device, build exactly minimum", strict(c, build=22000), "RES_HANDSHAKE")
     check("strict device, build unknown (0)", strict(c, build=0), "DENY(4)")
@@ -692,7 +694,7 @@ def setup_tun(log):
 
 
 LINE1 = "%s %s 10.0.0.3" % (DEV_ID.hex(), DEV_KEY.hex())
-LINE2 = "%s %s 10.0.0.4 firewall=on antivirus=on min-build=22000  # strict" % (DEV2_ID.hex(), DEV2_KEY.hex())
+LINE2 = "%s %s 10.0.0.4 firewall=on antivirus=on disk=on min-build=22000  # strict" % (DEV2_ID.hex(), DEV2_KEY.hex())
 
 
 def write_devices(path, *lines):
@@ -896,7 +898,7 @@ def acl_tests(srv, acl_path):
     expect("a rule without requirements still passes (icmp)", verdict(ping(), idx), "passed")
     expect("the broad allow below does not rescue udp/53", verdict(udp(53), idx), "denied")
     expect("the broad allow still covers udp/54", verdict(udp(54), idx), "passed")
-    ok = "posture below the rule (build=26200 firewall=1 antivirus=2)" in srv.text()
+    ok = "posture below the rule (build=26200 firewall=1 antivirus=2 disk=2)" in srv.text()
     expect("the denial names the posture", "logged" if ok else "silent", "logged")
 
     check("keepalive reports firewall on again", ka(1), "KEEPALIVE")
@@ -1210,7 +1212,7 @@ def status_tests(srv):
     expect("status: the new session is listed", s is not None and s["device_id"], DEV_ID.hex())
     expect("status: session idx", s and s["session_idx"], "%08x" % idx)
     expect("status: posture from the handshake", s and s["posture"],
-           {"os_build": 26200, "firewall": "on", "antivirus": "on"})
+           {"os_build": 26200, "firewall": "on", "antivirus": "on", "disk": "on"})
     expect("status: handshake_ok counted", counted(st, before, "handshake_ok"), (1,))
 
     c.send(keepalive(idx, post=posture(firewall=STATE_OFF)))

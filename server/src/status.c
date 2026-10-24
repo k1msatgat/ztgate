@@ -190,9 +190,9 @@ static void build(int acl_enabled)
 				endpoint_str(&p->outer, eb, sizeof(eb)), p->session_idx);
 		put("\"age_sec\":%ld,\"idle_sec\":%ld,",
 				(long)(now - p->established_at), (long)(now - p->last_seen));
-		put("\"posture\":{\"os_build\":%u,\"firewall\":\"%s\",\"antivirus\":\"%s\"},",
+		put("\"posture\":{\"os_build\":%u,\"firewall\":\"%s\",\"antivirus\":\"%s\",\"disk\":\"%s\"},",
 				p->posture.os_build, state_str(p->posture.firewall),
-				state_str(p->posture.antivirus));
+				state_str(p->posture.antivirus), state_str(p->posture.disk));
 		put("\"rx_packets\":%llu,\"rx_bytes\":%llu,",
 				(unsigned long long)p->rx_packets, (unsigned long long)p->rx_bytes);
 		put("\"tx_packets\":%llu,\"tx_bytes\":%llu,",

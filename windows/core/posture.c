@@ -2,9 +2,20 @@
 #include <objbase.h>
 #include <netfw.h>
 #include <wscapi.h>
+#include <wbemidl.h>
+#include <shobjidl.h>
+#include <propsys.h>
+#include <propvarutil.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "posture.h"
+
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "propsys.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "shell32.lib")
 
 /* ---- OS version ---------------------------------------------------------- */
 /* GetVersionExW 는 쓸 수 없다. Windows 8.1 부터 실행 파일의 매니페스트에 적힌
@@ -171,6 +182,138 @@ static uint8_t collect_antivirus(void)
 	return health == WSC_SECURITY_PROVIDER_HEALTH_GOOD ? POSTURE_ON : POSTURE_OFF;
 }
 
+/* ---- disk encryption ----------------------------------------------------- */
+/* BitLocker 의 상태는 WMI 의 Win32_EncryptableVolume 이 가장 정확하다 — ProtectionStatus 가
+ * 0(보호 꺼짐) / 1(켜짐) / 2(모름)이다. 암호화는 됐어도 보호가 일시 중지되면 0 이라, 키가 디스크에
+ * 그대로 놓인 상태를 켜짐으로 읽지 않는다. 다만 이 클래스는 관리자만 읽을 수 있다. 서비스(SYSTEM)는
+ * 읽고, 사용자 권한으로 도는 GUI 와 콘솔은 탐색기가 보여 주는 셸 속성
+ * System.Volume.BitLockerProtection 으로 읽는다: 1 은 켜짐, 2 는 꺼짐이고 나머지(암호화 중, 일시
+ * 중지, 쓸 수 없음 ...)는 모름으로 둔다.
+ *
+ * 디스크 암호화는 자주 바뀌지 않는데 WMI 는 한 번에 수십 ms 가 든다. 2초마다 부르는 keepalive 에
+ * 그대로 얹지 않고 1분 동안 같은 답을 쓴다. */
+#define DISK_CACHE_MS	60000
+
+static uint8_t disk_from_wmi(const wchar_t *drive)
+{
+	IWbemLocator *loc = NULL;
+	IWbemServices *svc = NULL;
+	IEnumWbemClassObject *en = NULL;
+	IWbemClassObject *obj = NULL;
+	BSTR ns = NULL, lang = NULL, query = NULL;
+	wchar_t q[128];
+	uint8_t state = POSTURE_UNKNOWN;
+	ULONG got = 0;
+	VARIANT v;
+
+	VariantInit(&v);
+	swprintf(q, sizeof(q) / sizeof(q[0]),
+			L"SELECT ProtectionStatus FROM Win32_EncryptableVolume WHERE DriveLetter = '%ls'", drive);
+	ns = SysAllocString(L"ROOT\\CIMV2\\Security\\MicrosoftVolumeEncryption");
+	lang = SysAllocString(L"WQL");
+	query = SysAllocString(q);
+	if (!ns || !lang || !query) {
+		goto out;
+	}
+
+	if (FAILED(CoCreateInstance(&CLSID_WbemLocator, NULL, CLSCTX_INPROC_SERVER,
+				&IID_IWbemLocator, (void **)&loc)) ||
+			FAILED(loc->lpVtbl->ConnectServer(loc, ns, NULL, NULL, NULL, 0, NULL, NULL, &svc))) {
+		goto out;
+	}
+	/* 이 프로세스의 COM 보안을 바꾸지 않고(CoInitializeSecurity 는 프로세스에 한 번뿐이다) 이 프록시만
+	 * 호출자 신원으로 부르게 한다. */
+	if (FAILED(CoSetProxyBlanket((IUnknown *)svc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+				RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE))) {
+		goto out;
+	}
+	if (FAILED(svc->lpVtbl->ExecQuery(svc, lang, query,
+				WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, NULL, &en)) ||
+			en->lpVtbl->Next(en, 5000, 1, &obj, &got) != WBEM_S_NO_ERROR || got != 1) {
+		goto out;
+	}
+	if (SUCCEEDED(obj->lpVtbl->Get(obj, L"ProtectionStatus", 0, &v, NULL, NULL)) &&
+			(v.vt == VT_I4 || v.vt == VT_UI4)) {
+		state = v.lVal == 1 ? POSTURE_ON : v.lVal == 0 ? POSTURE_OFF : POSTURE_UNKNOWN;
+	}
+
+out:
+	VariantClear(&v);
+	if (obj) obj->lpVtbl->Release(obj);
+	if (en) en->lpVtbl->Release(en);
+	if (svc) svc->lpVtbl->Release(svc);
+	if (loc) loc->lpVtbl->Release(loc);
+	SysFreeString(ns);
+	SysFreeString(lang);
+	SysFreeString(query);
+	return state;
+}
+
+static uint8_t disk_from_shell(const wchar_t *drive)
+{
+	IShellItem2 *item = NULL;
+	PROPERTYKEY key;
+	PROPVARIANT pv;
+	wchar_t root[8];
+	uint8_t state = POSTURE_UNKNOWN;
+	ULONG val;
+
+	PropVariantInit(&pv);
+	swprintf(root, sizeof(root) / sizeof(root[0]), L"%ls\\", drive);
+	if (FAILED(PSGetPropertyKeyFromName(L"System.Volume.BitLockerProtection", &key)) ||
+			FAILED(SHCreateItemFromParsingName(root, NULL, &IID_IShellItem2, (void **)&item)) ||
+			FAILED(item->lpVtbl->GetProperty(item, &key, &pv)) ||
+			FAILED(PropVariantToUInt32(&pv, &val))) {
+		goto out;
+	}
+	state = val == 1 ? POSTURE_ON : val == 2 ? POSTURE_OFF : POSTURE_UNKNOWN;
+
+out:
+	PropVariantClear(&pv);
+	if (item) item->lpVtbl->Release(item);
+	return state;
+}
+
+static uint8_t collect_disk(void)
+{
+	static uint8_t cached = POSTURE_UNKNOWN;
+	static ULONGLONG cached_at;
+	static int have;
+	ULONGLONG now = GetTickCount64();
+	wchar_t drive[8];
+	uint8_t state;
+	HRESULT init;
+	DWORD n;
+
+	if (have && now - cached_at < DISK_CACHE_MS) {
+		return cached;
+	}
+
+	/* 시스템 드라이브("C:"). 못 읽으면 모름. */
+	n = GetEnvironmentVariableW(L"SystemDrive", drive, sizeof(drive) / sizeof(drive[0]));
+	if (n != 2 || drive[1] != L':') {
+		return POSTURE_UNKNOWN;
+	}
+
+	/* collect_firewall 과 같은 규칙으로 COM 을 연다. */
+	init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
+		return POSTURE_UNKNOWN;
+	}
+	state = disk_from_wmi(drive);
+	if (state == POSTURE_UNKNOWN) {
+		state = disk_from_shell(drive);
+	}
+	if (SUCCEEDED(init)) {
+		CoUninitialize();
+	}
+
+	cached = state;
+	cached_at = now;
+	have = 1;
+	return state;
+}
+
 void posture_collect(posture_t *out)
 {
 	memset(out, 0, sizeof(*out));
@@ -178,4 +321,5 @@ void posture_collect(posture_t *out)
 	collect_os(out);
 	out->firewall = collect_firewall();
 	out->antivirus = collect_antivirus();
+	out->disk = collect_disk();
 }

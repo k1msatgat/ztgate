@@ -136,8 +136,8 @@ static int posture_changed(client_t *c, uint64_t now)
 		return 0;
 	}
 
-	printf("[posture] changed: kernel=%u firewall=%s antivirus=%s\n", report.os_build,
-			state_name(report.firewall), state_name(report.antivirus));
+	printf("[posture] changed: kernel=%u firewall=%s antivirus=%s disk=%s\n", report.os_build,
+			state_name(report.firewall), state_name(report.antivirus), state_name(report.disk));
 	c->posture = report;
 
 	return 1;
@@ -162,8 +162,8 @@ static int handshake(client_t *c)
 {
 	c->last_posture_ms = get_current_time_ms();
 	posture_collect(&c->posture);
-	printf("[HS] posture: kernel=%u firewall=%s antivirus=%s\n", c->posture.os_build,
-			state_name(c->posture.firewall), state_name(c->posture.antivirus));
+	printf("[HS] posture: kernel=%u firewall=%s antivirus=%s disk=%s\n", c->posture.os_build,
+			state_name(c->posture.firewall), state_name(c->posture.antivirus), state_name(c->posture.disk));
 
 	return session_handshake(&c->session, c->ident.id, c->ident.key,
 			c->ident.has_server_pub ? c->ident.server_pub : NULL, &c->posture);
@@ -826,6 +826,7 @@ static void print_posture(void)
 			p.os_build & 0xFF, p.os_build);
 	printf("firewall  %s\n", state_name(p.firewall));
 	printf("antivirus unknown (not collected on Linux)\n");
+	printf("disk      %s (root file system on dm-crypt)\n", state_name(p.disk));
 }
 
 static void usage(const char *prog)

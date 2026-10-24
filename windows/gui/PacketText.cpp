@@ -64,8 +64,9 @@ CString PostureText(const posture_report_t &r)
 {
 	CString s;
 
-	s.Format(_T("빌드 %u  방화벽 %s  백신 %s"), r.os_build,
-			(LPCTSTR)PostureStateName(r.firewall), (LPCTSTR)PostureStateName(r.antivirus));
+	s.Format(_T("빌드 %u  방화벽 %s  백신 %s  디스크 %s"), r.os_build,
+			(LPCTSTR)PostureStateName(r.firewall), (LPCTSTR)PostureStateName(r.antivirus),
+			(LPCTSTR)PostureStateName(r.disk));
 
 	return s;
 }
@@ -211,12 +212,13 @@ CString DetailText(const tunnel_packet_t &p)
 	}
 
 	if (p.has_posture) {
-		t.Format(_T("posture      os_build=%u  firewall=%u (%s)  antivirus=%u (%s)\r\n"),
+		t.Format(_T("posture      os_build=%u  firewall=%u (%s)  antivirus=%u (%s)  disk=%u (%s)\r\n"),
 				p.posture.os_build,
 				(unsigned)p.posture.firewall, (LPCTSTR)PostureStateName(p.posture.firewall),
-				(unsigned)p.posture.antivirus, (LPCTSTR)PostureStateName(p.posture.antivirus));
+				(unsigned)p.posture.antivirus, (LPCTSTR)PostureStateName(p.posture.antivirus),
+				(unsigned)p.posture.disk, (LPCTSTR)PostureStateName(p.posture.disk));
 		s += t;
-		/* AUTH 의 포스처는 평문이고 기기 키의 mac 이 덮는다. KEEPALIVE 의 것은 세션 키로
+		/* AUTH 의 포스처는 서버 공개키로 감싸 가고(v9, 아래는 감싸기 전의 값) 기기 키의 mac 이 덮는다. KEEPALIVE 의 것은 세션 키로
 		 * 감싸여 오가고 끝에 GCM tag 가 붙는다 (아래 16진수는 푼 모습). */
 		if (p.msg_type == MSG_TYPE_AUTH) {
 			s += _T("             (평문. 뒤의 32바이트는 기기 키로 만든 mac, HMAC-SHA256)\r\n");

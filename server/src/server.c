@@ -807,8 +807,8 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	 * 실패로 듣게 되고, 등록용 세션으로는 어차피 어디에도 닿을 수 없다. */
 	posture_decode(plain + DEVICE_ID_LEN, sizeof(posture), &posture);
 	if (!enrolling && !device_posture_ok(dev, &posture)) {
-		printf("[HS] device %s posture rejected (build=%u firewall=%u antivirus=%u)\n",
-				ids, posture.os_build, posture.firewall, posture.antivirus);
+		printf("[HS] device %s posture rejected (build=%u firewall=%u antivirus=%u disk=%u)\n",
+				ids, posture.os_build, posture.firewall, posture.antivirus, posture.disk);
 		audit_auth_denied(dev->id, src, DENY_POSTURE);
 		send_deny(sock, src, srclen, DENY_POSTURE, dev, auth_mac);
 		return;
@@ -854,8 +854,8 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		STAT_INC(handshake_ok);
 		audit_session_open(peer);
 
-		printf("[HS] device %s authenticated as %s (build=%u firewall=%u antivirus=%u)\n",
-				ids, ip_str(tun_ip, ib), posture.os_build, posture.firewall, posture.antivirus);
+		printf("[HS] device %s authenticated as %s (build=%u firewall=%u antivirus=%u disk=%u)\n",
+				ids, ip_str(tun_ip, ib), posture.os_build, posture.firewall, posture.antivirus, posture.disk);
 	}
 
 	if (net_send(sock, res, len, &peer->outer, peer->outer_len) < 0){
@@ -939,8 +939,8 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 
 	posture_decode(body, sizeof(posture), &posture);
 	if (!device_posture_ok(dev, &posture)) {
-		printf("[ka] device %s posture rejected (build=%u firewall=%u antivirus=%u)\n",
-				ids, posture.os_build, posture.firewall, posture.antivirus);
+		printf("[ka] device %s posture rejected (build=%u firewall=%u antivirus=%u disk=%u)\n",
+				ids, posture.os_build, posture.firewall, posture.antivirus, posture.disk);
 		send_session_deny(sock, peer, src, srclen, DENY_POSTURE);
 		peer_drop(peer, "posture");
 		return;
@@ -1241,9 +1241,9 @@ static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int 
 				printf(" outside the tunnel subnet (no acl file)");
 			}
 			if (verdict == ACL_DENY_POSTURE) {
-				printf(" posture below the rule (build=%u firewall=%u antivirus=%u)",
+				printf(" posture below the rule (build=%u firewall=%u antivirus=%u disk=%u)",
 						peer->posture.os_build, peer->posture.firewall,
-						peer->posture.antivirus);
+						peer->posture.antivirus, peer->posture.disk);
 			}
 			if (verdict == ACL_DENY_USER) {
 				printf(" rule is for other users (logged in: %s)",

@@ -44,7 +44,7 @@ import sys
 import threading
 
 RECENT = 8		# 기기마다 기억해 두는 최근 요청 수
-POSTURE_KEYS = ("firewall", "antivirus", "min-build")
+POSTURE_KEYS = ("firewall", "antivirus", "disk", "min-build")
 
 
 def read_status(path):
@@ -68,7 +68,7 @@ def read_devices(path):
     """기기 목록에서 id -> {label, require}.
 
     줄 형식은 '<id> <key> <tun-ip> [조건 ...]  # label' 이다. 라벨은 서버가 등록할 때 붙이는
-    주석이고, 조건 중 포스처에 관한 것(firewall= / antivirus= / min-build=)만 가져온다."""
+    주석이고, 조건 중 포스처에 관한 것(firewall= / antivirus= / disk= / min-build=)만 가져온다."""
     devices = {}
     if not path:
         return devices
@@ -338,6 +338,7 @@ function checks(p, req) {
   const rows = [
     ["방화벽", state[p.firewall], req.firewall ? p.firewall === req.firewall : null, req.firewall && "켜짐 필요"],
     ["백신", state[p.antivirus], req.antivirus ? p.antivirus === req.antivirus : null, req.antivirus && "켜짐 필요"],
+    ["디스크 암호화", state[p.disk] || state.unknown, req.disk ? p.disk === req.disk : null, req.disk && "켜짐 필요"],
     ["OS 빌드", String(p.os_build), req["min-build"] ? p.os_build >= +req["min-build"] : null,
       req["min-build"] && req["min-build"] + " 이상 필요"],
   ];

@@ -6,7 +6,7 @@
  *   기기 목록   그 기기를 터널에 들일 것인가        (device.c)
  *   ACL 규칙    들어온 뒤 그 목적지에 가도 되는가   (acl.c)
  *
- *   firewall=on   antivirus=on   min-build=N
+ *   firewall=on   antivirus=on   disk=on   min-build=N
  *
  * 적은 것만 검사한다. 아무것도 적지 않은 조건은 누구나 채운다.
  */
@@ -27,6 +27,7 @@
 typedef struct posture_req {
 	uint8_t need_firewall;
 	uint8_t need_antivirus;
+	uint8_t need_disk;	/* 시스템 디스크가 암호화돼 있어야 한다 */
 	uint32_t min_build;
 } posture_req_t;
 

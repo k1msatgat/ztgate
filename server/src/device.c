@@ -418,10 +418,11 @@ void device_dump(void)
 
 	printf("--- devices (%d) ---\n", ndevices);
 	for (i = 0; i < ndevices; i++) {
-		printf("[%d] %s -> %s  require: firewall=%s antivirus=%s min-build=%u", i,
+		printf("[%d] %s -> %s  require: firewall=%s antivirus=%s disk=%s min-build=%u", i,
 				device_id_str(devices[i].id, ids), ip_str(devices[i].tun_ip, ib),
 				devices[i].require.need_firewall ? "on" : "-",
 				devices[i].require.need_antivirus ? "on" : "-",
+				devices[i].require.need_disk ? "on" : "-",
 				devices[i].require.min_build);
 		for (k = 0; k < devices[i].n_connector; k++) {
 			struct in_addr a = { .s_addr = devices[i].connector[k].addr };

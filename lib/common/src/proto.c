@@ -73,7 +73,7 @@ int posture_encode(unsigned char *buf, size_t cap, const struct posture_report *
 		return -1;
 	}
 
-	w.reserved[0] = w.reserved[1] = 0;
+	w.reserved = 0;
 	w.os_build = htonl(p->os_build);
 	memcpy(buf, &w, sizeof(w));
 

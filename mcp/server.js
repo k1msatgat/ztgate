@@ -53,6 +53,7 @@ async function call(cmd, args = {}) {
 const requirements = z.object({
 	firewall: z.boolean().optional().describe('Windows Firewall must be on'),
 	antivirus: z.boolean().optional().describe('Windows Security Center must report a healthy antivirus'),
+	disk: z.boolean().optional().describe('the system disk must be encrypted (BitLocker protection on, or / on dm-crypt on Linux)'),
 	min_build: z.number().int().min(0).optional().describe('minimum OS build (Windows 11 starts at 22000); 0 = no check'),
 }).strict().describe('Posture the device must report at handshake and at every keepalive. Omitted items are not checked. A value the client reports as "unknown" never passes.');
 

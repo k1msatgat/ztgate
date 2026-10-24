@@ -23,6 +23,14 @@
  *   antivirus  Linux 에는 대응하는 OS 기본 장치가 없어 늘 UNKNOWN 이다. Linux 기기의
  *              정책에 antivirus=on 을 걸면 그 기기는 늘 거절된다.
  *
+ *   disk       / 가 놓인 블록 장치가 dm-crypt(LUKS) 위에 있는가. / 의 장치에서 시작해
+ *              /sys/dev/block 의 slaves 를 따라 내려가며 dm/uuid 가 "CRYPT-" 로 시작하는
+ *              장치를 찾는다 (LVM 위의 LUKS, LUKS 위의 LVM 모두).
+ *                ON       찾았다
+ *                OFF      끝까지 내려갔는데 없다
+ *                UNKNOWN  / 의 장치가 블록 장치가 아니다 (btrfs 의 부속 볼륨, overlay, 네트워크
+ *                         파일 시스템 등) 또는 sysfs 를 읽지 못했다
+ *
  * 0 이 UNKNOWN 이라 못 읽은 항목은 통과로 읽히지 않는다. */
 
 #include "proto.h"

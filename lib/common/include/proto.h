@@ -160,7 +160,11 @@ typedef struct posture_report {
 	uint32_t os_build;	/* 못 읽었으면 0 */
 	uint8_t firewall;	/* POSTURE_STATE_* */
 	uint8_t antivirus;	/* POSTURE_STATE_* */
-	uint8_t reserved[2];
+	/* 시스템 디스크(OS 가 깔린 볼륨)의 암호화. Windows 는 BitLocker 의 보호 상태, Linux 는 / 가
+	 * dm-crypt(LUKS) 위에 있는가. 예전에 비어 있던 자리라 이전 빌드는 0(모름)을 보낸다 — 프로토콜
+	 * 버전을 올리지 않고 더했다. */
+	uint8_t disk;		/* POSTURE_STATE_* */
+	uint8_t reserved;
 } posture_report_t;
 
 /* 기기 등록.

@@ -50,6 +50,7 @@ static int print_posture(void)
 	}
 	printf("firewall   %s\n", state_name(p.firewall));
 	printf("antivirus  %s\n", state_name(p.antivirus));
+	printf("disk       %s (BitLocker on the system drive)\n", state_name(p.disk));
 
 	return 0;
 }

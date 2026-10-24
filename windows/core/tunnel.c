@@ -903,6 +903,7 @@ static void posture_report_now(posture_report_t *report)
 	report->os_build = p.os_build;
 	report->firewall = posture_wire_state(p.firewall);
 	report->antivirus = posture_wire_state(p.antivirus);
+	report->disk = posture_wire_state(p.disk);
 }
 
 static void pkt_netcfg(tunnel_packet_t *p, const net_config_t *c)
@@ -1056,8 +1057,8 @@ static int send_hs_auth(tunnel_t *t, handshake_t *hs, const uint8_t *challenge)
 		return -1;
 	}
 
-	tlog(t, "[HS] auth: build=%u firewall=%u antivirus=%u",
-			report->os_build, report->firewall, report->antivirus);
+	tlog(t, "[HS] auth: build=%u firewall=%u antivirus=%u disk=%u",
+			report->os_build, report->firewall, report->antivirus, report->disk);
 
 	udp_send(t, auth, (int)AUTH_PACKET_LEN);
 	hs_emit(t, TUNNEL_DIR_TX, &h, auth, (int)AUTH_PACKET_LEN, report, 0);
@@ -1454,8 +1455,8 @@ static int posture_changed(tunnel_t *t, uint64_t now)
 		return 0;
 	}
 
-	tlog(t, "[posture] changed: build=%u firewall=%u antivirus=%u",
-			report.os_build, report.firewall, report.antivirus);
+	tlog(t, "[posture] changed: build=%u firewall=%u antivirus=%u disk=%u",
+			report.os_build, report.firewall, report.antivirus, report.disk);
 	session->posture = report;
 
 	return 1;

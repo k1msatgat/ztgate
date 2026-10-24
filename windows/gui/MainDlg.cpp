@@ -55,7 +55,7 @@ CMainDlg::CMainDlg(CWnd *parent)
 	m_tokens.expires_at = 0;
 
 	static const LPCTSTR checks[CHECK_COUNT] = {
-		_T("방화벽"), _T("백신"), _T("OS 빌드"), _T("서버 판정"),
+		_T("방화벽"), _T("백신"), _T("디스크 암호화"), _T("OS 빌드"), _T("서버 판정"),
 	};
 	static const LPCTSTR info[INFO_COUNT] = {
 		_T("사용자"), _T("서버"), _T("터널 주소"), _T("주고받은 데이터"), _T("기기 ID"),
@@ -1266,6 +1266,9 @@ void CMainDlg::RefreshPosture(bool collect)
 	rows[CHECK_ANTIVIRUS].value = LocalStateName(m_local.antivirus);
 	rows[CHECK_ANTIVIRUS].level = m_local.antivirus == POSTURE_ON ? LEVEL_OK :
 			m_local.antivirus == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
+	rows[CHECK_DISK].value = LocalStateName(m_local.disk);
+	rows[CHECK_DISK].level = m_local.disk == POSTURE_ON ? LEVEL_OK :
+			m_local.disk == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
 
 	if (m_local.os_build != 0) {
 		s.Format(_T("%u.%u.%u"), m_local.os_major, m_local.os_minor, m_local.os_build);
@@ -1464,6 +1467,9 @@ CString CMainDlg::DenyHint() const
 		}
 		if (m_local.antivirus == POSTURE_OFF) {
 			return _T("백신의 실시간 보호가 꺼져 있습니다. 켜면 자동으로 다시 연결됩니다.");
+		}
+		if (m_local.disk == POSTURE_OFF) {
+			return _T("시스템 드라이브의 BitLocker 가 꺼져 있습니다. 켜면 자동으로 다시 연결됩니다.");
 		}
 		return _T("이 PC 가 회사 보안 정책에 맞지 않습니다. 관리자에게 문의하세요.");
 	case DENY_UNKNOWN_DEVICE:
