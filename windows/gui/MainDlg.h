@@ -25,6 +25,7 @@
 
 /* 로그인 워커가 끝났다. lParam = LoginDone* (받는 쪽이 지운다) */
 #define WM_LOGIN_DONE	(WM_APP + 21)
+#define WM_PORTAL_DONE	(WM_APP + 22)	/* wParam = portal::Result */
 
 /* 토큰을 갱신하지 못했을 때 다시 해 보는 간격 */
 #define LOGIN_RETRY_MS	30000
@@ -130,6 +131,9 @@ protected:
 	afx_msg LRESULT OnVpnError(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnVpnLogin(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnLoginDone(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnPortalDone(WPARAM wParam, LPARAM lParam);
+	afx_msg void OnLButtonUp(UINT flags, CPoint pt);
+	afx_msg BOOL OnSetCursor(CWnd *wnd, UINT hit, UINT msg);
 	afx_msg LRESULT OnSessionChange(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnTrayIcon(WPARAM wParam, LPARAM lParam);
 	afx_msg LRESULT OnTaskbarCreated(WPARAM wParam, LPARAM lParam);
@@ -195,6 +199,14 @@ private:
 	/* 연결 설정 (레지스트리에 둔다). 설정 창에서만 바뀐다. */
 	CString m_server;
 	ztgate_policy_t m_policy;	/* 관리 정책 (policy.h). 정한 것은 설정보다 앞선다 */
+
+	/* 캡티브 포털 (Portal.h). 서버에 닿지 못하는 동안 30초마다 묻는다. */
+	void CheckPortal();
+	int m_portal = 0;		/* portal::Result */
+	HANDLE m_portal_thread = nullptr;
+	ULONGLONG m_portal_at = 0;	/* 마지막으로 물은 때 */
+	ULONGLONG m_trouble_since = 0;	/* 연결 중 / 다시 연결 중이 된 때 */
+	bool m_portal_told = false;	/* 이번에 알림을 띄웠다 */
 	CString m_port;
 	CString m_adapter;
 	int m_link;			/* 서비스와의 연결 (vpn_remote_link_t) */

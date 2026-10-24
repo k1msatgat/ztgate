@@ -8,6 +8,7 @@
 #include "PacketText.h"
 #include "DiagDlg.h"
 #include "SettingsDlg.h"
+#include "Portal.h"
 
 #include <wtsapi32.h>
 
@@ -95,6 +96,9 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
 	ON_MESSAGE(WM_VPN_ERROR, &CMainDlg::OnVpnError)
 	ON_MESSAGE(WM_VPN_LOGIN, &CMainDlg::OnVpnLogin)
 	ON_MESSAGE(WM_LOGIN_DONE, &CMainDlg::OnLoginDone)
+	ON_MESSAGE(WM_PORTAL_DONE, &CMainDlg::OnPortalDone)
+	ON_WM_LBUTTONUP()
+	ON_WM_SETCURSOR()
 	ON_MESSAGE(WM_WTSSESSION_CHANGE, &CMainDlg::OnSessionChange)
 	ON_MESSAGE(WM_TRAYICON, &CMainDlg::OnTrayIcon)
 	ON_REGISTERED_MESSAGE(WM_TASKBAR_CREATED, &CMainDlg::OnTaskbarCreated)
@@ -503,6 +507,78 @@ LRESULT CMainDlg::OnVpnLog(WPARAM, LPARAM lParam)
 	}
 
 	return 0;
+}
+
+/* 서버에 닿지 못한 채 8초가 지나면 묻기 시작하고, 그 뒤로는 30초마다. 연결되면 잊는다. */
+void CMainDlg::CheckPortal()
+{
+	const bool trouble = m_state == TUNNEL_STATE_CONNECTING || m_state == TUNNEL_STATE_RECONNECTING;
+	const ULONGLONG now = GetTickCount64();
+
+	if (!trouble) {
+		m_trouble_since = 0;
+		m_portal_told = false;
+		if (m_portal != portal::UNKNOWN) {
+			m_portal = portal::UNKNOWN;
+			UpdateStatus();
+		}
+		return;
+	}
+	if (m_trouble_since == 0) {
+		m_trouble_since = now;
+	}
+	if (m_portal_thread || now - m_trouble_since < 8000 || (m_portal_at != 0 && now - m_portal_at < 30000)) {
+		return;
+	}
+	m_portal_at = now;
+	m_portal_thread = CreateThread(nullptr, 0, [](LPVOID p) -> DWORD {
+		::PostMessage(static_cast<HWND>(p), WM_PORTAL_DONE, portal::Probe(), 0);
+		return 0;
+	}, GetSafeHwnd(), 0, nullptr);
+}
+
+LRESULT CMainDlg::OnPortalDone(WPARAM wParam, LPARAM)
+{
+	if (m_portal_thread) {
+		WaitForSingleObject(m_portal_thread, INFINITE);
+		CloseHandle(m_portal_thread);
+		m_portal_thread = nullptr;
+	}
+	if (m_state != TUNNEL_STATE_CONNECTING && m_state != TUNNEL_STATE_RECONNECTING) {
+		return 0;
+	}
+	m_portal = static_cast<int>(wParam);
+	if (m_portal == portal::CAPTIVE && !m_portal_told) {
+		m_portal_told = true;
+		AppendLog(_T("[gui] 이 네트워크는 로그인 페이지(캡티브 포털)가 가로채고 있습니다"));
+		TrayNotify(_T("로그인이 필요한 네트워크"),
+				_T("이 와이파이는 로그인해야 인터넷을 쓸 수 있습니다. ztgate 창의 안내를 누르면 로그인 페이지가 열립니다."), true);
+	}
+	UpdateStatus();
+	return 0;
+}
+
+/* 포털 안내 문구를 누르면 로그인 페이지를 연다. */
+void CMainDlg::OnLButtonUp(UINT flags, CPoint pt)
+{
+	if (m_portal == portal::CAPTIVE && m_rc_hero_text.PtInRect(pt)) {
+		ShellExecuteW(GetSafeHwnd(), L"open", portal::kLoginUrl, nullptr, nullptr, SW_SHOWNORMAL);
+		return;
+	}
+	CDialogEx::OnLButtonUp(flags, pt);
+}
+
+BOOL CMainDlg::OnSetCursor(CWnd *wnd, UINT hit, UINT msg)
+{
+	CPoint pt;
+
+	GetCursorPos(&pt);
+	ScreenToClient(&pt);
+	if (hit == HTCLIENT && m_portal == portal::CAPTIVE && m_rc_hero_text.PtInRect(pt)) {
+		::SetCursor(::LoadCursor(nullptr, IDC_HAND));
+		return TRUE;
+	}
+	return CDialogEx::OnSetCursor(wnd, hit, msg);
 }
 
 LRESULT CMainDlg::OnVpnState(WPARAM wParam, LPARAM)
@@ -1532,8 +1608,8 @@ void CMainDlg::UpdateStatus()
 	CString title;
 	CString sub;
 	CString hint;
-	LPCWSTR icon;
-	COLORREF color;
+	LPCWSTR icon = ICON_POWER;
+	COLORREF color = c.idle;
 	COLORREF hintColor = c.danger;
 
 	switch (m_state) {
@@ -1566,6 +1642,26 @@ void CMainDlg::UpdateStatus()
 		icon = ICON_SYNC;
 		color = c.warn;
 		break;
+	}
+
+	/* 서버에 닿지 못하는 까닭이 이 PC 쪽 네트워크라면 그것을 먼저 말한다. */
+	if ((m_state == TUNNEL_STATE_CONNECTING || m_state == TUNNEL_STATE_RECONNECTING) && m_deny_reason == 0) {
+		if (m_portal == portal::CAPTIVE) {
+			sub = _T("이 네트워크는 로그인해야 인터넷을 쓸 수 있습니다");
+			hint = _T("호텔·카페 와이파이처럼 로그인 페이지가 있는 망입니다. 여기를 누르면 로그인 페이지가 열리고, 로그인하면 자동으로 연결됩니다.");
+			hintColor = c.warn;
+		}
+		else if (m_portal == portal::OFFLINE) {
+			sub = _T("인터넷에 연결되어 있지 않습니다");
+			hint = _T("와이파이나 랜선 연결을 확인하세요. 네트워크가 돌아오면 자동으로 연결됩니다.");
+			hintColor = c.muted;
+		}
+	}
+	switch (m_state) {
+	case TUNNEL_STATE_CONNECTING:
+	case TUNNEL_STATE_CONNECTED:
+	case TUNNEL_STATE_RECONNECTING:
+		break;	/* 위에서 정했다 */
 	case TUNNEL_STATE_DENIED:
 		title = _T("접속 차단됨");
 		sub = _T("서버가 이 기기의 접속을 막았습니다");
@@ -1648,6 +1744,7 @@ void CMainDlg::OnTimer(UINT_PTR id)
 		}
 
 		CheckLoginExpiry();
+		CheckPortal();
 
 		/* 토큰이 끝나기 전에 refresh token 으로 새 것을 받아 온다. */
 		if (m_refresh_at != 0 && GetTickCount64() >= m_refresh_at && !m_login_thread) {
