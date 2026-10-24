@@ -1158,7 +1158,9 @@ ztgate/
 | Prometheus 지표 — `tools/metrics/ztgate_exporter.py`, `ztgate-exporter.service`, 시험. 서버에 HTTP 를 넣지 않고 상태 소켓을 바꿔 내주는 것은 AI가 제안 |
 | 기기 태그 — `policy.c` 의 `tag_parse` / `tag_match`, 기기 목록 · ACL · 경로 · 상태 소켓, `ctl.cjs` / MCP 의 `tags`, 설정 줄 512자와 넘치는 줄 거부, 시험. 태그를 조건이 아닌 출발지처럼 다루는 것은 AI가 제안 |
 | ACL 거부 통지 — `server.c` 의 `send_prohibited`(ICMP 3/13, 세션마다 1초 10개), 시험 |
-| Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계 |
+| Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계, 실행 파일의 버전 정보(`windows/version.rc`) |
+| Windows 서비스의 로그 파일과 덤프 — `windows/core/filelog.c` |
+| 서버 워커 여럿 — `server.c` 의 `udp_in` / `udp_data` / `udp_control` / `tun_in` 분리, `table_lock` 과 `peer->lock`, `SO_REUSEPORT` / `IFF_MULTI_QUEUE`, `bench_workers.sh`, 시험의 `ZTGATE_WORKERS`. 두 세션의 잠금을 한꺼번에 쥐지 않는 규칙(커넥터 중계의 교착 방지)은 AI가 제안 |
 | 내부 DNS (프로토콜 v7) — `net_config` 의 DNS 칸(`proto.c`), `server/src/dns.c` 와 `-d`, Linux 의 resolvectl, Windows 의 NRPT(`nrpt_*`), 시험. 분할 DNS 로 하고 모든 이름을 회사로 보내지 않는 것은 AI가 제안 |
 | Windows 네트워크 변화 감지 — `core/tunnel.c` 의 `net_watch_*` / `net_tick`, 절전 복귀 뒤 실패한 재핸드셰이크의 즉시 재시도 |
 | 로그 등급과 속도 제한 — `server.c` 의 `log_ok` / `-v`, `bench.sh` 의 quiet 모드, 시험. 쿠키보다 로그를 먼저 막는 판단(비싼 일은 HMAC 뒤에만 한다)은 AI가 제안 |
