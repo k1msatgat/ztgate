@@ -27,7 +27,7 @@ cp -a @STAGE@/. %{buildroot}/
 %preun
 # 지울 때만 (업그레이드는 $1 = 1). /etc/ztgate 는 남긴다.
 if [ "$1" = 0 ] && command -v systemctl > /dev/null 2>&1; then
-	systemctl disable --now ztgate.service ztgate-exporter.service ztgate-jwks.timer 2>/dev/null || true
+	systemctl disable --now ztgate.service ztgate-exporter.service ztgate-console.service ztgate-jwks.timer 2>/dev/null || true
 fi
 
 %files
@@ -35,5 +35,6 @@ fi
 /usr/sbin/ztgate_ctl
 /usr/lib/systemd/system/ztgate.service
 /usr/lib/systemd/system/ztgate-exporter.service
+/usr/lib/systemd/system/ztgate-console.service
 /usr/lib/systemd/system/ztgate-jwks.service
 /usr/lib/systemd/system/ztgate-jwks.timer

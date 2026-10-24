@@ -1,0 +1,22 @@
+# ztgate 웹 관리 콘솔 (tools/console/ztgate_console.py). 127.0.0.1:9470
+#
+#   sudo install -m 755 tools/console/ztgate_console.py /opt/ztgate/tools/ztgate_console.py
+#   sudo install -m 644 tools/console/ztgate-console.service /etc/systemd/system/
+#   sudo systemctl enable --now ztgate-console
+#   sudo cat /etc/ztgate/console.token                # 로그인 토큰 (처음 뜰 때 만든다)
+#   ssh -L 9470:127.0.0.1:9470 <서버>                 # 관리자 PC 에서. 브라우저로 http://127.0.0.1:9470/
+#
+# 일은 ztgate_ctl 이 하므로 그것과 같이 root 로 돈다 (/etc/ztgate 를 고치고 systemctl 을 부른다).
+[Unit]
+Description=ztgate web console
+After=ztgate.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I /opt/ztgate/tools/ztgate_console.py -l 127.0.0.1:9470
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

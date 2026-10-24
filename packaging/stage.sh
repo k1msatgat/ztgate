@@ -9,9 +9,10 @@
 #   /opt/ztgate/libexec/postinst.sh              설치 뒤 한 번: /etc/ztgate 와 서버 키
 #   /opt/ztgate/tools/ztgate_exporter.py         Prometheus 지표
 #   /opt/ztgate/tools/ztgate_jwks.py             JWKS 갱신
+#   /opt/ztgate/tools/ztgate_console.py          웹 관리 콘솔
 #   /opt/ztgate/test/auth_check.py               ztgate_ctl 의 자체 시험이 돌린다
 #   /usr/sbin/ztgate_ctl                         관리 헬퍼 (node 가 있어야 돈다)
-#   /usr/lib/systemd/system/ztgate.service, ztgate-exporter.service, ztgate-jwks.{service,timer}
+#   /usr/lib/systemd/system/ztgate.service, ztgate-exporter.service, ztgate-console.service, ztgate-jwks.{service,timer}
 #
 # 넣지 않는 것: MCP 서버(npm 의존성이 있다 — mcp/install.sh), /etc/ztgate 의 설정. 설정은 패키지의
 # 파일이 아니라서 제거하거나 업그레이드해도 남는다 (기기 목록과 서버 키를 잃지 않는다).
@@ -29,8 +30,10 @@ install -m 755 "$ROOT/mcp/service.sh" "$S/opt/ztgate/libexec/service.sh"
 install -m 755 "$ROOT/packaging/postinst.sh" "$S/opt/ztgate/libexec/postinst.sh"
 install -m 755 "$ROOT/tools/metrics/ztgate_exporter.py" "$S/opt/ztgate/tools/ztgate_exporter.py"
 install -m 755 "$ROOT/tools/idp/ztgate_jwks.py" "$S/opt/ztgate/tools/ztgate_jwks.py"
+install -m 755 "$ROOT/tools/console/ztgate_console.py" "$S/opt/ztgate/tools/ztgate_console.py"
 install -m 644 "$ROOT/test/auth_check.py" "$S/opt/ztgate/test/auth_check.py"
 install -m 755 "$ROOT/mcp/ctl.cjs" "$S/usr/sbin/ztgate_ctl"
 install -m 644 "$ROOT/mcp/ztgate.service" "$S/usr/lib/systemd/system/ztgate.service"
 install -m 644 "$ROOT/tools/metrics/ztgate-exporter.service" "$S/usr/lib/systemd/system/ztgate-exporter.service"
+install -m 644 "$ROOT/tools/console/ztgate-console.service" "$S/usr/lib/systemd/system/ztgate-console.service"
 install -m 644 "$ROOT/tools/idp/ztgate-jwks.service" "$ROOT/tools/idp/ztgate-jwks.timer" "$S/usr/lib/systemd/system/"

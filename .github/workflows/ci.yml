@@ -52,6 +52,10 @@ jobs:
           sudo ZTGATE_WORKERS=3 python3 test/auth_check.py
           sudo ZTGATE_WORKERS=3 test/linux_e2e.sh
 
+      # 웹 콘솔: 가짜 ztgate_ctl 앞에서 로그인, 세션 / CSRF, 화면, 바꾸는 요청이 무엇으로 가는지.
+      - name: Web console (test/console_check.py)
+        run: python3 test/console_check.py
+
       - name: MCP server syntax
         working-directory: mcp
         run: |
