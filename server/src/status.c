@@ -18,6 +18,7 @@
 #include "device.h"
 #include "status.h"
 #include "flow.h"
+#include "tcp.h"
 
 server_stats_t stats;
 
@@ -133,7 +134,8 @@ static const char *state_str(uint8_t v)
 static void build(int acl_enabled)
 {
 	char ids[DEVICE_ID_STRLEN];
-	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	char ib[INET_ADDRSTRLEN];
+	char eb[INET_ADDRSTRLEN + 16];
 	time_t now = mono_now();
 	const peer_t *p;
 	const device_t *dev;
@@ -184,8 +186,8 @@ static void build(int acl_enabled)
 
 		put("%s{\"tunnel_ip\":\"%s\",\"device_id\":\"%s\",", first ? "" : ",",
 				ip_str(p->inner, ib), device_id_str(p->device_id, ids));
-		put("\"endpoint\":\"%s:%d\",\"session_idx\":\"%08x\",",
-				ip_str(p->outer.sin_addr, ob), ntohs(p->outer.sin_port), p->session_idx);
+		put("\"endpoint\":\"%s\",\"session_idx\":\"%08x\",",
+				endpoint_str(&p->outer, eb, sizeof(eb)), p->session_idx);
 		put("\"age_sec\":%ld,\"idle_sec\":%ld,",
 				(long)(now - p->established_at), (long)(now - p->last_seen));
 		put("\"posture\":{\"os_build\":%u,\"firewall\":\"%s\",\"antivirus\":\"%s\"},",

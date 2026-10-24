@@ -29,6 +29,7 @@
 #include "dns.h"
 #include "serverkey.h"
 #include "flow.h"
+#include "tcp.h"
 
 #define MAX_EVENTS 8
 
@@ -235,7 +236,7 @@ static void relay_to_connector(int32_t sock, const device_t *conn_dev, uint8_t *
 		return;
 	}
 
-	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&to, to_len) < 0) {
+	if (net_send(sock, packet, len, &to, to_len) < 0) {
 		perror("sendto connector");
 	}
 }
@@ -296,7 +297,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	if (len < 0) {
 		return -1;
 	}
-	if (sendto(sock, packet, len, 0, (const struct sockaddr *)&dst_addr, dst_len) < 0) {
+	if (net_send(sock, packet, len, &dst_addr, dst_len) < 0) {
 		perror("sendto client");
 	}
 
@@ -336,7 +337,7 @@ static void send_deny(int32_t sock, const struct sockaddr_in *dst, socklen_t dst
 		__atomic_fetch_add(&stats.deny[reason], 1, __ATOMIC_RELAXED);
 	}
 
-	if (sendto(sock, res, sizeof(res), 0, (const struct sockaddr *)dst, dstlen) < 0) {
+	if (net_send(sock, res, sizeof(res), dst, dstlen) < 0) {
 		perror("sendto deny");
 	}
 }
@@ -361,7 +362,7 @@ static void send_disconnect(peer_t *peer, void *arg)
 	if (n < 0) {
 		return;
 	}
-	if (sendto(ctx->sock, res, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+	if (net_send(ctx->sock, res, n, &peer->outer, peer->outer_len) < 0) {
 		perror("sendto disconnect");
 	}
 }
@@ -490,7 +491,7 @@ static void send_prohibited(int32_t sock, peer_t *peer, const uint8_t *orig, int
 	}
 	peer->tx_packets++;
 	peer->tx_bytes += (uint64_t)total;
-	if (sendto(sock, pkt, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+	if (net_send(sock, pkt, n, &peer->outer, peer->outer_len) < 0) {
 		perror("sendto icmp");
 	}
 }
@@ -514,7 +515,7 @@ static void send_session_deny(int32_t sock, peer_t *peer, const struct sockaddr_
 		__atomic_fetch_add(&stats.deny[reason], 1, __ATOMIC_RELAXED);
 	}
 
-	if (sendto(sock, res, n, 0, (const struct sockaddr *)dst, dstlen) < 0) {
+	if (net_send(sock, res, n, dst, dstlen) < 0) {
 		perror("sendto deny");
 	}
 }
@@ -574,7 +575,7 @@ static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 	memcpy(res + off, dev->nonce, AUTH_NONCE_LEN);
 	off += AUTH_NONCE_LEN;
 
-	if (sendto(sock, res, off, 0, (const struct sockaddr *)src, srclen) < 0) {
+	if (net_send(sock, res, off, src, srclen) < 0) {
 		perror("sendto challenge");
 	}
 }
@@ -787,7 +788,7 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 				ids, ip_str(tun_ip, ib), posture.os_build, posture.firewall, posture.antivirus);
 	}
 
-	if (sendto(sock, res, len, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0){
+	if (net_send(sock, res, len, &peer->outer, peer->outer_len) < 0){
 		perror("sendto handshake");
 	}
 }
@@ -815,7 +816,7 @@ static void send_keepalive(int32_t sock, peer_t *peer, const device_t *dev)
 		return;
 	}
 
-	if (sendto(sock, packet, n, 0, (const struct sockaddr *)&peer->outer, peer->outer_len) < 0) {
+	if (net_send(sock, packet, n, &peer->outer, peer->outer_len) < 0) {
 		perror("sendto");
 	}
 }
@@ -971,7 +972,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 	}
 
 	peer_touch(peer, src, srclen);
-	if (sendto(sock, res, n, 0, (const struct sockaddr *)src, srclen) < 0) {
+	if (net_send(sock, res, n, src, srclen) < 0) {
 		perror("sendto enroll");
 	}
 }
@@ -1031,7 +1032,7 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 	}
 
 	peer_touch(peer, src, srclen);
-	if (sendto(sock, res, n, 0, (const struct sockaddr *)src, srclen) < 0) {
+	if (net_send(sock, res, n, src, srclen) < 0) {
 		perror("sendto login");
 	}
 }
@@ -1319,7 +1320,6 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 	struct in_addr inner, from;
 	peer_t *peer;
 	uint8_t *ip;
-	ssize_t sent;
 
 	ip = packet + PKT_HDR_LEN;
 	if (n < IP_MIN_HDR || IP_VERSION(ip) != 4) {
@@ -1370,8 +1370,7 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 		return;
 	}
 
-	sent = sendto(sock, packet, n, 0, (struct sockaddr *)&to, to_len);
-	if (sent < 0) {
+	if (net_send(sock, packet, (size_t)n, &to, to_len) < 0) {
 		perror("sendto");
 	}
 }
@@ -1408,6 +1407,12 @@ static int tun_open_queue(char *name)
 	}
 	strcpy(name, ifr.ifr_name);
 	return fd;
+}
+
+/* TCP 로 온 패킷 (tcp.h). 워커 0 의 소켓과 tun 큐로 UDP 와 같은 길을 지난다. */
+static void tcp_packet(uint8_t *packet, size_t cap, int n, const struct sockaddr_in *from, socklen_t fromlen)
+{
+	udp_in(workers[0].sock, workers[0].tun_fd, packet, cap, n, from, fromlen);
 }
 
 /* 워커 1..N-1. 데이터와 핸드셰이크를 나눠 받을 뿐 만료, 다시 읽기, 상태 소켓은 하지 않는다. */
@@ -1459,6 +1464,7 @@ int main(int argc, char *argv[])
 {
 	char ifname[IFNAMSIZ];
 	int tun_fd, sock, n, port;
+	int tcp_port = 0, tcp_fd = -1;
 	time_t tick_at = -1;
 	int epfd = -1, nev, i;
 	int opt;
@@ -1495,7 +1501,7 @@ int main(int argc, char *argv[])
 		return serverkey_generate(argv[2]) == 0 ? 0 : 1;
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:Fv")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:t:Fv")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -1537,6 +1543,14 @@ int main(int argc, char *argv[])
 		else if (opt == 'F') {
 			flow_enable();
 		}
+		else if (opt == 't') {
+			long v = strtol(optarg, &end, 10);
+			if (*end != '\0' || v <= 0 || v > 65535) {
+				fprintf(stderr, "invalid tcp port : %s\n", optarg);
+				return 1;
+			}
+			tcp_port = (int)v;
+		}
 		else if (opt == 'w') {
 			long v = strtol(optarg, &end, 10);
 			if (*end != '\0' || v < 1 || v > MAX_WORKERS) {
@@ -1569,10 +1583,11 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-F] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-F] [-t tcp-port] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -w: worker threads, each with its own UDP socket and tun queue (default 1)\n");
 		fprintf(stderr, "       -F: stateful: toward a client, pass only replies to flows the client opened\n");
+		fprintf(stderr, "       -t: also take sessions over TCP on this port (e.g. 443) for networks that block UDP\n");
 		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
 		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");
@@ -1749,6 +1764,19 @@ int main(int argc, char *argv[])
 		printf("status socket: %s\n", status_path);
 	}
 
+	if (tcp_port != 0) {
+		tcp_fd = tcp_listen((uint16_t)tcp_port);
+		if (tcp_fd < 0) {
+			goto out;
+		}
+		ev.events  = EPOLLIN;
+		ev.data.fd = tcp_fd;
+		if (epoll_ctl(epfd, EPOLL_CTL_ADD, tcp_fd, &ev) < 0) {
+			perror("epoll_ctl: tcp_fd"); goto out;
+		}
+		printf("listening on TCP 0.0.0.0:%d\n", tcp_port);
+	}
+
 	printf("epoll ready (epfd=%d, tun_fd=%d, sock=%d)\n", epfd, tun_fd, sock);
 
 	for (i = 1; i < nworkers; i++) {
@@ -1778,6 +1806,7 @@ int main(int argc, char *argv[])
 			peer_check_expired();
 			rekey_tick(sock);
 			TABLE_UNLOCK();
+			tcp_tick(epfd);
 		}
 		status_tick(epfd);
 
@@ -1870,6 +1899,14 @@ int main(int argc, char *argv[])
 			if (status_writable(epfd, fd)) {
 				continue;
 			}
+			/* TCP 연결. 닫힌 것(EPOLLHUP)도 거기서 처리한다. */
+			if (fd == tcp_fd) {
+				tcp_accept(epfd, tcp_fd);
+				continue;
+			}
+			if (tcp_event(epfd, fd, events[i].events, tcp_packet)) {
+				continue;
+			}
 
 			if (events[i].events & (EPOLLERR | EPOLLHUP)) {
 				fprintf(stderr, "[err] fd=%d events=0x%x\n",
@@ -1922,6 +1959,9 @@ out:
 	if (status_fd >= 0) {
 		close(status_fd);
 		unlink(status_path);
+	}
+	if (tcp_fd >= 0) {
+		close(tcp_fd);
 	}
 	for (i = 0; i < nworkers; i++) {
 		if (workers[i].sock >= 0) {

@@ -107,7 +107,8 @@ void peer_touch(peer_t *peer, const struct sockaddr_in *outer, socklen_t len) {
 	char ob[INET6_ADDRSTRLEN];
 	char nb[INET6_ADDRSTRLEN];
 
-	if (peer->outer.sin_addr.s_addr != outer->sin_addr.s_addr || peer->outer.sin_port != outer->sin_port) {
+	/* 주소, 포트에 더해 종류(UDP / TCP 연결)와 TCP 연결의 세대까지 같아야 같은 곳이다 (tcp.h). */
+	if (memcmp(&peer->outer, outer, sizeof(*outer)) != 0) {
 		printf("[peer] rebind %s: %s:%d -> %s:%d\n",
 				ip4(peer->inner, ib),
 				ip4(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
@@ -171,7 +172,7 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 
 	peer = peer_lookup(inner);
 	if (peer) {
-		if(peer->outer.sin_addr.s_addr == outer->sin_addr.s_addr && peer->outer.sin_port == outer->sin_port &&
+		if(memcmp(&peer->outer, outer, sizeof(*outer)) == 0 &&
 				memcmp(peer->device_id, id, DEVICE_ID_LEN) == 0){
 			peer->last_seen = mono_now();
 			return peer;

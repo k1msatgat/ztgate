@@ -11,6 +11,7 @@
 #include "idp.h"
 #include "common.h"
 #include "device.h"
+#include "tcp.h"
 
 /* 같은 목적지를 다시 적기까지의 시간. 길게 열어 둔 연결이 로그에서 사라지지 않게 하되
  * 패킷마다 적지는 않는다. */
@@ -127,11 +128,12 @@ static void session_fields(const peer_t *peer)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
+	char eb[INET_ADDRSTRLEN + 16];
 
 	field("\"device\":\"%s\"", device_id_str(peer->device_id, ids));
 	field("\"tunnel_ip\":\"%s\"", ip_str(peer->inner, ib));
 	field("\"session\":\"%08x\"", peer->session_idx);
-	field("\"endpoint\":\"%s:%u\"", ip_str(peer->outer.sin_addr, ib), ntohs(peer->outer.sin_port));
+	field("\"endpoint\":\"%s\"", endpoint_str(&peer->outer, eb, sizeof(eb)));
 	if (peer->logged_in) {
 		field("\"user\":\"%s\"", peer->user.name);
 	}
@@ -183,7 +185,7 @@ static const char *deny_name(uint8_t reason)
 void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const struct sockaddr_in *src, uint8_t reason)
 {
 	char ids[DEVICE_ID_STRLEN];
-	char ib[INET_ADDRSTRLEN];
+	char eb[INET_ADDRSTRLEN + 16];
 	time_t now;
 
 	if (out == NULL) {
@@ -203,7 +205,7 @@ void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const struct sockaddr_in
 
 	begin("auth_denied");
 	field("\"device\":\"%s\"", device_id_str(id, ids));
-	field("\"endpoint\":\"%s:%u\"", ip_str(src->sin_addr, ib), ntohs(src->sin_port));
+	field("\"endpoint\":\"%s\"", endpoint_str(src, eb, sizeof(eb)));
 	field("\"reason\":\"%s\"", deny_name(reason));
 	if (denied_suppressed != 0) {
 		field("\"suppressed\":%lu", denied_suppressed);
@@ -294,6 +296,7 @@ void audit_enrolled(const uint8_t id[DEVICE_ID_LEN], struct in_addr tun_ip,
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
+	char eb[INET_ADDRSTRLEN + 16];
 
 	if (out == NULL) {
 		return;
@@ -302,7 +305,7 @@ void audit_enrolled(const uint8_t id[DEVICE_ID_LEN], struct in_addr tun_ip,
 	begin("enrolled");
 	field("\"device\":\"%s\"", device_id_str(id, ids));
 	field("\"tunnel_ip\":\"%s\"", ip_str(tun_ip, ib));
-	field("\"endpoint\":\"%s:%u\"", ip_str(src->sin_addr, ib), ntohs(src->sin_port));
+	field("\"endpoint\":\"%s\"", endpoint_str(src, eb, sizeof(eb)));
 	/* 이름은 enroll.c 가 받는 글자를 정해 둔 값이라 그대로 적어도 JSON 이 깨지지 않는다. */
 	field("\"label\":\"%s\"", label);
 	end();

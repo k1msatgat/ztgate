@@ -931,6 +931,80 @@ def config_tests(srv, acl_path, dev_path):
     srv.reload()
 
 
+class TcpClient(Client):
+    """같은 클라이언트를 TCP 로 (tcp.h): 패킷마다 len(2) | 패킷."""
+
+    def __init__(self, port):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.raw = b""
+        self.auth_tag = b""
+        self.buf = b""
+
+    def send(self, pkt):
+        self.sock.sendall(struct.pack("!H", len(pkt)) + pkt)
+
+    def _frame(self):
+        while True:
+            if len(self.buf) >= 2:
+                n = struct.unpack("!H", self.buf[:2])[0]
+                if len(self.buf) >= 2 + n:
+                    f, self.buf = self.buf[2:2 + n], self.buf[2 + n:]
+                    return f
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                raise ConnectionError("closed")
+            self.buf += chunk
+
+    def recv(self):
+        try:
+            self.raw = self._frame()
+        except (socket.timeout, ConnectionError):
+            return None
+        version, msg_type, _, idx = struct.unpack("!BBHI", self.raw[:HDR_LEN])
+        if idx != 0 and msg_type in (DATA, KEEPALIVE, DENY, ENROLL, LOGIN, DISCONNECT):
+            return msg_type, idx, unseal(self.raw)
+        return msg_type, idx, self.raw[HDR_LEN:]
+
+    def drain(self):
+        self.sock.settimeout(0.1)
+        while self.recv() is not None:
+            pass
+        self.sock.settimeout(1.0)
+
+
+def tcp_tests(path):
+    """-t: UDP 가 막힌 곳을 위한 TCP. 같은 패킷을 길이와 함께 실어 핸드셰이크, keepalive, 데이터가
+    UDP 와 똑같이 오가는가. 서버가 클라이언트로 보내는 것(tun -> 세션)도 그 연결로 가는가."""
+    tcp_port = PORT + 443
+    srv = Server(path, opts=["-t", str(tcp_port)])
+    try:
+        c = TcpClient(tcp_port)
+        r = c.handshake()
+        expect("tcp: the handshake works over tcp", describe(r), "RES_HANDSHAKE")
+        idx = r[1] if r else 0
+        c.send(keepalive(idx))
+        expect("tcp: keepalive", describe(c.recv()), "KEEPALIVE")
+        c.send(data(idx, None, echo_request(TUN_IP, socket.inet_aton("10.0.0.1"), 4242)))
+        check_data("tcp: a ping through the tunnel comes back over the same connection", c.recv(), "echo reply")
+        s = [x for x in srv.status()["sessions"] if x["tunnel_ip"] == "10.0.0.3"]
+        expect("tcp: the status shows the session as tcp", s and s[0]["endpoint"], "127.0.0.1 (tcp)")
+
+        # 깨진 틀(길이 0)을 보내면 그 연결만 닫힌다. 같은 세션은 새 연결로 이어 쓴다 (출발지가 바뀐 것과 같다).
+        bad = TcpClient(tcp_port)
+        bad.sock.sendall(b"\x00\x00")
+        time.sleep(0.3)
+        expect("tcp: a broken frame closes that connection", bad.recv(), None)
+        c2 = TcpClient(tcp_port)
+        c2.send(keepalive(idx))
+        expect("tcp: the same session carries on over a new connection", describe(c2.recv()), "KEEPALIVE")
+        c2.send(data(idx, None, echo_request(TUN_IP, socket.inet_aton("10.0.0.1"), 4243)))
+        check_data("tcp: ...and the replies follow it", c2.recv(), "echo reply")
+    finally:
+        srv.stop()
+    return srv
+
+
 def flow_tests(path):
     """-F: 서버 쪽에서 클라이언트로 먼저 거는 패킷은 버리고, 클라이언트가 연 흐름의 답만 들이는가.
 
@@ -2015,6 +2089,7 @@ def main():
         logs.append(dns_tests(path).text())
         logs.append(tag_tests(path).text())
         logs.append(flow_tests(path).text())
+        logs.append(tcp_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)
