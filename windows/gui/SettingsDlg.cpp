@@ -22,7 +22,7 @@ void CSettingsDlg::PointAt(int id, const CString &message)
 bool CSettingsDlg::Check(const CString &server, const CString &port, const CString &adapter,
 		int *bad_id, CString *why)
 {
-	struct in_addr first, alt[TUNNEL_ALT_SERVERS];
+	tunnel_addr_t first, alt[TUNNEL_ALT_SERVERS];
 	const int port_num = _ttoi(port);
 	int n_alt;
 

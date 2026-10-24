@@ -48,7 +48,7 @@ static const GUID ADAPTER_GUID =
 typedef struct session {
 	uint32_t idx;
 	secure_session_t secure;	/* 세션 키, 보낼 counter, 받은 counter 의 창 */
-	struct sockaddr_in server;
+	SOCKADDR_INET server;		/* IPv4 또는 IPv6, 포트까지 */
 	uint64_t last_rx_ms;
 	uint64_t last_tx_ms;
 	uint64_t last_ka_ms;	/* 마지막 keepalive 송신 */
@@ -221,11 +221,12 @@ static int route_usable(const tunnel_t *t, const net_route_t *r)
 
 	/* 서버를 여럿 적었으면 모두. 지금 서버만 빼면 다른 서버로 넘어갈 때 그리로 가는 패킷이 죽은
 	 * 터널로 들어간다. */
-	if ((t->cfg->server_ip.s_addr & mask) == r->addr) {
+	/* 경로는 IPv4 라 IPv6 서버는 덮일 일이 없다. */
+	if (t->cfg->server_ip.si_family == AF_INET && (t->cfg->server_ip.Ipv4.sin_addr.s_addr & mask) == r->addr) {
 		return 0;
 	}
 	for (int i = 0; i < t->cfg->n_alt; i++) {
-		if ((t->cfg->alt_ips[i].s_addr & mask) == r->addr) {
+		if (t->cfg->alt_ips[i].si_family == AF_INET && (t->cfg->alt_ips[i].Ipv4.sin_addr.s_addr & mask) == r->addr) {
 			return 0;
 		}
 	}
@@ -234,18 +235,35 @@ static int route_usable(const tunnel_t *t, const net_route_t *r)
 
 static int transport_switch(tunnel_t *t, int tcp);
 
+/* 지금 붙을 서버를 바꾼다 (주소는 a, 포트는 설정의 것). */
+static void server_set(tunnel_t *t, const tunnel_addr_t *a)
+{
+	t->session.server = *a;
+	if (a->si_family == AF_INET6) {
+		t->session.server.Ipv6.sin6_port = htons(t->cfg->server_port);
+	}
+	else {
+		t->session.server.Ipv4.sin_port = htons(t->cfg->server_port);
+	}
+}
+
+static int server_len(const SOCKADDR_INET *a)
+{
+	return a->si_family == AF_INET6 ? (int)sizeof(a->Ipv6) : (int)sizeof(a->Ipv4);
+}
+
 /* 다음 서버로 (서버를 여럿 적었을 때만). 새 서버로는 UDP 부터 해 본다. 1 이면 넘어갔다. */
 static int next_server(tunnel_t *t, char *server_str)
 {
-	char was[INET_ADDRSTRLEN];
+	char was[INET6_ADDRSTRLEN];
 
 	if (t->cfg->n_alt == 0) {
 		return 0;
 	}
 	strcpy(was, server_str);
 	t->cur_server = (t->cur_server + 1) % (t->cfg->n_alt + 1);
-	t->session.server.sin_addr = t->cur_server == 0 ? t->cfg->server_ip : t->cfg->alt_ips[t->cur_server - 1];
-	inet_ntop(AF_INET, &t->session.server.sin_addr, server_str, INET_ADDRSTRLEN);
+	server_set(t, t->cur_server == 0 ? &t->cfg->server_ip : &t->cfg->alt_ips[t->cur_server - 1]);
+	tunnel_addr_str(t->cur_server == 0 ? &t->cfg->server_ip : &t->cfg->alt_ips[t->cur_server - 1], server_str, INET6_ADDRSTRLEN);
 	tlog(t, "[HS] %s does not answer, switching to %s", was, server_str);
 	transport_switch(t, 0);
 	return 1;
@@ -536,14 +554,14 @@ static int socket_open_tcp(tunnel_t *t)
 	struct timeval tv = { 5, 0 };
 	int err = 0, errlen = (int)sizeof(err);
 
-	t->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	t->sock = socket(t->session.server.si_family, SOCK_STREAM, IPPROTO_TCP);
 	if (t->sock == INVALID_SOCKET) {
 		tlog(t, "socket (tcp) failed: %d", WSAGetLastError());
 		return -1;
 	}
 	ioctlsocket(t->sock, FIONBIO, &nb);
 	setsockopt(t->sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
-	if (connect(t->sock, (struct sockaddr *)&t->session.server, sizeof(t->session.server)) == SOCKET_ERROR &&
+	if (connect(t->sock, (struct sockaddr *)&t->session.server, server_len(&t->session.server)) == SOCKET_ERROR &&
 			WSAGetLastError() != WSAEWOULDBLOCK) {
 		tlog(t, "[tcp] connect failed: %d", WSAGetLastError());
 		return -1;
@@ -587,12 +605,12 @@ static int transport_switch(tunnel_t *t, int tcp)
 
 static int socket_open(tunnel_t *t)
 {
-	struct sockaddr_in local;
+	SOCKADDR_INET local;
 	BOOL connreset = FALSE;
 	DWORD bytes = 0;
 
 	t->tcp = 0;
-	t->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	t->sock = socket(t->session.server.si_family, SOCK_DGRAM, IPPROTO_UDP);
 	if (t->sock == INVALID_SOCKET) {
 		tlog(t, "socket failed: %d", WSAGetLastError());
 		return -1;
@@ -600,10 +618,8 @@ static int socket_open(tunnel_t *t)
 
 	/* 보내기 전에 recvfrom을 불러도 WSAEINVAL이 나지 않도록 미리 bind 해 둔다. */
 	memset(&local, 0, sizeof(local));
-	local.sin_family = AF_INET;
-	local.sin_addr.s_addr = htonl(INADDR_ANY);
-	local.sin_port = 0;
-	if (bind(t->sock, (struct sockaddr *)&local, sizeof(local)) == SOCKET_ERROR) {
+	local.si_family = t->session.server.si_family;	/* 모든 주소, 포트는 아무거나 */
+	if (bind(t->sock, (struct sockaddr *)&local, server_len(&local)) == SOCKET_ERROR) {
 		tlog(t, "bind failed: %d", WSAGetLastError());
 		return -1;
 	}
@@ -637,7 +653,7 @@ static int socket_open(tunnel_t *t)
 /* 받은 바이트 수를 돌려준다. 큐가 비었으면 RECV_EMPTY, 복구할 수 없는 오류는 RECV_ERROR. */
 /* TCP 로 받아 둔 것에서 다 들어온 틀 하나. 없으면 소켓에서 더 읽어 본다. 끊기면 tcp_lost 를 세우고
  * RECV_EMPTY — 터널 루프가 다시 열고 핸드셰이크한다. */
-static int tcp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from)
+static int tcp_recv(tunnel_t *t, uint8_t *buf, int cap, SOCKADDR_INET *from)
 {
 	size_t len;
 	int n;
@@ -677,7 +693,7 @@ static int tcp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from
 	}
 }
 
-static int udp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from)
+static int udp_recv(tunnel_t *t, uint8_t *buf, int cap, SOCKADDR_INET *from)
 {
 	int fromlen;
 	int n;
@@ -750,16 +766,24 @@ static void udp_send(tunnel_t *t, const uint8_t *buf, int len)
 		return;
 	}
 	if (sendto(t->sock, (const char *)buf, len, 0,
-				(struct sockaddr *)&session->server, sizeof(session->server)) == SOCKET_ERROR) {
+				(struct sockaddr *)&session->server, server_len(&session->server)) == SOCKET_ERROR) {
 		tlog(t, "sendto failed: %d", WSAGetLastError());
 	}
 	session->last_tx_ms = GetTickCount64();
 }
 
-static int from_server(const session_t *session, const struct sockaddr_in *from)
+static int from_server(const session_t *session, const SOCKADDR_INET *from)
 {
-	return from->sin_addr.s_addr == session->server.sin_addr.s_addr &&
-		from->sin_port == session->server.sin_port;
+	const SOCKADDR_INET *s = &session->server;
+
+	if (from->si_family != s->si_family) {
+		return 0;
+	}
+	if (s->si_family == AF_INET6) {
+		return memcmp(&from->Ipv6.sin6_addr, &s->Ipv6.sin6_addr, sizeof(s->Ipv6.sin6_addr)) == 0 &&
+			from->Ipv6.sin6_port == s->Ipv6.sin6_port;
+	}
+	return from->Ipv4.sin_addr.s_addr == s->Ipv4.sin_addr.s_addr && from->Ipv4.sin_port == s->Ipv4.sin_port;
 }
 
 /* ---- outbound filter ----------------------------------------------------- */
@@ -979,7 +1003,7 @@ static void hs_emit(tunnel_t *t, int dir, const msg_header_t *h, const uint8_t *
 static int hs_recv(tunnel_t *t, uint64_t deadline, uint8_t *buf, int cap, msg_header_t *h)
 {
 	HANDLE waits[2] = { t->stop_event, t->sock_event };
-	struct sockaddr_in from;
+	SOCKADDR_INET from;
 	uint64_t now;
 	DWORD w;
 	int n;
@@ -1379,7 +1403,7 @@ static void net_watch_start(tunnel_t *t)
 	if (!t->net_event) {
 		return;
 	}
-	err = NotifyUnicastIpAddressChange(AF_INET, on_address_change, t, FALSE, &t->net_notify);
+	err = NotifyUnicastIpAddressChange(AF_UNSPEC, on_address_change, t, FALSE, &t->net_notify);
 	if (err != NO_ERROR) {
 		/* 없어도 돈다. 그때는 예전처럼 30초 동안 답이 없을 때 다시 핸드셰이크한다. */
 		tlog(t, "[net] cannot watch for network changes: %lu", err);
@@ -1876,7 +1900,7 @@ static int pump_udp(tunnel_t *t)
 	uint8_t packet[BUF_SIZE];
 	msg_header_t msg_header;
 	tunnel_packet_t pkt;
-	struct sockaddr_in from;
+	SOCKADDR_INET from;
 	uint64_t counter;
 	uint8_t *ip;
 	BYTE *out;
@@ -2063,9 +2087,7 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 	t->stop_event = stop_event;
 	t->sock = INVALID_SOCKET;
 	t->t0_ms = GetTickCount64();
-	t->session.server.sin_family = AF_INET;
-	t->session.server.sin_addr = cfg.server_ip;
-	t->session.server.sin_port = htons(cfg.server_port);
+	server_set(t, &cfg.server_ip);
 
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
 		crypt_ecdh_free(mine);
@@ -2174,7 +2196,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	DWORD nwaits = 3;
 	int hs;
 	WSADATA wsa;
-	char server_str[INET_ADDRSTRLEN];
+	char server_str[INET6_ADDRSTRLEN];
 	uint64_t now;
 	DWORD err;
 	DWORD w;
@@ -2188,10 +2210,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 	t->t0_ms = GetTickCount64();
 
-	session->server.sin_family = AF_INET;
-	session->server.sin_addr = cfg->server_ip;
-	session->server.sin_port = htons(cfg->server_port);
-	inet_ntop(AF_INET, &cfg->server_ip, server_str, sizeof(server_str));
+	server_set(t, &cfg->server_ip);
+	tunnel_addr_str(&cfg->server_ip, server_str, sizeof(server_str));
 
 	set_state(t, TUNNEL_STATE_CONNECTING);
 
@@ -2212,7 +2232,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 		goto out;
 	}
 
-	tlog(t, "[%ls] tunneling to %s:%u", cfg->adapter_name, server_str, cfg->server_port);
+	tlog(t, cfg->server_ip.si_family == AF_INET6 ? "[%ls] tunneling to [%s]:%u" : "[%ls] tunneling to %s:%u",
+			cfg->adapter_name, server_str, cfg->server_port);
 
 	/* 서버마다 UDP, 그다음 같은 번호의 TCP. 답하는 서버를 찾을 때까지 차례로. 거절은 답이다 —
 	 * 다른 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. */

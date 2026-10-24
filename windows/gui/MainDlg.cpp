@@ -454,7 +454,7 @@ void CMainDlg::OnEnroll()
 		CWaitCursor wait;
 		CStringA code(ask.m_code);
 
-		result = vpn_remote_enroll(m_session, cfg.server_ip.s_addr, cfg.server_port, code);
+		result = vpn_remote_enroll(m_session, &cfg.server_ip, cfg.server_port, code);
 	}
 
 	const bool saved = true;	/* 저장은 서비스가 했다. 못 했으면 result 가 OK 가 아니다 */

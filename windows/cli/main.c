@@ -149,9 +149,14 @@ static int enroll_with_code(const char *server, const char *port, const char *co
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.on_log = on_log;
 
-	if (inet_pton(AF_INET, server, &cfg.server_ip) != 1) {
-		fprintf(stderr, "invalid server ip : %s\n", server);
-		return 1;
+	{
+		wchar_t w[INET6_ADDRSTRLEN + 2];
+
+		if (MultiByteToWideChar(CP_ACP, 0, server, -1, w, INET6_ADDRSTRLEN + 2) == 0 ||
+				tunnel_parse_addr(w, &cfg.server_ip) < 0) {
+			fprintf(stderr, "invalid server ip : %s\n", server);
+			return 1;
+		}
 	}
 	port_num = strtol(port, &end, 10);
 	if (*end != '\0' || port_num <= 0 || port_num > 65535) {

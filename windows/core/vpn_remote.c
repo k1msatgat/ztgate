@@ -463,11 +463,11 @@ int vpn_session_start(vpn_session_t *s, const tunnel_config_t *cfg)
 
 	memset(&c, 0, sizeof(c));
 	wcsncpy(c.adapter_name, cfg->adapter_name, TUNNEL_ADAPTER_NAME_LEN - 1);
-	c.server_ip = cfg->server_ip.s_addr;
+	c.server_ip = cfg->server_ip;
 	c.server_port = cfg->server_port;
 	c.n_alt = (uint16_t)cfg->n_alt;
 	for (int i = 0; i < cfg->n_alt; i++) {
-		c.alt_ips[i] = cfg->alt_ips[i].s_addr;
+		c.alt_ips[i] = cfg->alt_ips[i];
 	}
 
 	if (command(s, IPC_CMD_CONNECT, &c, sizeof(c)) < 0) {
@@ -617,7 +617,7 @@ static int enroll_wait(vpn_session_t *s, uint32_t type, const void *body, uint32
 	return 0;
 }
 
-int vpn_remote_enroll(vpn_session_t *s, uint32_t server_ip, uint16_t server_port, const char *code)
+int vpn_remote_enroll(vpn_session_t *s, const tunnel_addr_t *server_ip, uint16_t server_port, const char *code)
 {
 	ipc_enroll_result_t r;
 	ipc_enroll_t e;
@@ -628,7 +628,7 @@ int vpn_remote_enroll(vpn_session_t *s, uint32_t server_ip, uint16_t server_port
 	}
 
 	memset(&e, 0, sizeof(e));
-	e.server_ip = server_ip;
+	e.server_ip = *server_ip;
 	e.server_port = server_port;
 	strcpy(e.code, code);
 

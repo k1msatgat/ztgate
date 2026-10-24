@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	5	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명 */
+#define IPC_VERSION	6	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -74,10 +74,10 @@ typedef struct ipc_hello {
 
 typedef struct ipc_connect {
 	wchar_t adapter_name[TUNNEL_ADAPTER_NAME_LEN];
-	uint32_t server_ip;	/* network byte order */
+	tunnel_addr_t server_ip;	/* IPv4 또는 IPv6 (v6) */
 	uint16_t server_port;	/* host byte order */
 	uint16_t n_alt;		/* alt_ips 에 쓴 수 (v4) */
-	uint32_t alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
+	tunnel_addr_t alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
 } ipc_connect_t;
 
 /* GUI 가 IdP 의 토큰 엔드포인트에 보낼 증명 (htm POST). 키는 서비스에만 있다 (dpop.h). */
@@ -90,7 +90,7 @@ typedef struct ipc_dpop {
 } ipc_dpop_t;
 
 typedef struct ipc_enroll {
-	uint32_t server_ip;
+	tunnel_addr_t server_ip;
 	uint16_t server_port;
 	char code[IPC_CODE_LEN];
 } ipc_enroll_t;

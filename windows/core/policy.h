@@ -34,8 +34,8 @@ extern "C" {
 
 typedef struct ztgate_policy {
 	int has_servers;
-	struct in_addr server_ip;
-	struct in_addr alt_ips[TUNNEL_ALT_SERVERS];
+	tunnel_addr_t server_ip;
+	tunnel_addr_t alt_ips[TUNNEL_ALT_SERVERS];
 	int n_alt;
 	uint16_t port;			/* 0 이면 정하지 않았다 */
 	wchar_t servers_text[256];	/* 화면에 보일 그대로 */

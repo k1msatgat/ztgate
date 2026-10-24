@@ -122,11 +122,14 @@ int tunnel_login_set(tunnel_login_t *l, const char *token, size_t len);
  * 않으면 다음 서버로 넘어간다. 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다. */
 #define TUNNEL_ALT_SERVERS	3
 
+/* 서버 주소. IPv4 또는 IPv6 (si_family). 포트는 server_port 로 따로 두고 소켓을 열 때 채운다. */
+typedef SOCKADDR_INET tunnel_addr_t;
+
 typedef struct tunnel_config {
 	wchar_t adapter_name[TUNNEL_ADAPTER_NAME_LEN];
-	struct in_addr server_ip;
+	tunnel_addr_t server_ip;
 	uint16_t server_port;		/* host byte order */
-	struct in_addr alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
+	tunnel_addr_t alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
 	int n_alt;
 
 	/* 기기 신원. 호출자가 device_load() 로 읽어 채운다. 포인터가 아니라 배열로 둬서
@@ -199,9 +202,47 @@ int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
  * 보고 와이드 문자열로 직접 고른다. 이 함수는 콘솔 로그용이다. */
 const char *tunnel_verdict_name(int verdict);
 
-/* "10.0.0.10,10.0.0.11" 을 첫 서버와 나머지로 나눈다. 틀리면(주소가 아님, 넷보다 많음) -1. */
-static __inline int tunnel_parse_servers(const wchar_t *list, struct in_addr *first,
-		struct in_addr alt[TUNNEL_ALT_SERVERS], int *n_alt)
+/* 주소 하나: "203.0.113.10", "2001:db8::10", "[2001:db8::10]". 0 성공. */
+static __inline int tunnel_parse_addr(const wchar_t *s, tunnel_addr_t *out)
+{
+	wchar_t host[INET6_ADDRSTRLEN + 2];
+	size_t n = wcslen(s);
+
+	memset(out, 0, sizeof(*out));
+	if (n >= 2 && s[0] == L'[' && s[n - 1] == L']' && n - 2 < sizeof(host) / sizeof(host[0])) {
+		wmemcpy(host, s + 1, n - 2);
+		host[n - 2] = L'\0';
+	}
+	else if (n < sizeof(host) / sizeof(host[0])) {
+		wcscpy_s(host, sizeof(host) / sizeof(host[0]), s);
+	}
+	else {
+		return -1;
+	}
+	if (InetPtonW(AF_INET, host, &out->Ipv4.sin_addr) == 1) {
+		out->si_family = AF_INET;
+		return 0;
+	}
+	if (InetPtonW(AF_INET6, host, &out->Ipv6.sin6_addr) == 1) {
+		out->si_family = AF_INET6;
+		return 0;
+	}
+	return -1;
+}
+
+/* 로그에 쓸 주소 (포트 없이). out 은 INET6_ADDRSTRLEN 이상. */
+static __inline const char *tunnel_addr_str(const tunnel_addr_t *a, char *out, size_t cap)
+{
+	if (!inet_ntop(a->si_family, a->si_family == AF_INET6 ? (const void *)&a->Ipv6.sin6_addr :
+				(const void *)&a->Ipv4.sin_addr, out, cap)) {
+		strcpy_s(out, cap, "?");
+	}
+	return out;
+}
+
+/* "10.0.0.10,10.0.0.11" 을 첫 서버와 나머지로 나눈다 (IPv6 도). 틀리면(주소가 아님, 넷보다 많음) -1. */
+static __inline int tunnel_parse_servers(const wchar_t *list, tunnel_addr_t *first,
+		tunnel_addr_t alt[TUNNEL_ALT_SERVERS], int *n_alt)
 {
 	wchar_t buf[256];
 	wchar_t *tok, *ctx = NULL;
@@ -212,9 +253,9 @@ static __inline int tunnel_parse_servers(const wchar_t *list, struct in_addr *fi
 	}
 	wcscpy_s(buf, sizeof(buf) / sizeof(buf[0]), list);
 	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL; tok = wcstok_s(NULL, L", ", &ctx)) {
-		struct in_addr a;
+		tunnel_addr_t a;
 
-		if (n > TUNNEL_ALT_SERVERS || InetPtonW(AF_INET, tok, &a) != 1) {
+		if (n > TUNNEL_ALT_SERVERS || tunnel_parse_addr(tok, &a) < 0) {
 			return -1;
 		}
 		if (n == 0) {
