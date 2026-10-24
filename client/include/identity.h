@@ -8,9 +8,12 @@
  * (커널 키링은 재부팅하면 사라진다). 그래서 root 만 읽을 수 있는 파일에 둔다. 서버의
  * 기기 목록과 같은 방식이다 — 권한이 0600 보다 넓으면 읽지 않는다.
  *
- *   id(32 hex) key(64 hex)
+ *   id(32 hex) key(64 hex) [server_pub(128 hex)]
  *
- * 한 줄이다. 서버의 기기 목록(devices.conf)의 앞 두 칸과 같은 모양이라 눈으로 맞춰 볼 수 있다. */
+ * 한 줄이다. 서버의 기기 목록(devices.conf)의 앞 두 칸과 같은 모양이라 눈으로 맞춰 볼 수 있다.
+ * 세 번째 칸은 등록 코드로 올라간 기기가 그때 받은 서버 공개키다 (v9). 핸드셰이크에서 서버가
+ * 내미는 공개키가 이것과 다르면 그 답을 받지 않는다 — 사이에 낀 쪽이 공개키를 바꿔 끼워 감싼
+ * 기기 ID 를 보는 것을 막는다. 손으로 올린 기기(enroll 만 한 기기)에는 없다. */
 
 #include <stdint.h>
 
@@ -25,6 +28,8 @@
 typedef struct identity {
 	uint8_t id[DEVICE_ID_LEN];
 	uint8_t key[AUTH_KEY_LEN];
+	uint8_t server_pub[VPN_PUB_LEN_WIRE];
+	int has_server_pub;
 } identity_t;
 
 int identity_load(const char *path, identity_t *out);

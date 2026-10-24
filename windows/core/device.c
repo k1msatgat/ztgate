@@ -10,6 +10,7 @@
 #define DEVICE_REG_PATH	L"Software\\ztgate\\device"
 #define DEVICE_REG_ID	L"id"
 #define DEVICE_REG_KEY	L"key"
+#define DEVICE_REG_SERVER_PUB	L"server_pub"
 
 /* 신원을 두는 곳. 기본은 지금 로그온한 사용자의 것(HKCU)이다. 서비스는 사용자가 아니라
  * 시스템 계정으로 돌고, 로그온한 사람이 없을 때에도 터널을 열어야 하므로 PC 의 것(HKLM)
@@ -103,6 +104,18 @@ int device_load(device_t *out)
 		return DEVICE_ERROR;
 	}
 
+	/* 없으면 고정하지 않는다 (손으로 올린 기기, v9 이전에 등록한 기기). */
+	len = sizeof(out->server_pub);
+	err = RegGetValueW(device_root, DEVICE_REG_PATH, DEVICE_REG_SERVER_PUB,
+			RRF_RT_REG_BINARY, NULL, out->server_pub, &len);
+	if (err == ERROR_SUCCESS && len == sizeof(out->server_pub)) {
+		out->has_server_pub = 1;
+	}
+	else if (err != ERROR_FILE_NOT_FOUND) {
+		SecureZeroMemory(out, sizeof(*out));
+		return DEVICE_ERROR;
+	}
+
 	return DEVICE_OK;
 }
 
@@ -110,8 +123,10 @@ int device_generate(device_t *out)
 {
 	/* rand() 는 쓸 수 없다. 시드와 출력 몇 개로 다음 값을 맞힐 수 있는 생성기라
 	 * 키가 예측된다. OS 의 암호학적 난수 생성기를 쓴다. */
-	return BCRYPT_SUCCESS(BCryptGenRandom(NULL, (PUCHAR)out, sizeof(*out),
-				BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ? DEVICE_OK : DEVICE_ERROR;
+	memset(out, 0, sizeof(*out));
+	return BCRYPT_SUCCESS(BCryptGenRandom(NULL, out->id, sizeof(out->id), BCRYPT_USE_SYSTEM_PREFERRED_RNG)) &&
+		BCRYPT_SUCCESS(BCryptGenRandom(NULL, out->key, sizeof(out->key), BCRYPT_USE_SYSTEM_PREFERRED_RNG)) ?
+		DEVICE_OK : DEVICE_ERROR;
 }
 
 int device_save(const device_t *dev)
@@ -125,7 +140,7 @@ int device_save(const device_t *dev)
 	}
 
 	if (RegCreateKeyExW(device_root, DEVICE_REG_PATH, 0, NULL, 0,
-			KEY_SET_VALUE, NULL, &reg, NULL) != ERROR_SUCCESS) {
+			KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, &reg, NULL) != ERROR_SUCCESS) {
 		goto out;
 	}
 
@@ -134,6 +149,20 @@ int device_save(const device_t *dev)
 			RegSetValueExW(reg, DEVICE_REG_KEY, 0, REG_BINARY,
 				sealed.pbData, sealed.cbData) != ERROR_SUCCESS) {
 		goto out;
+	}
+	/* 새 신원에 서버 공개키가 없으면 예전 신원의 것을 남기지 않는다. */
+	if (dev->has_server_pub) {
+		if (RegSetValueExW(reg, DEVICE_REG_SERVER_PUB, 0, REG_BINARY,
+					dev->server_pub, sizeof(dev->server_pub)) != ERROR_SUCCESS) {
+			goto out;
+		}
+	}
+	else {
+		LSTATUS err = RegDeleteValueW(reg, DEVICE_REG_SERVER_PUB);
+
+		if (err != ERROR_SUCCESS && err != ERROR_FILE_NOT_FOUND) {
+			goto out;
+		}
 	}
 
 	ret = DEVICE_OK;

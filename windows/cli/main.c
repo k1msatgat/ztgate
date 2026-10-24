@@ -166,7 +166,8 @@ static int enroll_with_code(const char *server, const char *port, const char *co
 		return 1;
 	}
 
-	r = tunnel_enroll(&cfg, code, dev.id, dev.key, stop);
+	r = tunnel_enroll(&cfg, code, dev.id, dev.key, dev.server_pub, stop);
+	dev.has_server_pub = r == TUNNEL_ENROLL_OK;
 	CloseHandle(stop);
 
 	switch (r) {
@@ -225,6 +226,8 @@ static int load_identity(tunnel_config_t *cfg)
 
 	memcpy(cfg->device_id, dev.id, sizeof(cfg->device_id));
 	memcpy(cfg->device_key, dev.key, sizeof(cfg->device_key));
+	memcpy(cfg->server_pub, dev.server_pub, sizeof(cfg->server_pub));
+	cfg->has_server_pub = dev.has_server_pub;
 	SecureZeroMemory(&dev, sizeof(dev));
 
 	return 0;

@@ -125,6 +125,9 @@ typedef struct tunnel_config {
 	 * cfg 를 구조체째 복사해도 그대로 따라온다. */
 	uint8_t device_id[DEVICE_ID_LEN];
 	uint8_t device_key[AUTH_KEY_LEN];
+	/* 등록 때 받은 서버 공개키 (device_t). 있으면 CHALLENGE 의 공개키가 이것일 때만 답한다. */
+	uint8_t server_pub[VPN_PUB_LEN_WIRE];
+	int has_server_pub;
 	int log_packets;		/* 0이 아니면 패킷마다 on_log 로 한 줄 */
 
 	void (*on_log)(void *ctx, const char *line);
@@ -168,10 +171,12 @@ typedef enum tunnel_enroll_result {
  * 필요 없다. 응답을 기다리는 동안 블로킹한다 (길어야 십여 초). stop_event 는
  * manual-reset 이벤트여야 하고, signaled 되면 기다리던 것을 그만둔다.
  *
- * id 는 호출자가 device_generate() 로 만든 것이고, OK 를 받은 뒤에 key 와 함께 device_save()
- * 로 저장해야 한다. 순서가 반대면 서버가 받지 않았을 때 예전 신원만 잃는다. */
+ * id 는 호출자가 device_generate() 로 만든 것이고, OK 를 받은 뒤에 key, server_pub 과 함께
+ * device_save() 로 저장해야 한다. 순서가 반대면 서버가 받지 않았을 때 예전 신원만 잃는다.
+ * server_pub 은 서버가 답에 실어 준 서버 공개키다 — 다음 핸드셰이크부터 고정한다. */
 int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
-		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN], HANDLE stop_event);
+		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN],
+		uint8_t server_pub[VPN_PUB_LEN_WIRE], HANDLE stop_event);
 
 /* 폐기 이유의 짧은 영문 이름.
  * 코어는 표시 문자열을 가지지 않는다 — 여기서 한국어를 돌려주면 char* 가 되어

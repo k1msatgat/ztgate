@@ -10,8 +10,10 @@
 #include "crypt.h"
 #include "identity.h"
 
-/* id(32) + 공백 + key(64) + 줄바꿈 */
+/* id(32) + 공백 + key(64) + 줄바꿈. 서버 공개키가 있으면 줄바꿈 앞에 공백 + 128 이 더 붙는다. */
 #define IDENTITY_LINE_LEN	(DEVICE_ID_LEN * 2 + 1 + AUTH_KEY_LEN * 2 + 1)
+#define IDENTITY_PUB_OFF	(DEVICE_ID_LEN * 2 + 1 + AUTH_KEY_LEN * 2)
+#define IDENTITY_LINE_MAX	(IDENTITY_LINE_LEN + 1 + VPN_PUB_LEN_WIRE * 2)
 #define IDENTITY_DIR_MODE	0700
 #define IDENTITY_FILE_MODE	0600
 
@@ -43,7 +45,7 @@ static void hex_encode(const uint8_t *in, size_t len, char *out)
 
 int identity_load(const char *path, identity_t *out)
 {
-	char line[IDENTITY_LINE_LEN + 1];
+	char line[IDENTITY_LINE_MAX + 1];
 	struct stat st;
 	ssize_t n;
 	int fd;
@@ -84,6 +86,15 @@ int identity_load(const char *path, identity_t *out)
 		fprintf(stderr, "%s: expected \"<id hex> <key hex>\"\n", path);
 		goto out;
 	}
+	out->has_server_pub = 0;
+	if (line[IDENTITY_PUB_OFF] == ' ') {
+		if (n < IDENTITY_LINE_MAX - 1 ||
+				hex_decode(line + IDENTITY_PUB_OFF + 1, out->server_pub, VPN_PUB_LEN_WIRE) < 0) {
+			fprintf(stderr, "%s: the third field must be the server's public key (128 hex)\n", path);
+			goto out;
+		}
+		out->has_server_pub = 1;
+	}
 	ret = IDENTITY_OK;
 
 out:
@@ -99,6 +110,7 @@ int identity_generate(identity_t *out)
 			crypt_random(out->key, sizeof(out->key)) < 0) {
 		return IDENTITY_ERROR;
 	}
+	out->has_server_pub = 0;
 
 	return IDENTITY_OK;
 }
@@ -121,7 +133,8 @@ static int sync_dir(const char *dir)
 
 int identity_save(const char *path, const identity_t *dev)
 {
-	char line[IDENTITY_LINE_LEN];
+	char line[IDENTITY_LINE_MAX];
+	size_t len = IDENTITY_LINE_LEN;
 	char tmp[PATH_MAX];
 	char dir_buf[PATH_MAX];
 	char *dir;
@@ -144,7 +157,12 @@ int identity_save(const char *path, const identity_t *dev)
 	hex_encode(dev->id, DEVICE_ID_LEN, line);
 	line[DEVICE_ID_LEN * 2] = ' ';
 	hex_encode(dev->key, AUTH_KEY_LEN, line + DEVICE_ID_LEN * 2 + 1);
-	line[IDENTITY_LINE_LEN - 1] = '\n';
+	if (dev->has_server_pub) {
+		line[IDENTITY_PUB_OFF] = ' ';
+		hex_encode(dev->server_pub, VPN_PUB_LEN_WIRE, line + IDENTITY_PUB_OFF + 1);
+		len = IDENTITY_LINE_MAX;
+	}
+	line[len - 1] = '\n';
 
 	/* 처음부터 0600 으로 만든다. 만든 뒤에 chmod 하면 그 사이에 다른 사람이 열어 둘 수 있다.
 	 * 지난번에 쓰다 만 임시 파일은 지우고 새로 만든다. */
@@ -154,7 +172,7 @@ int identity_save(const char *path, const identity_t *dev)
 		perror(tmp);
 		goto out;
 	}
-	if (write(fd, line, sizeof(line)) != (ssize_t)sizeof(line) || fsync(fd) < 0) {
+	if (write(fd, line, len) != (ssize_t)len || fsync(fd) < 0) {
 		perror(tmp);
 		goto out;
 	}

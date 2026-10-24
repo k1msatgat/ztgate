@@ -21,6 +21,12 @@ extern "C" {
 typedef struct device {
 	uint8_t id[DEVICE_ID_LEN];
 	uint8_t key[AUTH_KEY_LEN];
+
+	/* 등록 코드로 올라갈 때 받은 서버 공개키 (v9). 핸드셰이크에서 서버가 내미는 공개키가 이것과
+	 * 다르면 답하지 않는다 — 사이에 낀 쪽이 바꿔 끼운 공개키로 감싼 기기 ID 를 보지 못하게.
+	 * 손으로 올린 기기에는 없다. 비밀이 아니라서 DPAPI 로 감싸지 않는다. */
+	uint8_t server_pub[VPN_PUB_LEN_WIRE];
+	uint8_t has_server_pub;
 } device_t;
 
 #define DEVICE_OK		0

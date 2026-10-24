@@ -1185,6 +1185,14 @@ static int do_handshake(tunnel_t *t)
 				}
 				hs_emit(t, TUNNEL_DIR_RX, &h, res, n, NULL, 0);
 
+				/* 등록 때 받은 서버 공개키와 다르면 그 공개키로 ID 를 감싸지 않는다. 진짜
+				 * 서버의 CHALLENGE 가 따로 오면 그것에 답한다. */
+				if (t->cfg->has_server_pub &&
+						!crypt_equal(t->cfg->server_pub, body + AUTH_NONCE_LEN, VPN_PUB_LEN)) {
+					tlog(t, "[HS] the server's key is not the one this device enrolled with; ignoring that challenge");
+					continue;
+				}
+
 				if (send_hs_auth(t, &hs, body) < 0) {
 					goto out;
 				}
@@ -1963,7 +1971,8 @@ static int pump_udp(tunnel_t *t)
  * 키를 보낸다. 어댑터는 만들지 않는다 — 등록용 세션으로는 터널을 쓸 수 없고, 그래서
  * 관리자 권한도 필요 없다. */
 int tunnel_enroll(const tunnel_config_t *base, const char *code,
-		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN], HANDLE stop_event)
+		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN],
+		uint8_t server_pub[VPN_PUB_LEN_WIRE], HANDLE stop_event)
 {
 	tunnel_config_t cfg = *base;
 	tunnel_t tunnel;
@@ -1985,6 +1994,8 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 	if (secure_enroll_identity(code, cfg.device_id, cfg.device_key) < 0) {
 		return TUNNEL_ENROLL_BAD_CODE;
 	}
+	/* 아직 서버 공개키를 모른다. 이번만은 CHALLENGE 의 것으로 감싼다. */
+	cfg.has_server_pub = 0;
 
 	/* 이 기기의 고정 키 쌍 (proto.h 의 "기기 등록", v8). 비밀키는 기기 키를 뽑는 데 한 번 쓰고
 	 * 버린다 — 저장하는 것은 그 결과뿐이라 DPAPI 에 두는 신원의 모양이 그대로다. */
@@ -2074,6 +2085,9 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 			if (ret == TUNNEL_ENROLL_OK &&
 					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
 				ret = TUNNEL_ENROLL_ERROR;
+			}
+			if (ret == TUNNEL_ENROLL_OK) {
+				memcpy(server_pub, packet + PKT_HDR_LEN + 1, VPN_PUB_LEN_WIRE);
 			}
 			goto out;
 		}

@@ -340,7 +340,8 @@ static int deny_verified(const handshake_t *hs, const uint8_t key[AUTH_KEY_LEN],
  *   C -> S  AUTH              내 일회용 공개키 + nonce + 감싼 기기 ID + 포스처 + mac
  *   S -> C  RES_HANDSHAKE     세션 idx + 서버의 일회용 공개키 + 설정 + tag   (또는 DENY 와 사유) */
 int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture)
+		const uint8_t key[AUTH_KEY_LEN], const uint8_t *server_pub,
+		const posture_report_t *posture)
 {
 	uint8_t res[BUF_SIZE];
 	const uint8_t *body;
@@ -383,6 +384,13 @@ int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 					/* 한 번의 시도에 AUTH 는 하나다. 중복된 CHALLENGE 에 다시 답하면
 					 * 일회용 키가 바뀌어, 먼저 보낸 AUTH 에 대한 수락을 열지 못한다. */
 					if (body_len < CHALLENGE_PAYLOAD_LEN || hs.auth_sent) {
+						continue;
+					}
+					/* 등록 때 받은 서버 공개키와 다르면 그 공개키로 ID 를 감싸지 않는다. 진짜
+					 * 서버의 CHALLENGE 가 따로 오면 그것에 답한다. */
+					if (server_pub != NULL &&
+							!crypt_equal(server_pub, body + AUTH_NONCE_LEN, VPN_PUB_LEN)) {
+						printf("[HS] the server's key is not the one this device enrolled with; ignoring that challenge\n");
 						continue;
 					}
 					if (send_auth(s, &hs, id, key, body, posture) < 0) {
@@ -451,7 +459,8 @@ out:
 }
 
 int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_ID_LEN],
-		uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture)
+		uint8_t key[AUTH_KEY_LEN], uint8_t server_pub[VPN_PUB_LEN_WIRE],
+		const posture_report_t *posture)
 {
 	uint8_t tmp_id[DEVICE_ID_LEN];
 	uint8_t tmp_key[AUTH_KEY_LEN];
@@ -475,7 +484,8 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 		return SESSION_ENROLL_ERROR;
 	}
 
-	switch (session_handshake(s, tmp_id, tmp_key, posture)) {
+	/* 아직 서버 공개키를 모른다. 이번만은 CHALLENGE 의 것으로 감싼다. */
+	switch (session_handshake(s, tmp_id, tmp_key, NULL, posture)) {
 		case HS_OK:
 			break;
 		case HS_DENIED:
@@ -523,6 +533,9 @@ int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_I
 			if (ret == ENROLL_OK &&
 					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
 				ret = SESSION_ENROLL_ERROR;
+			}
+			if (ret == ENROLL_OK) {
+				memcpy(server_pub, packet + PKT_HDR_LEN + 1, VPN_PUB_LEN_WIRE);
 			}
 			goto out;
 		}

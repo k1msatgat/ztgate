@@ -54,17 +54,21 @@ ssize_t session_recv(vpn_session_t *s, uint8_t *buf, size_t cap);
 int session_pending(const vpn_session_t *s);
 
 /* 등록된 기기로 세션을 연다. 열려 있던 세션은 닫고 새로 연다. posture 는 AUTH 에 실을
- * 이번 보고다. HS_OK / HS_FAIL / HS_DENIED. */
+ * 이번 보고다. server_pub 이 있으면(등록 때 받은 서버 공개키) CHALLENGE 의 공개키가 그것과
+ * 같을 때만 답한다. NULL 이면 CHALLENGE 의 것을 쓴다. HS_OK / HS_FAIL / HS_DENIED. */
 int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
-		const uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture);
+		const uint8_t key[AUTH_KEY_LEN], const uint8_t *server_pub,
+		const posture_report_t *posture);
 
 /* 등록 코드로 서버에 이 기기(id)를 올린다 (proto.h 의 "기기 등록", v8). 코드에서 뽑은
  * 임시 신원으로 평소의 핸드셰이크를 돌고, 그 세션으로 id 와 이번에 만든 고정 공개키를
  * 보낸다. 서버가 받아 주면 답에 실린 서버 공개키와 그 비밀키로 기기 키를 뽑아 key 에 적고
  * 비밀키는 버린다. 끝나면 등록용 세션은 닫는다. 0 이상이면 서버의 답(enroll_status_t),
- * 음수는 SESSION_ENROLL_*. ENROLL_OK 일 때만 key 가 채워진다. */
+ * 음수는 SESSION_ENROLL_*. ENROLL_OK 일 때만 key 와 server_pub(다음부터 고정해 둘 서버
+ * 공개키)이 채워진다. */
 int session_enroll(vpn_session_t *s, const char *code, const uint8_t id[DEVICE_ID_LEN],
-		uint8_t key[AUTH_KEY_LEN], const posture_report_t *posture);
+		uint8_t key[AUTH_KEY_LEN], uint8_t server_pub[VPN_PUB_LEN_WIRE],
+		const posture_report_t *posture);
 
 /* KEEPALIVE: 지금의 포스처를 세션 키로 감싸 보낸다. 성공 0, 실패 -1. */
 int session_send_keepalive(vpn_session_t *s, const posture_report_t *posture);

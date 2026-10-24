@@ -365,7 +365,7 @@ int main(int argc, char *argv[])
 
 	/* 측정용 기기라 포스처는 늘 통과하는 값을 싣는다. */
 	sess.sock = sock;
-	if (session_handshake(&sess, o.dev_id, o.key, &post) != HS_OK) {
+	if (session_handshake(&sess, o.dev_id, o.key, NULL, &post) != HS_OK) {
 		return 1;
 	}
 	tun_ip.s_addr = sess.cfg.tun_ip;

@@ -23,6 +23,8 @@
 #   6. 커넥터 -> 내부망(198.51.100.0/24) 안의 커넥터가 서버로 나가는 세션을 열면, 클라이언트의
 #      ping 이 서버의 tun 이 아니라 커넥터를 지나 자원에 닿는다. 내부망 쪽에서 시작한 연결은
 #      막히고, ACL 은 그대로 걸리며, 커넥터가 내려가면 다시 닿지 않는다.
+#   7. TCP -> 클라이언트 쪽에서 UDP 를 막으면 같은 기기로 TCP(-T) 로 붙는다.
+#   8. 서버 공개키 고정 -> 등록 때 받은 서버 공개키와 다른 공개키를 내미는 서버에는 답하지 않는다.
 #
 # 사용자 네임스페이스 안에서는 nft 규칙셋이 그 네임스페이스의 것이라 방화벽 포스처를
 # 마음대로 켜고 끌 수 있다. 실제 장비에서는 그 장비의 nftables / firewalld 를 읽는다.
@@ -179,6 +181,8 @@ in_cli "$CLIENT" -k "$IDENT" enroll "$SRV_VETH" "$PORT" "$CODE" > "$CLOG" 2>&1
 check "enroll: client reports success" log_has "$CLOG" "enrolled. identity saved"
 check "enroll: identity file is mode 600" test "$(stat -c %a "$IDENT" 2>/dev/null)" = 600
 check "enroll: server added the device to its list" grep -q "$(cut -c1-32 "$IDENT" 2>/dev/null)" "$DEVICES"
+check "enroll: the identity keeps the server's public key" \
+	test "$(awk '{ print NF; exit }' "$IDENT" 2>/dev/null)" = 3
 check "enroll: the code cannot be used twice" sh -c "! nsenter -t $NS_PID -n --preserve-credentials \
 	'$CLIENT' -f -k '$WORK/other' enroll '$SRV_VETH' '$PORT' '$CODE'"
 
@@ -387,6 +391,23 @@ check "tcp: with udp blocked the client connects over tcp" wait_for 10 log_has "
 check "tcp: ping $SRV_TUN through the tunnel over tcp" ping_ok "$SRV_TUN"
 check "tcp: the server sees it as a tcp session" log_has "$SLOG" "(tcp) idx="
 in_cli nft delete table inet e2e_noudp
+
+echo "== 8. server key pinning"
+# 신원 파일의 서버 공개키를 다른 키의 것으로 바꿔 둔다. 서버가 내미는 공개키와 다르므로 클라이언트는
+# CHALLENGE 에 답하지 않는다 (사이에 낀 쪽이 공개키를 바꿔 끼운 것과 같은 장면).
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+other_pub=$("$SERVER" genkey "$WORK/other.key")
+awk -v p="$other_pub" '{ print $1, $2, p }' "$IDENT" > "$WORK/pinned"
+chmod 600 "$WORK/pinned"
+hs_before=$(grep -c "authenticated as $CLI_TUN" "$SLOG")
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$WORK/pinned" -i "$CLI_IF" \
+	run "$SRV_VETH" "$PORT" > "$WORK/client-pin.log" 2>&1 &
+CLI_PID=$!
+check "pinning: a challenge with another server key is not answered" \
+	wait_for 5 log_has "$WORK/client-pin.log" "not the one this device enrolled with"
+check "pinning: so the server sees no AUTH from it" \
+	test "$(grep -c "authenticated as $CLI_TUN" "$SLOG")" = "$hs_before"
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 
 echo
 if [ "$failed" -eq 0 ]; then

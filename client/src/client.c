@@ -165,7 +165,8 @@ static int handshake(client_t *c)
 	printf("[HS] posture: kernel=%u firewall=%s antivirus=%s\n", c->posture.os_build,
 			state_name(c->posture.firewall), state_name(c->posture.antivirus));
 
-	return session_handshake(&c->session, c->ident.id, c->ident.key, &c->posture);
+	return session_handshake(&c->session, c->ident.id, c->ident.key,
+			c->ident.has_server_pub ? c->ident.server_pub : NULL, &c->posture);
 }
 
 /* 서버의 keepalive 응답에는 지금의 터널 설정이 통째로 실려 온다. 경로나 MTU 만 바뀌었으면
@@ -779,9 +780,10 @@ static int enroll(client_t *c, const struct sockaddr_in *server, const char *cod
 	}
 
 	posture_collect(&c->posture);
-	r = session_enroll(&c->session, code, c->ident.id, c->ident.key, &c->posture);
+	r = session_enroll(&c->session, code, c->ident.id, c->ident.key, c->ident.server_pub, &c->posture);
 	switch (r) {
 		case ENROLL_OK:
+			c->ident.has_server_pub = 1;
 			if (identity_save(path, &c->ident) != IDENTITY_OK) {
 				/* 서버에는 올라갔는데 키를 잃었다. 관리자가 목록에서 지우고 새 코드를
 				 * 만들어야 한다. */

@@ -245,6 +245,8 @@ static int tunnel_start(void)
 
 	memcpy(run_cfg.device_id, dev.id, sizeof(run_cfg.device_id));
 	memcpy(run_cfg.device_key, dev.key, sizeof(run_cfg.device_key));
+	memcpy(run_cfg.server_pub, dev.server_pub, sizeof(run_cfg.server_pub));
+	run_cfg.has_server_pub = dev.has_server_pub;
 	SecureZeroMemory(&dev, sizeof(dev));
 
 	run_cfg.log_packets = 0;
@@ -699,7 +701,8 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 
 	result = TUNNEL_ENROLL_ERROR;
 	if (device_generate(&dev) == DEVICE_OK) {
-		result = tunnel_enroll(&cfg, e.code, dev.id, dev.key, stop_all);
+		result = tunnel_enroll(&cfg, e.code, dev.id, dev.key, dev.server_pub, stop_all);
+		dev.has_server_pub = result == TUNNEL_ENROLL_OK;
 
 		/* 서버가 받아 준 뒤에 저장한다. 먼저 저장하면 서버에 닿지 못했을 때 예전 신원만 잃는다. */
 		if (result == TUNNEL_ENROLL_OK && device_save(&dev) != DEVICE_OK) {
