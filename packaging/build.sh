@@ -4,7 +4,7 @@
 #   packaging/build.sh deb [out-dir]      dpkg-deb 로 ztgate-server_<ver>_<arch>.deb
 #   packaging/build.sh rpm [out-dir]      rpmbuild 로 ztgate-server-<ver>-1.<arch>.rpm
 #
-# 먼저 make server 로 빌드해 둔다. 버전은 CHANGELOG 와 같게 VERSION 으로 준다 (기본 0.8.0).
+# 먼저 make server 로 빌드해 둔다. 버전은 CHANGELOG 와 같게 VERSION 으로 준다 (기본 0.9.0).
 # 의존: libssl (OpenSSL 3 의 libcrypto), iproute2(ip), nftables(서버 뒤로 내보낼 때), python3(도구).
 # node 는 ztgate_ctl 에만 필요해 권장으로 둔다.
 set -eu
@@ -12,7 +12,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KIND=${1:?usage: build.sh deb|rpm [out-dir]}
 OUT=${2:-$ROOT/packaging/out}
-VERSION=${VERSION:-0.8.0}
+VERSION=${VERSION:-0.9.0}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT"

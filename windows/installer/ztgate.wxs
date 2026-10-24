@@ -19,7 +19,7 @@
      xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
 
   <?ifndef Version?>
-  <?define Version = "0.8.0"?>
+  <?define Version = "0.9.0"?>
   <?endif?>
   <?ifndef BinDir?>
   <?define BinDir = "..\build\Release"?>

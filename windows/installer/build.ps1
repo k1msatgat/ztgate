@@ -5,7 +5,7 @@
 # WiX 3 은 GitHub 의 windows-2022 러너에 깔려 있고 그 자리를 WIX 환경 변수가 가리킨다. 다른
 # 곳에서는 wix314-binaries.zip 을 풀어 그 폴더를 -Wix 로 준다 (설치하지 않아도 된다).
 param(
-	[string]$Version = '0.8.0',
+	[string]$Version = '0.9.0',
 	[string]$Wix = ''
 )
 $ErrorActionPreference = 'Stop'
