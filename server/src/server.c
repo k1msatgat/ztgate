@@ -1376,7 +1376,8 @@ static int tun_open_queue(char *name)
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = IFF_TUN | IFF_NO_PI | IFF_MULTI_QUEUE;
 	if (*name) {
-		strncpy(ifr.ifr_name, name, IFNAMSIZ - 1);
+		/* ifr 는 위에서 0 으로 채웠다. 끝의 NUL 자리 하나를 남기고 옮긴다. */
+		memcpy(ifr.ifr_name, name, strnlen(name, IFNAMSIZ - 1));
 	}
 	if (ioctl(fd, TUNSETIFF, (void *)&ifr) < 0) {
 		close(fd);
