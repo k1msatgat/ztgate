@@ -105,6 +105,7 @@
     <ClCompile Include="..\core\crypt.c" />
     <ClCompile Include="..\core\device.c" />
     <ClCompile Include="..\core\ipc.c" />
+    <ClCompile Include="..\core\filelog.c" />
     <ClCompile Include="..\..\lib\common\src\proto.c" />
     <ClCompile Include="..\..\lib\common\src\secure.c" />
   </ItemGroup>

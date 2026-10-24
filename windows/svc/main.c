@@ -29,6 +29,7 @@
 #include "device.h"
 #include "crypt.h"
 #include "ipc.h"
+#include "filelog.h"
 
 #define SERVICE_NAME	L"ztgate"
 #define SERVICE_DISPLAY	L"ztgate tunnel"
@@ -96,6 +97,7 @@ static void push_log(const char *line)
 	log_seq++;
 	LeaveCriticalSection(&lock);
 
+	filelog_write(line);
 	if (interactive) {
 		printf("%s\n", line);
 		fflush(stdout);
@@ -961,6 +963,8 @@ static void WINAPI service_main(DWORD argc, LPWSTR *argv)
 	if (!scm) {
 		return;
 	}
+	filelog_open();
+	filelog_install_crash_handler();
 
 	scm_report(SERVICE_START_PENDING);
 	if (service_init() < 0) {
@@ -970,6 +974,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR *argv)
 
 	scm_report(SERVICE_RUNNING);
 	service_run();
+	filelog_close();
 	scm_report(SERVICE_STOPPED);
 }
 
