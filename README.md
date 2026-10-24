@@ -434,6 +434,18 @@ sudo systemctl enable --now ztgate
 claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라이언트 쪽 (선택)
 ```
 
+### 웹 관리 콘솔
+
+브라우저로 지금 붙어 있는 세션(기기, 사용자, 출발지, 포스처, 주고받은 양), 기기 목록과 지우기, 등록 코드 만들기 / 거두기, ACL, 감사 로그를 봅니다 (`tools/console/ztgate_console.py`, 표준 라이브러리만). 일은 모두 `ztgate_ctl` 이 하므로 검증, 파일 잠금, 서버 다시 읽기가 MCP 와 같습니다.
+
+```bash
+sudo systemctl enable --now ztgate-console          # 패키지에 들어 있다. 127.0.0.1:9470
+sudo cat /etc/ztgate/console.token                   # 로그인 토큰 (처음 뜰 때 만든다, 600)
+ssh -L 9470:127.0.0.1:9470 <서버>                    # 관리자 PC 에서. 브라우저로 http://127.0.0.1:9470/
+```
+
+기본은 127.0.0.1 에서만 듣습니다. 밖에 열려면 `--tls-cert` / `--tls-key` 로 TLS 를 켜고 `-l 0.0.0.0:9470` 입니다. 쿠키는 HttpOnly / SameSite=Strict (TLS 면 Secure), 바꾸는 요청은 세션마다의 CSRF 값이 맞아야 받고, 로그인 실패는 1초에 한 번까지입니다. 화면은 다른 사이트의 프레임에 들어가지 않습니다. 규칙을 고치는 것은 아직 MCP 나 파일로 합니다. `test/console_check.py` 가 가짜 `ztgate_ctl` 앞에서 22가지를 봅니다 (CI).
+
 ### 서버 여러 대 (장애 조치)
 
 서버를 두 대 이상 두고 클라이언트에 모두 적으면, 지금 서버가 답하지 않을 때 다음 서버로 넘어갑니다.
