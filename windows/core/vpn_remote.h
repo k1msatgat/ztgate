@@ -57,6 +57,10 @@ int vpn_remote_enroll(vpn_session_t *s, uint32_t server_ip, uint16_t server_port
  * 손으로 옮겨 적는다. 키를 볼 수 있는 것은 이 한 번뿐이다. DEVICE_OK / DEVICE_ERROR. */
 int vpn_remote_enroll_manual(vpn_session_t *s, device_t *out);
 
+/* IdP 의 토큰 엔드포인트 htu 에 보낼 DPoP 증명 (서비스가 이 PC 의 키로 만든다). 블로킹 (길어야 5초).
+ * 0 성공. */
+int vpn_remote_dpop(vpn_session_t *s, const char *htu, char *out, size_t cap);
+
 /* 사용자의 토큰(JWT)을 서비스에 건넨다. 서비스가 세션 안으로 서버에 보내고, 서버의 답은
  * WM_VPN_LOGIN 으로 알게 된다. 토큰은 이 프로그램이 서비스에 붙어 있는 동안만 쓰인다 —
  * 서비스에 다시 붙으면(서비스 재시작) 다시 건네야 한다. 0 성공, -1 실패. */

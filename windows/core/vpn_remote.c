@@ -37,6 +37,9 @@ struct vpn_session {
 	/* 등록의 답을 기다리는 자리. */
 	HANDLE enroll_done;	/* manual-reset */
 	ipc_enroll_result_t enroll_result;
+	HANDLE dpop_done;	/* manual-reset */
+	ipc_dpop_t dpop;
+	CRITICAL_SECTION dpop_lock;	/* 증명 요청은 한 번에 하나 */
 
 	ipc_login_t login;	/* 서비스가 마지막으로 알려 준 로그인 상태 */
 };
@@ -246,6 +249,16 @@ static int on_message(vpn_session_t *s, const uint8_t *msg, DWORD n)
 		LeaveCriticalSection(&s->lock);
 		SetEvent(s->enroll_done);
 		break;
+	case IPC_EVT_DPOP:
+		if (h.len != sizeof(s->dpop)) {
+			return -1;
+		}
+		EnterCriticalSection(&s->lock);
+		memcpy(&s->dpop, body, sizeof(s->dpop));
+		s->dpop.proof[sizeof(s->dpop.proof) - 1] = '\0';
+		LeaveCriticalSection(&s->lock);
+		SetEvent(s->dpop_done);
+		break;
 	case IPC_EVT_ERROR:
 		on_error(s, body, h.len);
 		break;
@@ -394,7 +407,9 @@ vpn_session_t *vpn_session_create(HWND notify)
 	s->ring = (tunnel_packet_t *)calloc(VPN_PACKET_RING, sizeof(*s->ring));
 	s->quit = CreateEventW(NULL, TRUE, FALSE, NULL);
 	s->enroll_done = CreateEventW(NULL, TRUE, FALSE, NULL);
-	if (s->ring && s->quit && s->enroll_done) {
+	s->dpop_done = CreateEventW(NULL, TRUE, FALSE, NULL);
+	InitializeCriticalSection(&s->dpop_lock);
+	if (s->ring && s->quit && s->enroll_done && s->dpop_done) {
 		s->thread = CreateThread(NULL, 0, reader_main, s, 0, NULL);
 	}
 
@@ -405,7 +420,11 @@ vpn_session_t *vpn_session_create(HWND notify)
 		if (s->enroll_done) {
 			CloseHandle(s->enroll_done);
 		}
+		if (s->dpop_done) {
+			CloseHandle(s->dpop_done);
+		}
 		free(s->ring);
+		DeleteCriticalSection(&s->dpop_lock);
 		DeleteCriticalSection(&s->lock);
 		free(s);
 		return NULL;
@@ -426,6 +445,8 @@ void vpn_session_destroy(vpn_session_t *s)
 	CloseHandle(s->thread);
 	CloseHandle(s->quit);
 	CloseHandle(s->enroll_done);
+	CloseHandle(s->dpop_done);
+	DeleteCriticalSection(&s->dpop_lock);
 	DeleteCriticalSection(&s->lock);
 	SecureZeroMemory(&s->enroll_result, sizeof(s->enroll_result));
 	free(s->ring);
@@ -643,6 +664,32 @@ int vpn_remote_enroll_manual(vpn_session_t *s, device_t *out)
 	}
 	SecureZeroMemory(&r, sizeof(r));
 
+	return ret;
+}
+
+int vpn_remote_dpop(vpn_session_t *s, const char *htu, char *out, size_t cap)
+{
+	ipc_dpop_req_t q;
+	int ret = -1;
+
+	if (!s || !htu || strlen(htu) >= sizeof(q.htu) || cap == 0) {
+		return -1;
+	}
+	memset(&q, 0, sizeof(q));
+	strcpy(q.htu, htu);
+
+	EnterCriticalSection(&s->dpop_lock);
+	ResetEvent(s->dpop_done);
+	if (command(s, IPC_CMD_DPOP, &q, sizeof(q)) == 0 &&
+			WaitForSingleObject(s->dpop_done, 5000) == WAIT_OBJECT_0) {
+		EnterCriticalSection(&s->lock);
+		if (s->dpop.proof[0] != '\0' && strlen(s->dpop.proof) < cap) {
+			strcpy(out, s->dpop.proof);
+			ret = 0;
+		}
+		LeaveCriticalSection(&s->lock);
+	}
+	LeaveCriticalSection(&s->dpop_lock);
 	return ret;
 }
 

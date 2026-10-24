@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	4	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿 */
+#define IPC_VERSION	5	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -48,6 +48,7 @@ typedef enum ipc_type {
 	IPC_CMD_ENROLL_MANUAL,		/* 내용 없음. 서비스가 ID 와 키를 만들어 돌려준다 */
 	IPC_CMD_LOGIN,			/* 사용자의 토큰 (JWT 글자들, 끝의 0 없이) */
 	IPC_CMD_LOGOUT,			/* 내용 없음 */
+	IPC_CMD_DPOP,			/* ipc_dpop_req. 서비스가 이 PC 의 키로 IdP 에 보낼 DPoP 증명을 만든다 */
 
 	/* 서비스 -> GUI */
 	IPC_EVT_HELLO = 100,		/* ipc_hello. 이 뒤로 지금의 상태와 밀린 기록이 온다 */
@@ -57,7 +58,8 @@ typedef enum ipc_type {
 	IPC_EVT_PACKETS,		/* ipc_packets 뒤에 tunnel_packet_t 가 count 개 */
 	IPC_EVT_ENROLL_RESULT,		/* ipc_enroll_result */
 	IPC_EVT_ERROR,			/* ipc_error. 명령을 받아 줄 수 없다 */
-	IPC_EVT_LOGIN			/* ipc_login. 로그인 상태가 바뀌었다 */
+	IPC_EVT_LOGIN,			/* ipc_login. 로그인 상태가 바뀌었다 */
+	IPC_EVT_DPOP			/* ipc_dpop. IPC_CMD_DPOP 의 답 */
 } ipc_type_t;
 
 typedef struct ipc_header {
@@ -77,6 +79,15 @@ typedef struct ipc_connect {
 	uint16_t n_alt;		/* alt_ips 에 쓴 수 (v4) */
 	uint32_t alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
 } ipc_connect_t;
+
+/* GUI 가 IdP 의 토큰 엔드포인트에 보낼 증명 (htm POST). 키는 서비스에만 있다 (dpop.h). */
+typedef struct ipc_dpop_req {
+	char htu[512];
+} ipc_dpop_req_t;
+
+typedef struct ipc_dpop {
+	char proof[1024];	/* 비어 있으면 만들지 못했다 */
+} ipc_dpop_t;
 
 typedef struct ipc_enroll {
 	uint32_t server_ip;

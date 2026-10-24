@@ -33,6 +33,7 @@
 #include "policy.h"
 #include "wfp.h"
 #include "update.h"
+#include "dpop.h"
 
 #define SERVICE_NAME	L"ztgate"
 #define SERVICE_DISPLAY	L"ztgate tunnel"
@@ -851,6 +852,24 @@ static int cmd_logout(void)
 }
 
 /* 0 이면 계속, -1 이면 이 GUI 와는 끝이다. */
+static int cmd_dpop(const uint8_t *body, uint32_t len)
+{
+	ipc_dpop_req_t q;
+	ipc_dpop_t r;
+
+	if (len != sizeof(q)) {
+		return send_error(IPC_ERR_BAD_REQUEST);
+	}
+	memcpy(&q, body, sizeof(q));
+	q.htu[sizeof(q.htu) - 1] = '\0';
+	memset(&r, 0, sizeof(r));
+	if (dpop_make_proof(1, "POST", q.htu, NULL, 0, r.proof, sizeof(r.proof)) < 0) {
+		r.proof[0] = '\0';
+		slog("dpop: cannot make a proof for the IdP");
+	}
+	return send_msg(IPC_EVT_DPOP, &r, sizeof(r));
+}
+
 static int client_message(uint32_t n)
 {
 	ipc_header_t h;
@@ -875,6 +894,7 @@ static int client_message(uint32_t n)
 	case IPC_CMD_ENROLL_MANUAL:	return cmd_enroll_manual();
 	case IPC_CMD_LOGIN:		return cmd_login(body, h.len);
 	case IPC_CMD_LOGOUT:		return cmd_logout();
+	case IPC_CMD_DPOP:		return cmd_dpop(body, h.len);
 	default:			return send_error(IPC_ERR_BAD_REQUEST);
 	}
 }

@@ -10,6 +10,7 @@
 #include "crypt.h"
 #include "device.h"
 #include "tpm.h"
+#include "dpop.h"
 
 static HANDLE stop_event;
 
@@ -263,6 +264,17 @@ int main(int argc, char *argv[])
 	}
 	if (argc == 2 && strcmp(argv[1], "device") == 0) {
 		return show_device();
+	}
+	/* 이 사용자의 DPoP 키로 LOGIN 증명 한 줄 (token 의 ath). 서버의 verify-token 으로 맞춰 보는 데 쓴다. */
+	if (argc == 3 && strcmp(argv[1], "dpop-proof") == 0) {
+		char proof[1024];
+
+		if (dpop_make_proof(0, DPOP_HTM, DPOP_HTU, argv[2], strlen(argv[2]), proof, sizeof(proof)) < 0) {
+			fprintf(stderr, "cannot make a DPoP proof\n");
+			return 1;
+		}
+		printf("%s\n", proof);
+		return 0;
 	}
 	if (argc == 2 && strcmp(argv[1], "tpm-selftest") == 0) {
 		int r = tpm_selftest();

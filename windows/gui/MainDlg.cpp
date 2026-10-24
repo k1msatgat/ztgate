@@ -850,6 +850,7 @@ static CString LoginStatusText(uint32_t status)
 	case LOGIN_WRONG_TOKEN:	return _T("다른 서비스에 발급된 토큰");
 	case LOGIN_EXPIRED:	return _T("토큰이 만료됨");
 	case LOGIN_BAD_USER:	return _T("쓸 수 없는 사용자 이름");
+	case LOGIN_DPOP:	return _T("기기 키 증명이 없거나 틀림");
 	default:		return _T("알 수 없는 이유");
 	}
 }
@@ -1243,6 +1244,17 @@ oidc::Config CMainDlg::LoginConfig() const
 	cfg.issuer = m_issuer;
 	cfg.client_id = m_client_id;
 	cfg.scope = m_scope;
+	/* 로그인 스레드에서 불린다. 서비스와의 연결(m_session)은 여러 스레드에서 써도 된다. */
+	vpn_session_t *session = m_session;
+	cfg.dpop = [session](const std::string &htu, std::string *proof) {
+		char buf[1024];
+
+		if (vpn_remote_dpop(session, htu.c_str(), buf, sizeof(buf)) != 0) {
+			return false;
+		}
+		*proof = buf;
+		return true;
+	};
 
 	return cfg;
 }

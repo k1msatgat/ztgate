@@ -14,6 +14,8 @@
 #include "posture.h"
 #include "secure.h"
 #include "tunnel.h"
+#include "dpop.h"
+#include "device.h"
 
 #define HS_TIMEOUT_MSEC 1000
 #define HS_RETRY 5
@@ -911,6 +913,7 @@ static const char *login_status_name(uint8_t status)
 	case LOGIN_WRONG_TOKEN:	return "token is for another issuer or audience";
 	case LOGIN_EXPIRED:	return "token expired or not yet valid";
 	case LOGIN_BAD_USER:	return "no usable user name in the token";
+	case LOGIN_DPOP:	return "the token is bound to a device key and the proof is missing or wrong";
 	default:		return "?";
 	}
 }
@@ -1632,6 +1635,20 @@ static void login_tick(tunnel_t *t, uint64_t now)
 
 	if (len == 0) {
 		return;
+	}
+
+	/* 이 PC 의 DPoP 키로 증명을 붙인다 (proto.h 의 "DPoP"). 토큰이 그 키에 묶여 있지 않으면 서버는
+	 * 보지 않는다. 한 통에 들어가지 않으면 토큰만 보낸다. */
+	{
+		char proof[1024];
+		int pl = dpop_make_proof(device_machine_store(), DPOP_HTM, DPOP_HTU, (const char *)packet + PKT_HDR_LEN, len,
+				proof, sizeof(proof));
+
+		if (pl > 0 && len + 1 + (uint32_t)pl <= LOGIN_TOKEN_MAX) {
+			packet[PKT_HDR_LEN + len] = ' ';
+			memcpy(packet + PKT_HDR_LEN + len + 1, proof, (size_t)pl);
+			len += 1 + (uint32_t)pl;
+		}
 	}
 
 	counter = session->secure.tx_counter;

@@ -21,6 +21,7 @@
  * Login / Refresh 는 블로킹이다 (네트워크, 사람의 로그인). 워커 스레드에서 부른다.
  * SaveRefresh / LoadRefresh / ForgetRefresh 는 앱의 레지스트리를 쓰므로 UI 스레드에서 부른다. */
 
+#include <functional>
 #include <string>
 
 namespace oidc {
@@ -30,6 +31,10 @@ struct Config {
 	CString client_id;	/* IdP 에 등록한 공개 클라이언트 (client secret 없음) */
 	CString scope;		/* 비어 있으면 "openid". refresh token 을 받으려면 IdP 에 따라
 				 * offline_access 를, 서버용 access token 을 받으려면 그 API 의 scope 를 더한다 */
+
+	/* 토큰 엔드포인트(htu)에 보낼 DPoP 증명을 만든다 (RFC 9449, 키는 서비스에 — dpop.h). 있으면 토큰
+	 * 요청마다 DPoP 헤더로 싣고, IdP 는 이 PC 의 키에 묶인 토큰을 준다. 비어 있거나 false 면 싣지 않는다. */
+	std::function<bool(const std::string &htu, std::string *proof)> dpop;
 };
 
 struct Tokens {

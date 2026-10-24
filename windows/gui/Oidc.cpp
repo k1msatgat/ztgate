@@ -215,7 +215,8 @@ struct Response {
 	~Response() { Wipe(body); }	/* 토큰이 들어 있다 */
 };
 
-Result Http(const std::string &url, const std::string *form, Response *r, CString *detail)
+Result Http(const std::string &url, const std::string *form, Response *r, CString *detail,
+		const std::string *dpop = nullptr)
 {
 	Url u;
 	Handle session, conn, req;
@@ -253,8 +254,12 @@ Result Http(const std::string &url, const std::string *form, Response *r, CStrin
 	}
 
 	if (form) {
-		ok = WinHttpSendRequest(req.h,
-				L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n",
+		std::wstring headers = L"Content-Type: application/x-www-form-urlencoded\r\nAccept: application/json\r\n";
+
+		if (dpop && !dpop->empty()) {
+			headers += L"DPoP: " + Wide(*dpop) + L"\r\n";
+		}
+		ok = WinHttpSendRequest(req.h, headers.c_str(),
 				(DWORD)-1L, const_cast<char *>(form->data()), (DWORD)form->size(), (DWORD)form->size(), 0);
 	}
 	else {
@@ -404,14 +409,19 @@ Result Discover(const Config &cfg, Endpoints *ep, CString *detail)
 	return RESULT_OK;
 }
 
-Result TokenRequest(const Endpoints &ep, const std::string &form, Tokens *t, CString *detail)
+Result TokenRequest(const Config &cfg, const Endpoints &ep, const std::string &form, Tokens *t, CString *detail)
 {
+	std::string proof;
 	Response r;
 	Json j;
 	__int64 in = 0;
 	Result res;
 
-	res = Http(ep.token, &form, &r, detail);
+	/* 증명을 만들지 못하면(서비스가 없다) 싣지 않고 보낸다 — 그 토큰은 묶이지 않는다. */
+	if (cfg.dpop && !cfg.dpop(ep.token, &proof)) {
+		proof.clear();
+	}
+	res = Http(ep.token, &form, &r, detail, &proof);
 	if (res != RESULT_OK) {
 		return res;
 	}
@@ -732,7 +742,7 @@ Outcome Login(const Config &cfg, HANDLE cancel)
 		"&redirect_uri=" + Encode(redirect) +
 		"&client_id=" + Encode(client) +
 		"&code_verifier=" + verifier;
-	o.result = TokenRequest(ep, form, &o.tokens, &o.detail);
+	o.result = TokenRequest(cfg, ep, form, &o.tokens, &o.detail);
 
 	Wipe(form);
 	Wipe(code);
@@ -756,7 +766,7 @@ Outcome Refresh(const Config &cfg, const std::string &refresh_token, HANDLE canc
 
 	form = "grant_type=refresh_token&refresh_token=" + Encode(refresh_token) +
 		"&client_id=" + Encode(Utf8(cfg.client_id));
-	o.result = TokenRequest(ep, form, &o.tokens, &o.detail);
+	o.result = TokenRequest(cfg, ep, form, &o.tokens, &o.detail);
 	Wipe(form);
 
 	/* refresh token 을 새로 주지 않는 IdP 도 있다. 그때는 쓰던 것을 계속 쓴다. */
