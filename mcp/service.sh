@@ -76,6 +76,15 @@ run)
 	# -k: 서버 키. 등록 코드로 올라오는 기기(공개키 기기)의 키를 그것으로 뽑는다. install.sh 가 만든다.
 	args=(-s /run/ztgate/status.sock -a /var/log/ztgate/audit.log -e "$ETC/enroll.conf" -k "$ETC/server.key" -n "$PREFIX" -m "$MTU")
 
+	# TCP_PORT=443: UDP 가 막힌 곳의 클라이언트를 TCP 로도 받는다 (-t). 그 포트를 방화벽에서 연다.
+	if [ -n "${TCP_PORT:-}" ]; then
+		args+=(-t "$TCP_PORT")
+	fi
+	# WORKERS=N: 워커 N 개 (-w). 기본 1.
+	if [ -n "${WORKERS:-}" ]; then
+		args+=(-w "$WORKERS")
+	fi
+
 	# STATEFUL=1: 클라이언트로 가는 패킷은 그 클라이언트가 연 흐름의 답만 들인다 (-F).
 	if [ "${STATEFUL:-0}" = 1 ]; then
 		args+=(-F)

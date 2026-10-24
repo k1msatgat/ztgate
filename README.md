@@ -227,6 +227,9 @@ any            any              any    any    deny
 | `-d <file>` | 내부 DNS (아래 "내부 DNS") |
 | `-L <초>` | 세션 키의 수명 (기본 3600) |
 | `-v` | 통과한 패킷마다 로그 한 줄 (시험과 진단용) |
+| `-w <N>` | 워커 N 개 (기본 1). 아래 "성능" |
+| `-F` | 상태 추적: 클라이언트로 가는 패킷은 그 클라이언트가 연 흐름의 답만 |
+| `-t <port>` | TCP 로도 받는다 (예: 443). UDP 가 막힌 네트워크의 클라이언트가 `vpn_client -T <port>` 로 붙는다. 같은 패킷에 길이(2바이트)만 붙인다. TCP 위에 TCP 를 실으면 손실 때 느려지므로 UDP 가 되는 곳에서는 UDP 를 쓴다. Windows 클라이언트는 아직 TCP 를 쓰지 않는다 |
 
 </details>
 
@@ -386,7 +389,7 @@ sudo systemctl enable --now ztgate
 
 | 경로 | 내용 |
 |---|---|
-| `/etc/ztgate/server.env` | `PORT`, `TUN_IP`, `PREFIX`, `MTU`, `FORWARD_OUT`(서버 뒤로 내보낼 인터페이스, 기본 꺼짐), `SESSION_LIFETIME`(세션 키의 수명, 초, 기본 3600) |
+| `/etc/ztgate/server.env` | `PORT`, `TUN_IP`, `PREFIX`, `MTU`, `FORWARD_OUT`(서버 뒤로 내보낼 인터페이스, 기본 꺼짐), `SESSION_LIFETIME`(세션 키의 수명, 초, 기본 3600), `TCP_PORT`(TCP 로도 받기, `-t`), `WORKERS`(`-w`), `STATEFUL=1`(`-F`) |
 | `/etc/ztgate/devices.conf` | 기기 목록. 등록 코드로 온 기기를 서버가 직접 적는다 |
 | `/etc/ztgate/enroll.conf` | 등록 코드의 대기 목록 |
 | `/etc/ztgate/acl.conf` | 있으면 ACL이 켜진다 |
@@ -1161,6 +1164,8 @@ ztgate/
 | ACL 거부 통지 — `server.c` 의 `send_prohibited`(ICMP 3/13, 세션마다 1초 10개), 시험 |
 | Windows 설치 파일 — `windows/installer/ztgate.wxs`, `build.ps1`, CI 의 MSI 단계, 실행 파일의 버전 정보(`windows/version.rc`) |
 | Windows 서비스의 로그 파일과 덤프 — `windows/core/filelog.c` |
+| TCP 대체 전송 — `server/src/tcp.c`(틀, 연결마다 잠금과 쓰기 버퍼), 출발지 표시와 `net_send`, Linux 클라이언트의 `session_recv` / `-T` 와 다시 열기, 시험. 핸들러를 바꾸지 않고 TCP 연결을 sockaddr_in 의 한 종류로 표시하는 방식은 AI가 제안 |
+| 상태 추적 — `server/src/flow.c`, `-F`, 시험 |
 | 서버 워커 여럿 — `server.c` 의 `udp_in` / `udp_data` / `udp_control` / `tun_in` 분리, `table_lock` 과 `peer->lock`, `SO_REUSEPORT` / `IFF_MULTI_QUEUE`, `bench_workers.sh`, 시험의 `ZTGATE_WORKERS`. 두 세션의 잠금을 한꺼번에 쥐지 않는 규칙(커넥터 중계의 교착 방지)은 AI가 제안 |
 | 내부 DNS (프로토콜 v7) — `net_config` 의 DNS 칸(`proto.c`), `server/src/dns.c` 와 `-d`, Linux 의 resolvectl, Windows 의 NRPT(`nrpt_*`), 시험. 분할 DNS 로 하고 모든 이름을 회사로 보내지 않는 것은 AI가 제안 |
 | Windows 네트워크 변화 감지 — `core/tunnel.c` 의 `net_watch_*` / `net_tick`, 절전 복귀 뒤 실패한 재핸드셰이크의 즉시 재시도 |
