@@ -194,6 +194,23 @@ static uint8_t collect_antivirus(void)
  * 그대로 얹지 않고 1분 동안 같은 답을 쓴다. */
 #define DISK_CACHE_MS	60000
 
+/* 관리자 권한(또는 SYSTEM)으로 도는가. */
+static int process_elevated(void)
+{
+	TOKEN_ELEVATION e;
+	HANDLE tok;
+	DWORD len = 0;
+	int up = 0;
+
+	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok)) {
+		if (GetTokenInformation(tok, TokenElevation, &e, sizeof(e), &len)) {
+			up = e.TokenIsElevated != 0;
+		}
+		CloseHandle(tok);
+	}
+	return up;
+}
+
 static uint8_t disk_from_wmi(const wchar_t *drive)
 {
 	IWbemLocator *loc = NULL;
@@ -300,7 +317,9 @@ static uint8_t collect_disk(void)
 	if (FAILED(init) && init != RPC_E_CHANGED_MODE) {
 		return POSTURE_UNKNOWN;
 	}
-	state = disk_from_wmi(drive);
+	/* 관리자가 아니면 WMI 는 거부를 바로 알려 주지 않고 시간 제한(5초)까지 기다린다. 핸드셰이크의
+	 * AUTH 를 만드는 중에 그만큼 멈추면 서버가 준 nonce 의 수명이 지나 버린다. 권한이 없으면 묻지 않는다. */
+	state = process_elevated() ? disk_from_wmi(drive) : POSTURE_UNKNOWN;
 	if (state == POSTURE_UNKNOWN) {
 		state = disk_from_shell(drive);
 	}
