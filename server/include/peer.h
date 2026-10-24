@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 
 #include "proto.h"
+#include "tcp.h"
 #include "secure.h"
 #include "policy.h"
 
@@ -39,7 +40,7 @@ typedef struct peer {
     uint32_t session_idx;
     secure_session_t secure;	/* 세션 키, 보낼 counter, 받은 counter 의 창 */
     struct in_addr inner;
-    struct sockaddr_in outer;
+    net_ep_t outer;
     socklen_t outer_len;
     time_t last_seen;	/* CLOCK_MONOTONIC 초 */
 
@@ -84,11 +85,11 @@ typedef struct peer {
 } peer_t;
 
 void peer_check_expired(void);
-void peer_touch(peer_t *peer, const struct sockaddr_in *outer, socklen_t len);
+void peer_touch(peer_t *peer, const net_ep_t *outer, socklen_t len);
 void peer_init(void);
 /* 인증을 마친 기기 id 의 세션을 터널 주소 inner 에 연다. */
 peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
-                        const struct sockaddr_in *outer, socklen_t len);
+                        const net_ep_t *outer, socklen_t len);
 peer_t *peer_find_idx(uint32_t idx);
 /* reason 은 감사 로그에 남는 단어다 (audit.h). */
 void peer_drop(peer_t *peer, const char *reason);

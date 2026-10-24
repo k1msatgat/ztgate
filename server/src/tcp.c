@@ -21,7 +21,7 @@ typedef struct conn {
 	pthread_mutex_t lock;	/* fd, gen, wbuf 를 지킨다 (쓰기는 어느 워커든 한다) */
 	int fd;			/* -1 이면 빈 자리 */
 	uint32_t gen;		/* 자리를 다시 쓸 때마다 는다. 닫힌 연결로 보내던 것이 새 연결로 가지 않게 */
-	struct sockaddr_in peer;
+	net_ep_t peer;
 	uint8_t rbuf[FRAME_HDR + BUF_SIZE];
 	size_t rlen;
 	uint8_t *wbuf;		/* 못 보낸 것. 쌓일 때만 잡는다 */
@@ -54,21 +54,23 @@ static void init(void)
 
 int tcp_listen(uint16_t port)
 {
-	struct sockaddr_in a;
+	struct sockaddr_in6 a;
+	int off = 0;
 	int one = 1;
 	int fd;
 
 	init();
-	fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	fd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
 	if (fd < 0) {
 		perror("tcp socket");
 		return -1;
 	}
 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 	memset(&a, 0, sizeof(a));
-	a.sin_family = AF_INET;
-	a.sin_addr.s_addr = htonl(INADDR_ANY);
-	a.sin_port = htons(port);
+	setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));	/* IPv4 도 받는다 */
+	a.sin6_family = AF_INET6;
+	a.sin6_addr = in6addr_any;
+	a.sin6_port = htons(port);
 	if (bind(fd, (struct sockaddr *)&a, sizeof(a)) < 0 || listen(fd, 128) < 0) {
 		perror("tcp bind / listen");
 		close(fd);
@@ -78,13 +80,13 @@ int tcp_listen(uint16_t port)
 }
 
 /* 이 연결을 가리키는 "주소". tcp.h 의 표시 방식. */
-static void pseudo(int idx, struct sockaddr_in *out)
+static void pseudo(int idx, net_ep_t *out)
 {
 	*out = conns[idx].peer;
-	out->sin_family = AF_UNSPEC;
-	out->sin_port = htons((uint16_t)idx);
-	memset(out->sin_zero, 0, sizeof(out->sin_zero));
-	memcpy(out->sin_zero, &conns[idx].gen, sizeof(conns[idx].gen));
+	out->sin6_family = AF_UNSPEC;
+	out->sin6_port = htons((uint16_t)idx);
+	out->sin6_flowinfo = conns[idx].gen;
+	out->sin6_scope_id = 0;
 }
 
 /* 워커 0 에서만 부른다 (받기, 쉬는 연결 정리). */
@@ -110,7 +112,7 @@ static void conn_close(int epfd, int idx)
 
 void tcp_accept(int epfd, int lfd)
 {
-	struct sockaddr_in from;
+	net_ep_t from;
 	socklen_t len;
 	struct epoll_event ev;
 	int one = 1;
@@ -173,7 +175,7 @@ static void flush_locked(conn_t *c)
 int tcp_event(int epfd, int fd, uint32_t events, tcp_packet_fn on_packet)
 {
 	uint8_t packet[BUF_SIZE];
-	struct sockaddr_in from;
+	net_ep_t from;
 	conn_t *c;
 	ssize_t n;
 	size_t len;
@@ -248,13 +250,53 @@ int net_udp_init(int sock)
 {
 	int one = 1;
 
-	return setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
+	return setsockopt(sock, IPPROTO_IPV6, IPV6_RECVPKTINFO, &one, sizeof(one));
 }
 
-ssize_t net_recv(int sock, void *buf, size_t cap, struct sockaddr_in *src, socklen_t *srclen)
+/* 이 서버의 주소들 (패킷이 도착한 곳). 끝점에는 번호만 적는다 — sockaddr_in6 에 16바이트를 더 둘 자리가
+ * 없다. 주소는 늘기만 하고, 넘치면 번호 없이(커널이 출발지를 고르게) 둔다. */
+#define LOCAL_MAX	64
+static struct in6_addr locals[LOCAL_MAX];
+static int nlocals;
+static pthread_mutex_t locals_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static uint32_t local_index(const struct in6_addr *a)
+{
+	uint32_t idx = 0;
+	int i;
+
+	pthread_mutex_lock(&locals_lock);
+	for (i = 0; i < nlocals; i++) {
+		if (memcmp(&locals[i], a, sizeof(*a)) == 0) {
+			idx = (uint32_t)i + 1;
+			break;
+		}
+	}
+	if (idx == 0 && nlocals < LOCAL_MAX) {
+		locals[nlocals++] = *a;
+		idx = (uint32_t)nlocals;
+	}
+	pthread_mutex_unlock(&locals_lock);
+	return idx;
+}
+
+static int local_addr(uint32_t idx, struct in6_addr *out)
+{
+	int ok = 0;
+
+	pthread_mutex_lock(&locals_lock);
+	if (idx >= 1 && (int)idx <= nlocals) {
+		*out = locals[idx - 1];
+		ok = 1;
+	}
+	pthread_mutex_unlock(&locals_lock);
+	return ok;
+}
+
+ssize_t net_recv(int sock, void *buf, size_t cap, net_ep_t *src, socklen_t *srclen)
 {
 	union {
-		char buf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		char buf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 		struct cmsghdr align;
 	} ctl;
 	struct iovec iov = { buf, cap };
@@ -275,32 +317,35 @@ ssize_t net_recv(int sock, void *buf, size_t cap, struct sockaddr_in *src, sockl
 		return n;
 	}
 	*srclen = msg.msg_namelen;
-	memset(src->sin_zero, 0, sizeof(src->sin_zero));
+	/* 같은 상대는 늘 같은 바이트여야 한다 (peer 가 끝점을 memcmp 로 견준다). */
+	src->sin6_flowinfo = 0;
+	src->sin6_scope_id = 0;
 	for (cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
-		if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_PKTINFO) {
-			struct in_pktinfo pi;
+		if (cm->cmsg_level == IPPROTO_IPV6 && cm->cmsg_type == IPV6_PKTINFO) {
+			struct in6_pktinfo pi;
 
 			memcpy(&pi, CMSG_DATA(cm), sizeof(pi));
-			memcpy(src->sin_zero, &pi.ipi_addr, sizeof(pi.ipi_addr));
+			src->sin6_scope_id = local_index(&pi.ipi6_addr);
 		}
 	}
 	return n;
 }
 
 /* 도착 주소가 적힌 UDP 주소면 그 주소에서 보낸다. */
-static int udp_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to)
+static int udp_send(int sock, const void *buf, size_t len, const net_ep_t *to)
 {
 	union {
-		char buf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		char buf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
 		struct cmsghdr align;
 	} ctl;
-	struct sockaddr_in dst = *to;
+	net_ep_t dst = *to;
 	struct iovec iov = { (void *)buf, len };
-	struct in_pktinfo pi;
+	struct in6_pktinfo pi;
 	struct msghdr msg;
 	struct cmsghdr *cm;
 
-	memset(dst.sin_zero, 0, sizeof(dst.sin_zero));
+	dst.sin6_flowinfo = 0;
+	dst.sin6_scope_id = 0;
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_name = &dst;
 	msg.msg_namelen = sizeof(dst);
@@ -308,21 +353,20 @@ static int udp_send(int sock, const void *buf, size_t len, const struct sockaddr
 	msg.msg_iovlen = 1;
 
 	memset(&pi, 0, sizeof(pi));
-	memcpy(&pi.ipi_spec_dst, to->sin_zero, sizeof(pi.ipi_spec_dst));
-	if (pi.ipi_spec_dst.s_addr != 0) {
+	if (local_addr(to->sin6_scope_id, &pi.ipi6_addr)) {
 		memset(&ctl, 0, sizeof(ctl));
 		msg.msg_control = ctl.buf;
 		msg.msg_controllen = sizeof(ctl.buf);
 		cm = CMSG_FIRSTHDR(&msg);
-		cm->cmsg_level = IPPROTO_IP;
-		cm->cmsg_type = IP_PKTINFO;
+		cm->cmsg_level = IPPROTO_IPV6;
+		cm->cmsg_type = IPV6_PKTINFO;
 		cm->cmsg_len = CMSG_LEN(sizeof(pi));
 		memcpy(CMSG_DATA(cm), &pi, sizeof(pi));
 	}
 	return sendmsg(sock, &msg, 0) < 0 ? -1 : 0;
 }
 
-int net_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to, socklen_t tolen)
+int net_send(int sock, const void *buf, size_t len, const net_ep_t *to, socklen_t tolen)
 {
 	uint8_t hdr[FRAME_HDR];
 	struct iovec iov[2];
@@ -334,13 +378,13 @@ int net_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to
 	size_t done, need;
 	int idx;
 
-	if (to->sin_family != AF_UNSPEC) {
+	if (to->sin6_family != AF_UNSPEC) {
 		(void)tolen;
 		return udp_send(sock, buf, len, to);
 	}
 
-	idx = ntohs(to->sin_port);
-	memcpy(&gen, to->sin_zero, sizeof(gen));
+	idx = ntohs(to->sin6_port);
+	gen = to->sin6_flowinfo;
 	if (!ready || idx >= TCP_CONN_MAX || len == 0 || len > BUF_SIZE) {
 		return -1;
 	}
@@ -401,16 +445,23 @@ int net_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to
 	return 0;
 }
 
-const char *endpoint_str(const struct sockaddr_in *ep_addr, char *dst, size_t cap)
+const char *endpoint_str(const net_ep_t *ep_addr, char *dst, size_t cap)
 {
-	char ib[INET_ADDRSTRLEN];
+	char ib[INET6_ADDRSTRLEN];
+	int v4 = IN6_IS_ADDR_V4MAPPED(&ep_addr->sin6_addr);
 
-	inet_ntop(AF_INET, &ep_addr->sin_addr, ib, sizeof(ib));
-	if (ep_addr->sin_family == AF_UNSPEC) {
+	/* IPv4 는 그대로 a.b.c.d 로 (::ffff: 를 붙이지 않는다 — 로그와 상태를 읽는 쪽이 보던 모양). */
+	if (v4) {
+		inet_ntop(AF_INET, &ep_addr->sin6_addr.s6_addr[12], ib, sizeof(ib));
+	}
+	else {
+		inet_ntop(AF_INET6, &ep_addr->sin6_addr, ib, sizeof(ib));
+	}
+	if (ep_addr->sin6_family == AF_UNSPEC) {
 		snprintf(dst, cap, "%s (tcp)", ib);
 	}
 	else {
-		snprintf(dst, cap, "%s:%d", ib, ntohs(ep_addr->sin_port));
+		snprintf(dst, cap, v4 ? "%s:%d" : "[%s]:%d", ib, ntohs(ep_addr->sin6_port));
 	}
 	return dst;
 }

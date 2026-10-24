@@ -53,7 +53,7 @@ void audit_session_open(const peer_t *peer);
 void audit_session_close(const peer_t *peer, const char *reason);
 
 /* id 는 상대가 댄 기기 ID 다. 등록된 기기인지와 관계없이 적는다. */
-void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const struct sockaddr_in *src, uint8_t reason);
+void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const net_ep_t *src, uint8_t reason);
 
 /* 패킷 하나의 판정. 같은 세션의 같은 목적지(주소, 프로토콜, 포트)와 같은 판정은 한동안
  * 다시 적지 않는다 — 패킷마다 적으면 stdout 로그와 다를 것이 없다. why 는 막힌 이유
@@ -64,7 +64,7 @@ void audit_reload(const char *what, int ok, int count);
 
 /* 등록 코드로 기기가 목록에 올랐다. label 은 관리자가 코드를 만들 때 붙인 이름이다. */
 void audit_enrolled(const uint8_t id[DEVICE_ID_LEN], struct in_addr tun_ip,
-		const struct sockaddr_in *src, const char *label);
+		const net_ep_t *src, const char *label);
 
 /* LOGIN 의 결과. status 는 login_status_t. 성공이면 peer->user 를 적는다. */
 void audit_login(const peer_t *peer, int status);

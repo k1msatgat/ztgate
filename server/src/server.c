@@ -214,7 +214,7 @@ static void relay_to_connector(int32_t sock, const device_t *conn_dev, uint8_t *
 	peer_t *conn = peer_find_device(conn_dev->id);
 	int len;
 
-	struct sockaddr_in to;
+	net_ep_t to;
 	socklen_t to_len;
 
 	if (conn == NULL || conn->enroll) {
@@ -250,7 +250,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 	const uint8_t *ip = packet + PKT_HDR_LEN;
 	struct in_addr src, dst;
 	const device_t *to_dev;
-	struct sockaddr_in dst_addr;
+	net_ep_t dst_addr;
 	socklen_t dst_len;
 	peer_t *to;
 	int len;
@@ -313,7 +313,7 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
  * 거절에만 줄 수 있다. 그 전에는 상대가 그 기기인지 모르고, 틀린 키로 온 상대에게는
  * 우리가 만든 mac 이 어차피 맞지 않는다. 그때는 0 으로 채워 보낸다 — 클라이언트는 mac 이
  * 맞는 거절만 서버의 답으로 믿고, 맞지 않는 것은 다른 답이 오지 않을 때에만 받아들인다. */
-static void send_deny(int32_t sock, const struct sockaddr_in *dst, socklen_t dstlen,
+static void send_deny(int32_t sock, const net_ep_t *dst, socklen_t dstlen,
 		uint8_t reason, const device_t *dev, const uint8_t *auth_mac)
 {
 	uint8_t res[DENY_HS_LEN];
@@ -499,7 +499,7 @@ static void send_prohibited(int32_t sock, peer_t *peer, const uint8_t *orig, int
 /* 열려 있는 세션을 거절한다. 세션 키로 감싸므로 서버만 만들 수 있다 — 세션 번호를
  * 엿본 제3자가 가짜 거절로 남의 접속을 끊을 수 없다. 보낸 뒤 세션을 내리는 것은
  * 부르는 쪽의 일이다. */
-static void send_session_deny(int32_t sock, peer_t *peer, const struct sockaddr_in *dst,
+static void send_session_deny(int32_t sock, peer_t *peer, const net_ep_t *dst,
 		socklen_t dstlen, uint8_t reason)
 {
 	uint8_t res[PKT_OVERHEAD + 1];
@@ -543,9 +543,9 @@ static uint64_t mono_us(void)
 }
 
 /* nonce = 발급 시각(8, 빅엔디언) | HMAC(cookie_key, 발급 시각 | 출발지 IP) 의 앞 8B */
-static int nonce_make(uint64_t issued, const struct sockaddr_in *src, uint8_t out[AUTH_NONCE_LEN])
+static int nonce_make(uint64_t issued, const net_ep_t *src, uint8_t out[AUTH_NONCE_LEN])
 {
-	uint8_t msg[8 + sizeof(src->sin_addr)];
+	uint8_t msg[8 + sizeof(src->sin6_addr)];
 	uint8_t mac[VPN_HASH_LEN];
 	int i;
 
@@ -553,7 +553,7 @@ static int nonce_make(uint64_t issued, const struct sockaddr_in *src, uint8_t ou
 		out[i] = (uint8_t)(issued >> (56 - 8 * i));
 	}
 	memcpy(msg, out, 8);
-	memcpy(msg + 8, &src->sin_addr, sizeof(src->sin_addr));
+	memcpy(msg + 8, &src->sin6_addr, sizeof(src->sin6_addr));
 	if (crypt_hmac(cookie_key, sizeof(cookie_key), msg, sizeof(msg), mac) < 0) {
 		return -1;
 	}
@@ -562,7 +562,7 @@ static int nonce_make(uint64_t issued, const struct sockaddr_in *src, uint8_t ou
 }
 
 /* 이 서버가 이 출발지에 내준, 아직 살아 있는 nonce 면 발급 시각, 아니면 0. */
-static uint64_t nonce_check(const uint8_t n[AUTH_NONCE_LEN], const struct sockaddr_in *src)
+static uint64_t nonce_check(const uint8_t n[AUTH_NONCE_LEN], const net_ep_t *src)
 {
 	uint8_t want[AUTH_NONCE_LEN];
 	uint64_t issued = 0, now = mono_us();
@@ -600,7 +600,7 @@ static int handshake_init(void)
  * 합의하는 비싼 계산도, 기억할 상태도 없으므로 출발지를 위조한 REQ 를 쏟아부어 서버를 바쁘게
  * 하거나 표를 채울 수 없다. 답은 REQ 보다 크지 않다. */
 static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	uint8_t res[sizeof(msg_header_t) + CHALLENGE_PAYLOAD_LEN];
 	msg_header_t msg_header;
@@ -711,7 +711,7 @@ out:
  * 클라이언트가 적어 보낸 값이 목록과 같은지 대조했는데, 틀릴 수만 있고 고를 수는
  * 없는 값을 받는 셈이었다. */
 static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
@@ -901,7 +901,7 @@ static void send_keepalive(int32_t sock, peer_t *peer, const device_t *dev)
  * 못 미치면 DENY 로 알리고 세션을 내린다 — 기기 스스로 "지금 방화벽이 꺼져 있다"고
  * 말한 것이다. */
 static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, int32_t n,
-		uint64_t counter, const struct sockaddr_in *src, socklen_t srclen)
+		uint64_t counter, const net_ep_t *src, socklen_t srclen)
 {
 	char ids[DEVICE_ID_STRLEN];
 	posture_report_t posture;
@@ -973,7 +973,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
  * 코드는 한 번 쓰면 끝이다. 다만 답이 사라져 같은 요청이 다시 오는 것은 받아 준다. 같은
  * ID 로 다시 오면 같은 답을 하고, 다른 ID 로 오면 거절한다. */
 static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32_t n,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
@@ -1057,7 +1057,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
  * 답에는 결과와 토큰의 만료 시각과 서버가 읽은 사용자 이름을 싣는다. 클라이언트는
  * 그것을 보고 언제 새 토큰이 필요한지, IdP 의 어느 클레임이 이름으로 쓰였는지 안다. */
 static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_t n,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	uint8_t res[PKT_OVERHEAD + LOGIN_RES_HEAD_LEN + USER_NAME_MAX];
 	char ids[DEVICE_ID_STRLEN];
@@ -1166,9 +1166,9 @@ static int verify_token(const char *idp_file)
 /* 데이터 패킷 (MSG_TYPE_DATA). 표의 읽기 잠금 아래에서 돈다 — 세션과 기기와 규칙은 그동안 바뀌지
  * 않는다. 세션의 바뀌는 칸은 peer->lock 으로 고친다 (위의 "워커"). */
 static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
-		const msg_header_t *h, const struct sockaddr_in *src, socklen_t srclen)
+		const msg_header_t *h, const net_ep_t *src, socklen_t srclen)
 {
-	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	char ib[INET_ADDRSTRLEN], ob[NET_EP_STRLEN];
 	const device_t *conn_dev;
 	struct in_addr inner, inner_dst;
 	peer_t *peer;
@@ -1301,8 +1301,8 @@ static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int 
 		return;
 	}
 
-	LOG_VERBOSE("[udp->tun] %d bytes from %s:%d (inner src %s), icmp type=%d\n",
-			n, ip_str(src->sin_addr, ob), ntohs(src->sin_port),
+	LOG_VERBOSE("[udp->tun] %d bytes from %s (inner src %s), icmp type=%d\n",
+			n, endpoint_str(src, ob, sizeof(ob)),
 			ip_str(inner, ib), ip[IP_IHL(ip)]);
 
 	if (write(tun_fd, ip, n) < 0) {
@@ -1313,7 +1313,7 @@ static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int 
 /* 데이터가 아닌 것 (핸드셰이크, keepalive, 로그인, 등록, 종료 통지). 표의 쓰기 잠금 아래에서
  * 돈다 — 다른 워커의 데이터 패킷이 그동안 멈추므로 세션의 잠금은 필요 없다. */
 static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t *h,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	char ib[INET_ADDRSTRLEN];
 	uint64_t counter;
@@ -1383,7 +1383,7 @@ static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t
 /* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. 헤더의 종류를 보고 데이터면 표의
  * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다. */
 static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
-		const struct sockaddr_in *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen)
 {
 	msg_header_t h;
 
@@ -1407,8 +1407,8 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 /* tun 에서 읽은 패킷 하나. packet + PKT_HDR_LEN 에 n 바이트, cap 은 packet 의 크기다. */
 static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 {
-	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
-	struct sockaddr_in to;
+	char ib[INET_ADDRSTRLEN], ob[NET_EP_STRLEN];
+	net_ep_t to;
 	socklen_t to_len;
 	struct in_addr inner, from;
 	peer_t *peer;
@@ -1443,9 +1443,9 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 	}
 
 	PEER_LOCK(peer);
-	LOG_VERBOSE("[tun->udp] %d bytes to %s (%s:%d), icmp type=%d\n",
+	LOG_VERBOSE("[tun->udp] %d bytes to %s (%s), icmp type=%d\n",
 			n, ip_str(inner, ib),
-			ip_str(peer->outer.sin_addr, ob), ntohs(peer->outer.sin_port),
+			endpoint_str(&peer->outer, ob, sizeof(ob)),
 			ip[IP_IHL(ip)]);
 
 	peer->tx_packets++;
@@ -1503,7 +1503,7 @@ static int tun_open_queue(char *name)
 }
 
 /* TCP 로 온 패킷 (tcp.h). 워커 0 의 소켓과 tun 큐로 UDP 와 같은 길을 지난다. */
-static void tcp_packet(uint8_t *packet, size_t cap, int n, const struct sockaddr_in *from, socklen_t fromlen)
+static void tcp_packet(uint8_t *packet, size_t cap, int n, const net_ep_t *from, socklen_t fromlen)
 {
 	udp_in(workers[0].sock, workers[0].tun_fd, packet, cap, n, from, fromlen);
 }
@@ -1513,7 +1513,7 @@ static void *worker_main(void *arg)
 {
 	worker_t *w = arg;
 	struct epoll_event ev, events[MAX_EVENTS];
-	struct sockaddr_in src;
+	net_ep_t src;
 	socklen_t srclen;
 	uint8_t packet[BUF_SIZE];
 	int epfd, nev, i, n;
@@ -1569,8 +1569,8 @@ int main(int argc, char *argv[])
 	const char *key_path = NULL;
 	int nd;
 	struct epoll_event ev, events[MAX_EVENTS];
-	struct sockaddr_in local_addr;
-	struct sockaddr_in src;
+	struct sockaddr_in6 local_addr;
+	net_ep_t src;
 	socklen_t srclen;
 	uint8_t packet[BUF_SIZE];
 	char *end;
@@ -1793,9 +1793,10 @@ int main(int argc, char *argv[])
 	}
 
 	memset(&local_addr, 0, sizeof(local_addr));
-	local_addr.sin_family      = AF_INET;
-	local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	local_addr.sin_port        = htons((uint16_t)port);
+	/* IPv4 와 IPv6 를 한 소켓으로 (IPV6_V6ONLY 0). IPv4 클라이언트는 v4-mapped 주소로 온다 (tcp.h). */
+	local_addr.sin6_family = AF_INET6;
+	local_addr.sin6_addr   = in6addr_any;
+	local_addr.sin6_port   = htons((uint16_t)port);
 
 	ifname[0] = '\0';
 	for (i = 0; i < nworkers; i++) {
@@ -1807,10 +1808,15 @@ int main(int argc, char *argv[])
 			fprintf(stderr, "tun_alloc failed%s\n", nworkers > 1 ? " (multi-queue)" : "");
 			return 1;
 		}
-		workers[i].sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+		workers[i].sock = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 		if (workers[i].sock < 0) {
 			perror("socket");
 			return 1;
+		}
+		{
+			int off = 0;
+
+			setsockopt(workers[i].sock, IPPROTO_IPV6, IPV6_V6ONLY, &off, sizeof(off));
 		}
 		/* 같은 포트에 소켓 여럿. 커널이 출발지 주소의 해시로 나눠 주므로 한 클라이언트는 한 워커로 온다. */
 		if (nworkers > 1 && setsockopt(workers[i].sock, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) < 0) {

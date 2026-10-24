@@ -128,7 +128,7 @@ static void session_fields(const peer_t *peer)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
-	char eb[INET_ADDRSTRLEN + 16];
+	char eb[NET_EP_STRLEN];
 
 	field("\"device\":\"%s\"", device_id_str(peer->device_id, ids));
 	field("\"tunnel_ip\":\"%s\"", ip_str(peer->inner, ib));
@@ -182,10 +182,10 @@ static const char *deny_name(uint8_t reason)
 	}
 }
 
-void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const struct sockaddr_in *src, uint8_t reason)
+void audit_auth_denied(const uint8_t id[DEVICE_ID_LEN], const net_ep_t *src, uint8_t reason)
 {
 	char ids[DEVICE_ID_STRLEN];
-	char eb[INET_ADDRSTRLEN + 16];
+	char eb[NET_EP_STRLEN];
 	time_t now;
 
 	if (out == NULL) {
@@ -292,11 +292,11 @@ void audit_reload(const char *what, int ok, int count)
 }
 
 void audit_enrolled(const uint8_t id[DEVICE_ID_LEN], struct in_addr tun_ip,
-		const struct sockaddr_in *src, const char *label)
+		const net_ep_t *src, const char *label)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
-	char eb[INET_ADDRSTRLEN + 16];
+	char eb[NET_EP_STRLEN];
 
 	if (out == NULL) {
 		return;

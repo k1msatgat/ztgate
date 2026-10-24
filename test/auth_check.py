@@ -281,13 +281,13 @@ def unseal(pkt):
 
 
 class Client:
-    def __init__(self, bind=None):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    def __init__(self, bind=None, v6=False):
+        self.sock = socket.socket(socket.AF_INET6 if v6 else socket.AF_INET, socket.SOCK_DGRAM)
         if bind:
             self.sock.bind((bind, 0))
         self.sock.settimeout(1.0)
         self.spub = None        # 마지막 CHALLENGE 가 알려 준 서버 공개키
-        self.addr = ("127.0.0.1", PORT)
+        self.addr = ("::1", PORT) if v6 else ("127.0.0.1", PORT)
         self.raw = b""          # 마지막으로 받은 패킷 그대로
         self.auth_tag = b""     # 마지막으로 보낸 AUTH 의 mac
 
@@ -972,8 +972,8 @@ def config_tests(srv, acl_path, dev_path):
 class TcpClient(Client):
     """같은 클라이언트를 TCP 로 (tcp.h): 패킷마다 len(2) | 패킷."""
 
-    def __init__(self, port):
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+    def __init__(self, port, host="127.0.0.1"):
+        self.sock = socket.create_connection((host, port), timeout=1.0)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.raw = b""
         self.auth_tag = b""
@@ -1011,12 +1011,35 @@ class TcpClient(Client):
         self.sock.settimeout(1.0)
 
 
+def ipv6_tests(srv, tcp_port=None):
+    """서버에 IPv6 로 붙는다 (tcp.h: 한 소켓이 IPv4 와 IPv6 를 받는다)."""
+    c = Client(v6=True)
+    r = c.handshake()
+    expect("ipv6: the handshake works over IPv6", describe(r), "RES_HANDSHAKE")
+    idx = r[1] if r else 0
+    c.send(keepalive(idx))
+    expect("ipv6: keepalive", describe(c.recv()), "KEEPALIVE")
+    sess = [s for s in srv.status()["sessions"] if s["session_idx"] == "%08x" % idx]
+    expect("ipv6: the status shows the endpoint as [::1]:port",
+           bool(sess) and sess[0]["endpoint"].startswith("[::1]:"), True)
+    v4 = Client()
+    r = v4.handshake(dev_id=DEV2_ID, key=DEV2_KEY)
+    sess = [s for s in srv.status()["sessions"] if r and s["session_idx"] == "%08x" % r[1]]
+    expect("ipv6: an IPv4 client on the same socket is still a.b.c.d:port",
+           bool(sess) and sess[0]["endpoint"].startswith("127.0.0.1:"), True)
+    if tcp_port:
+        t = TcpClient(tcp_port, host="::1")
+        r = t.handshake()
+        expect("ipv6: the tcp fallback over IPv6", describe(r), "RES_HANDSHAKE")
+
+
 def tcp_tests(path):
     """-t: UDP 가 막힌 곳을 위한 TCP. 같은 패킷을 길이와 함께 실어 핸드셰이크, keepalive, 데이터가
     UDP 와 똑같이 오가는가. 서버가 클라이언트로 보내는 것(tun -> 세션)도 그 연결로 가는가."""
     tcp_port = PORT + 443
     srv = Server(path, opts=["-t", str(tcp_port)])
     try:
+        ipv6_tests(srv, tcp_port)
         c = TcpClient(tcp_port)
         r = c.handshake()
         expect("tcp: the handshake works over tcp", describe(r), "RES_HANDSHAKE")

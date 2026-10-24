@@ -135,7 +135,7 @@ static void build(int acl_enabled)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
-	char eb[INET_ADDRSTRLEN + 16];
+	char eb[NET_EP_STRLEN];
 	time_t now = mono_now();
 	const peer_t *p;
 	const device_t *dev;

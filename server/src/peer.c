@@ -103,10 +103,10 @@ static uint32_t make_idx(int32_t slot)
 	return idx;
 }
 
-void peer_touch(peer_t *peer, const struct sockaddr_in *outer, socklen_t len) {
+void peer_touch(peer_t *peer, const net_ep_t *outer, socklen_t len) {
 	char ib[INET_ADDRSTRLEN];
-	char ob[INET6_ADDRSTRLEN];
-	char nb[INET6_ADDRSTRLEN];
+	char ob[NET_EP_STRLEN];
+	char nb[NET_EP_STRLEN];
 
 	/* 주소, 포트에 더해 종류(UDP / TCP 연결)와 TCP 연결의 세대까지 같아야 같은 곳이다 (tcp.h). */
 	if (memcmp(&peer->outer, outer, sizeof(*outer)) != 0) {
@@ -159,10 +159,10 @@ void peer_check_expired(void) {
 }
 
 peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
-		const struct sockaddr_in *outer, socklen_t len)
+		const net_ep_t *outer, socklen_t len)
 {
 	char ib[INET_ADDRSTRLEN];
-	char ob[INET6_ADDRSTRLEN];
+	char ob[NET_EP_STRLEN];
 	peer_t *peer;
 	uint32_t idx;
 	int32_t i;
@@ -289,16 +289,15 @@ const peer_t *peer_at(int i)
 
 void peer_dump(void)
 {
-	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
+	char ib[INET_ADDRSTRLEN], ob[NET_EP_STRLEN];
 	int i;
 
 	printf("--- peer table ---\n");
 	for (i = 0; i < MAX_PEERS; i++) {
 		if (!peers[i].used) continue;
-		printf("  [%d] %-12s idx=%08x <- %s:%d  (age %lds)\n", i,
+		printf("  [%d] %-12s idx=%08x <- %s  (age %lds)\n", i,
 				ip4(peers[i].inner, ib), peers[i].session_idx,
-				ip4(peers[i].outer.sin_addr, ob),
-				ntohs(peers[i].outer.sin_port),
+				endpoint_str(&peers[i].outer, ob, sizeof(ob)),
 				(long)(mono_now() - peers[i].last_seen));
 	}
 	printf("------------------\n");
