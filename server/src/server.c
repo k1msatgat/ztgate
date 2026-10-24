@@ -1513,7 +1513,7 @@ static void *worker_main(void *arg)
 		for (i = 0; i < nev; i++) {
 			if (events[i].data.fd == w->sock) {
 				srclen = sizeof(src);
-				n = recvfrom(w->sock, packet, sizeof(packet), 0, (struct sockaddr *)&src, &srclen);
+				n = net_recv(w->sock, packet, sizeof(packet), &src, &srclen);
 				if (n >= 0) {
 					udp_in(w->sock, w->tun_fd, packet, sizeof(packet), n, &src, srclen);
 				}
@@ -1799,6 +1799,11 @@ int main(int argc, char *argv[])
 			perror("bind");
 			return 1;
 		}
+		/* 답을 요청이 온 주소에서 보내려고 (tcp.h). */
+		if (net_udp_init(workers[i].sock) < 0) {
+			perror("IP_PKTINFO");
+			return 1;
+		}
 	}
 	tun_fd = workers[0].tun_fd;
 	sock = workers[0].sock;
@@ -1998,8 +2003,7 @@ int main(int argc, char *argv[])
 			}
 			else if (fd == sock) {
 				srclen = sizeof(src);
-				n = recvfrom(sock, packet, sizeof(packet), 0,
-						(struct sockaddr *)&src, &srclen);
+				n = net_recv(sock, packet, sizeof(packet), &src, &srclen);
 				if (n < 0) {
 					perror("recvfrom"); goto out;
 				}

@@ -244,6 +244,84 @@ void tcp_tick(int epfd)
 	}
 }
 
+int net_udp_init(int sock)
+{
+	int one = 1;
+
+	return setsockopt(sock, IPPROTO_IP, IP_PKTINFO, &one, sizeof(one));
+}
+
+ssize_t net_recv(int sock, void *buf, size_t cap, struct sockaddr_in *src, socklen_t *srclen)
+{
+	union {
+		char buf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		struct cmsghdr align;
+	} ctl;
+	struct iovec iov = { buf, cap };
+	struct msghdr msg;
+	struct cmsghdr *cm;
+	ssize_t n;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_name = src;
+	msg.msg_namelen = *srclen;
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = ctl.buf;
+	msg.msg_controllen = sizeof(ctl.buf);
+
+	n = recvmsg(sock, &msg, 0);
+	if (n < 0) {
+		return n;
+	}
+	*srclen = msg.msg_namelen;
+	memset(src->sin_zero, 0, sizeof(src->sin_zero));
+	for (cm = CMSG_FIRSTHDR(&msg); cm != NULL; cm = CMSG_NXTHDR(&msg, cm)) {
+		if (cm->cmsg_level == IPPROTO_IP && cm->cmsg_type == IP_PKTINFO) {
+			struct in_pktinfo pi;
+
+			memcpy(&pi, CMSG_DATA(cm), sizeof(pi));
+			memcpy(src->sin_zero, &pi.ipi_addr, sizeof(pi.ipi_addr));
+		}
+	}
+	return n;
+}
+
+/* 도착 주소가 적힌 UDP 주소면 그 주소에서 보낸다. */
+static int udp_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to)
+{
+	union {
+		char buf[CMSG_SPACE(sizeof(struct in_pktinfo))];
+		struct cmsghdr align;
+	} ctl;
+	struct sockaddr_in dst = *to;
+	struct iovec iov = { (void *)buf, len };
+	struct in_pktinfo pi;
+	struct msghdr msg;
+	struct cmsghdr *cm;
+
+	memset(dst.sin_zero, 0, sizeof(dst.sin_zero));
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_name = &dst;
+	msg.msg_namelen = sizeof(dst);
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+
+	memset(&pi, 0, sizeof(pi));
+	memcpy(&pi.ipi_spec_dst, to->sin_zero, sizeof(pi.ipi_spec_dst));
+	if (pi.ipi_spec_dst.s_addr != 0) {
+		memset(&ctl, 0, sizeof(ctl));
+		msg.msg_control = ctl.buf;
+		msg.msg_controllen = sizeof(ctl.buf);
+		cm = CMSG_FIRSTHDR(&msg);
+		cm->cmsg_level = IPPROTO_IP;
+		cm->cmsg_type = IP_PKTINFO;
+		cm->cmsg_len = CMSG_LEN(sizeof(pi));
+		memcpy(CMSG_DATA(cm), &pi, sizeof(pi));
+	}
+	return sendmsg(sock, &msg, 0) < 0 ? -1 : 0;
+}
+
 int net_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to, socklen_t tolen)
 {
 	uint8_t hdr[FRAME_HDR];
@@ -257,7 +335,8 @@ int net_send(int sock, const void *buf, size_t len, const struct sockaddr_in *to
 	int idx;
 
 	if (to->sin_family != AF_UNSPEC) {
-		return sendto(sock, buf, len, 0, (const struct sockaddr *)to, tolen) < 0 ? -1 : 0;
+		(void)tolen;
+		return udp_send(sock, buf, len, to);
 	}
 
 	idx = ntohs(to->sin_port);
