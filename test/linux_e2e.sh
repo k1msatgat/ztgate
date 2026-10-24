@@ -88,6 +88,9 @@ cleanup() {
 		echo
 		echo "---- server log (last 30) ----"; tail -n 30 "$SLOG"
 		echo "---- client log (last 30) ----"; tail -n 30 "$CLOG"
+		if [ -e "$WORK/client-tcp.log" ]; then
+			echo "---- tcp client log (last 30) ----"; tail -n 30 "$WORK/client-tcp.log"
+		fi
 	fi
 	if [ -n "${E2E_LOGS:-}" ]; then
 		mkdir -p "$E2E_LOGS" && cp "$SLOG" "$CLOG" "$E2E_LOGS"/
@@ -219,7 +222,7 @@ echo "     (denied after $(( $(date +%s) - t0 ))s)"
 check "posture: no traffic while denied" ping_fails "$SRV_TUN"
 check "posture: tun stays up while denied" in_cli ip link show "$CLI_IF"
 
-# 인바운드 기본 거부. 터널(서버의 UDP 와 tun)과 lo 만 받는다. conntrack 을 쓰지 않는 것은
+# 인바운드 기본 거부. 터널(서버의 UDP, 7단계의 TCP, tun)과 lo 만 받는다. conntrack 을 쓰지 않는 것은
 # 사용자 네임스페이스에서 모듈을 올릴 수 없어서다.
 in_cli nft -f - <<EOF
 table inet e2e {
@@ -227,6 +230,7 @@ table inet e2e {
 		type filter hook input priority 0; policy drop;
 		iif lo accept
 		udp sport $PORT accept
+		tcp sport $TCP_PORT accept
 		iifname "$CLI_IF" accept
 	}
 }
