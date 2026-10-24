@@ -89,6 +89,14 @@ typedef struct tunnel {
 	int net_lost;			/* 그 keepalive 에 답이 없다. 다시 핸드셰이크한다 */
 	int hs_failed;			/* 마지막 재핸드셰이크가 실패해 30초 뒤를 기다리는 중 */
 
+	/* TCP 로 붙었다 (server/include/tcp.h). UDP 핸드셰이크에 답이 없으면 같은 번호의 TCP 포트로
+	 * 바꿔 본다 — UDP 를 막는 네트워크(호텔, 카페, 일부 회사망). 서버는 vpn_server -t <같은 번호>.
+	 * 패킷마다 len(2) 을 붙이고, 받은 스트림은 trbuf 에 모아 틀 하나씩 꺼낸다. */
+	int tcp;
+	int tcp_lost;			/* 연결이 끊겼다. 다시 열고 핸드셰이크한다 */
+	uint8_t trbuf[2 + BUF_SIZE];
+	size_t trlen;
+
 	session_t session;
 } tunnel_t;
 
@@ -483,12 +491,72 @@ static int netcfg_apply(tunnel_t *t)
 	return 0;
 }
 
+/* 서버에 TCP 로 붙는다. 기다리는 것은 5초까지. 이벤트는 지금의 sock_event 를 그대로 쓴다 — 터널
+ * 루프가 그 핸들을 기다리고 있다. */
+static int socket_open_tcp(tunnel_t *t)
+{
+	u_long nb = 1;
+	BOOL one = TRUE;
+	fd_set wr;
+	struct timeval tv = { 5, 0 };
+	int err = 0, errlen = (int)sizeof(err);
+
+	t->sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (t->sock == INVALID_SOCKET) {
+		tlog(t, "socket (tcp) failed: %d", WSAGetLastError());
+		return -1;
+	}
+	ioctlsocket(t->sock, FIONBIO, &nb);
+	setsockopt(t->sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
+	if (connect(t->sock, (struct sockaddr *)&t->session.server, sizeof(t->session.server)) == SOCKET_ERROR &&
+			WSAGetLastError() != WSAEWOULDBLOCK) {
+		tlog(t, "[tcp] connect failed: %d", WSAGetLastError());
+		return -1;
+	}
+	FD_ZERO(&wr);
+	FD_SET(t->sock, &wr);
+	if (select(0, NULL, &wr, NULL, &tv) != 1 ||
+			getsockopt(t->sock, SOL_SOCKET, SO_ERROR, (char *)&err, &errlen) == SOCKET_ERROR || err != 0) {
+		tlog(t, "[tcp] no connection to the server (%d)", err);
+		return -1;
+	}
+	if (WSAEventSelect(t->sock, t->sock_event, FD_READ | FD_CLOSE) == SOCKET_ERROR) {
+		tlog(t, "WSAEventSelect failed: %d", WSAGetLastError());
+		return -1;
+	}
+	t->tcp = 1;
+	t->tcp_lost = 0;
+	t->trlen = 0;
+	return 0;
+}
+
+/* 지금의 소켓을 닫고 UDP(tcp=0) 또는 TCP(tcp=1) 로 새로 연다. */
+static int socket_open(tunnel_t *t);
+
+static int transport_switch(tunnel_t *t, int tcp)
+{
+	if (t->sock != INVALID_SOCKET) {
+		closesocket(t->sock);
+		t->sock = INVALID_SOCKET;
+	}
+	t->tcp = 0;
+	if (tcp) {
+		if (socket_open_tcp(t) < 0) {
+			return -1;
+		}
+		tlog(t, "[tcp] connected to the server over tcp");
+		return 0;
+	}
+	return socket_open(t);
+}
+
 static int socket_open(tunnel_t *t)
 {
 	struct sockaddr_in local;
 	BOOL connreset = FALSE;
 	DWORD bytes = 0;
 
+	t->tcp = 0;
 	t->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (t->sock == INVALID_SOCKET) {
 		tlog(t, "socket failed: %d", WSAGetLastError());
@@ -512,8 +580,11 @@ static int socket_open(tunnel_t *t)
 		tlog(t, "SIO_UDP_CONNRESET failed: %d", WSAGetLastError());
 	}
 
-	/* auto-reset 이벤트. WSAEventSelect를 걸면 소켓은 non-blocking이 된다. */
-	t->sock_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+	/* auto-reset 이벤트. WSAEventSelect를 걸면 소켓은 non-blocking이 된다. 전송을 바꿀 때는 같은
+	 * 이벤트를 다시 쓴다 (transport_switch). */
+	if (!t->sock_event) {
+		t->sock_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+	}
 	if (!t->sock_event) {
 		tlog(t, "CreateEvent failed: %lu", GetLastError());
 		return -1;
@@ -529,11 +600,57 @@ static int socket_open(tunnel_t *t)
 
 /* ---- udp helpers --------------------------------------------------------- */
 /* 받은 바이트 수를 돌려준다. 큐가 비었으면 RECV_EMPTY, 복구할 수 없는 오류는 RECV_ERROR. */
+/* TCP 로 받아 둔 것에서 다 들어온 틀 하나. 없으면 소켓에서 더 읽어 본다. 끊기면 tcp_lost 를 세우고
+ * RECV_EMPTY — 터널 루프가 다시 열고 핸드셰이크한다. */
+static int tcp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from)
+{
+	size_t len;
+	int n;
+
+	for (;;) {
+		if (t->trlen >= 2) {
+			len = (size_t)(t->trbuf[0] << 8 | t->trbuf[1]);
+			if (len == 0 || len > BUF_SIZE || len > (size_t)cap) {
+				tlog(t, "[tcp] broken frame from the server");
+				t->tcp_lost = 1;
+				t->trlen = 0;
+				return RECV_EMPTY;
+			}
+			if (t->trlen >= 2 + len) {
+				memcpy(buf, t->trbuf + 2, len);
+				memmove(t->trbuf, t->trbuf + 2 + len, t->trlen - 2 - len);
+				t->trlen -= 2 + len;
+				*from = t->session.server;
+				return (int)len;
+			}
+		}
+		if (t->tcp_lost) {
+			return RECV_EMPTY;
+		}
+		n = recv(t->sock, (char *)t->trbuf + t->trlen, (int)(sizeof(t->trbuf) - t->trlen), 0);
+		if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+			return RECV_EMPTY;
+		}
+		if (n <= 0) {
+			if (!t->tcp_lost) {
+				tlog(t, "[tcp] connection to the server closed");
+			}
+			t->tcp_lost = 1;
+			return RECV_EMPTY;
+		}
+		t->trlen += (size_t)n;
+	}
+}
+
 static int udp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from)
 {
 	int fromlen;
 	int n;
 	int err;
+
+	if (t->tcp) {
+		return tcp_recv(t, buf, cap, from);
+	}
 
 	for (;;) {
 		fromlen = (int)sizeof(*from);
@@ -555,10 +672,48 @@ static int udp_recv(tunnel_t *t, uint8_t *buf, int cap, struct sockaddr_in *from
 	}
 }
 
+/* 틀 하나를 끝까지 보낸다 (반만 보내면 뒤의 틀이 모두 어긋난다). 소켓이 non-blocking 이라 버퍼가
+ * 차면 1초까지 기다린다. 그래도 안 되면 연결을 버린다. */
+static void tcp_send(tunnel_t *t, const uint8_t *buf, int len)
+{
+	uint8_t frame[2 + BUF_SIZE];
+	int off = 0, total = 2 + len, n;
+	fd_set wr;
+	struct timeval tv = { 1, 0 };
+
+	if (t->tcp_lost || len <= 0 || len > BUF_SIZE) {
+		return;
+	}
+	frame[0] = (uint8_t)(len >> 8);
+	frame[1] = (uint8_t)len;
+	memcpy(frame + 2, buf, (size_t)len);
+	while (off < total) {
+		n = send(t->sock, (const char *)frame + off, total - off, 0);
+		if (n == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK) {
+			FD_ZERO(&wr);
+			FD_SET(t->sock, &wr);
+			if (select(0, NULL, &wr, NULL, &tv) == 1) {
+				continue;
+			}
+		}
+		if (n <= 0) {
+			tlog(t, "[tcp] send failed: %d", WSAGetLastError());
+			t->tcp_lost = 1;
+			return;
+		}
+		off += n;
+	}
+}
+
 static void udp_send(tunnel_t *t, const uint8_t *buf, int len)
 {
 	session_t *session = &t->session;
 
+	if (t->tcp) {
+		tcp_send(t, buf, len);
+		session->last_tx_ms = GetTickCount64();
+		return;
+	}
 	if (sendto(t->sock, (const char *)buf, len, 0,
 				(struct sockaddr *)&session->server, sizeof(session->server)) == SOCKET_ERROR) {
 		tlog(t, "sendto failed: %d", WSAGetLastError());
@@ -1946,6 +2101,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	session_t *session = &t->session;
 	HANDLE waits[4];
 	DWORD nwaits = 3;
+	int hs;
 	WSADATA wsa;
 	char server_str[INET_ADDRSTRLEN];
 	uint64_t now;
@@ -1987,7 +2143,14 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 	tlog(t, "[%ls] tunneling to %s:%u", cfg->adapter_name, server_str, cfg->server_port);
 
-	if (do_handshake(t) != HS_OK) {
+	hs = do_handshake(t);
+	if (hs == HS_FAIL && WaitForSingleObject(t->stop_event, 0) != WAIT_OBJECT_0) {
+		tlog(t, "[HS] no answer over udp, trying tcp on the same port");
+		if (transport_switch(t, 1) == 0) {
+			hs = do_handshake(t);
+		}
+	}
+	if (hs != HS_OK) {
 		goto out;
 	}
 
@@ -2066,7 +2229,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다
 		 * 다시 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
 		if (now - session->last_rx_ms > SERVER_TIMEOUT_MSEC || t->readdress || t->logout ||
-				t->server_closed || t->net_lost || (session->denied && posture_changed(t, now))) {
+				t->server_closed || t->net_lost || t->tcp_lost || (session->denied && posture_changed(t, now))) {
 			if (session->denied) {
 				tlog(t, "[HS] retry after deny");
 			}
@@ -2097,6 +2260,10 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 			t->server_closed = 0;
 			t->net_lost = 0;
 			t->net_probe_ms = 0;
+			if (t->tcp_lost && transport_switch(t, 1) < 0) {
+				/* 다시 열지 못했다. 다음에는 UDP 로 해 본다 (그 사이 네트워크가 바뀌었을 수 있다). */
+				transport_switch(t, 0);
+			}
 
 			switch (do_handshake(t)) {
 			case HS_OK:
@@ -2116,6 +2283,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				break;
 			default:
 				t->hs_failed = 1;
+				/* 지금 전송으로 답이 없다. 다음에는 다른 쪽(UDP <-> TCP)으로 해 본다. */
+				transport_switch(t, !t->tcp);
 				tlog(t, "[HS] failed re-handshake[%s][%u], retry in %ds",
 						server_str, cfg->server_port, SERVER_TIMEOUT_SEC);
 				break;
