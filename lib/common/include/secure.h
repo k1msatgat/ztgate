@@ -95,6 +95,11 @@ int secure_auth_seal(crypt_ecdh_t *eph, const uint8_t server_pub[VPN_PUB_LEN], u
 int secure_auth_open(crypt_ecdh_t *mine, const uint8_t server_pub[VPN_PUB_LEN],
 		const uint8_t *auth, uint8_t plain[AUTH_SEALED_PLAIN_LEN]);
 
+/* secure_static_key 와 같은 값을, ECDH 를 밖(Windows 의 TPM)에서 한 secret 으로. */
+int secure_static_key_from_secret(const uint8_t secret[VPN_SECRET_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[AUTH_KEY_LEN]);
+
 /* ---- 열린 세션 -------------------------------------------------------------- */
 
 /* 이미 받은 counter 를 기억하는 창의 폭. UDP 는 순서를 바꿔 전달할 수 있으므로 가장

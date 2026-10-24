@@ -27,7 +27,21 @@ typedef struct device {
 	 * 손으로 올린 기기에는 없다. 비밀이 아니라서 DPAPI 로 감싸지 않는다. */
 	uint8_t server_pub[VPN_PUB_LEN_WIRE];
 	uint8_t has_server_pub;
+
+	/* 고정 비밀키가 TPM 에 있다 (tpm.h). 그러면 key 는 저장하지 않고 읽을 때마다 TPM 으로 뽑는다. */
+	uint8_t tpm;
+	wchar_t tpm_name[40];
 } device_t;
+
+/* PC 의 신원인가 (device_use_machine_store). TPM 키도 같은 쪽에 둔다. */
+int device_machine_store(void);
+
+/* 등록에 쓸 TPM 키를 새 이름으로 만든다 (지금 신원의 키는 건드리지 않는다). 공개키를 pub 에. TPM 이
+ * 없거나 실패하면 -1 — 그때는 소프트웨어 키로 등록한다. */
+int device_tpm_begin(device_t *dev, uint8_t pub[VPN_PUB_LEN_WIRE]);
+
+/* 등록이 끝났다. ok 면 dev 의 TPM 키로 기기 키를 뽑아 key 에 채우고(저장 전에), 아니면 만든 키를 지운다. */
+int device_tpm_finish(device_t *dev, int ok);
 
 #define DEVICE_OK		0
 #define DEVICE_NOT_ENROLLED	1

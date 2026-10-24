@@ -159,24 +159,33 @@ static const char ENROLL_ID_LABEL[] = "ztgate enroll id";
 static const char ENROLL_KEY_LABEL[] = "ztgate enroll key";
 static const char STATIC_LABEL[] = "ztgate v8 static";
 
-/* ECDH(mine, peer_pub) 로 HMAC(secret, label | client_pub | server_pub). */
+/* HMAC(secret, label | client_pub | server_pub). */
+static int label_key(const char *label, size_t label_len, const uint8_t secret[VPN_SECRET_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[VPN_HASH_LEN])
+{
+	uint8_t msg[32 + 2 * VPN_PUB_LEN];
+
+	if (label_len > 32) {
+		return -1;
+	}
+	memcpy(msg, label, label_len);
+	memcpy(msg + label_len, client_pub, VPN_PUB_LEN);
+	memcpy(msg + label_len + VPN_PUB_LEN, server_pub, VPN_PUB_LEN);
+	return crypt_hmac(secret, VPN_SECRET_LEN, msg, label_len + 2 * VPN_PUB_LEN, key);
+}
+
+/* ECDH(mine, peer_pub) 로 label_key. */
 static int pair_key(const char *label, size_t label_len, crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
 		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
 		uint8_t key[VPN_HASH_LEN])
 {
 	uint8_t secret[VPN_SECRET_LEN];
-	uint8_t msg[32 + 2 * VPN_PUB_LEN];
 	int ret = -1;
 
-	if (label_len > 32 || crypt_ecdh_derive(mine, peer_pub, secret) < 0) {
-		goto out;
+	if (crypt_ecdh_derive(mine, peer_pub, secret) == 0) {
+		ret = label_key(label, label_len, secret, client_pub, server_pub, key);
 	}
-	memcpy(msg, label, label_len);
-	memcpy(msg + label_len, client_pub, VPN_PUB_LEN);
-	memcpy(msg + label_len + VPN_PUB_LEN, server_pub, VPN_PUB_LEN);
-	ret = crypt_hmac(secret, sizeof(secret), msg, label_len + 2 * VPN_PUB_LEN, key);
-
-out:
 	crypt_wipe(secret, sizeof(secret));
 	return ret;
 }
@@ -186,6 +195,13 @@ int secure_static_key(crypt_ecdh_t *mine, const uint8_t peer_pub[VPN_PUB_LEN],
 		uint8_t key[AUTH_KEY_LEN])
 {
 	return pair_key(STATIC_LABEL, sizeof(STATIC_LABEL) - 1, mine, peer_pub, client_pub, server_pub, key);
+}
+
+int secure_static_key_from_secret(const uint8_t secret[VPN_SECRET_LEN],
+		const uint8_t client_pub[VPN_PUB_LEN], const uint8_t server_pub[VPN_PUB_LEN],
+		uint8_t key[AUTH_KEY_LEN])
+{
+	return label_key(STATIC_LABEL, sizeof(STATIC_LABEL) - 1, secret, client_pub, server_pub, key);
 }
 
 static const char AUTH_LABEL[] = "ztgate v9 auth";

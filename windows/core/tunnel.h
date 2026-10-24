@@ -185,10 +185,13 @@ typedef enum tunnel_enroll_result {
  *
  * id 는 호출자가 device_generate() 로 만든 것이고, OK 를 받은 뒤에 key, server_pub 과 함께
  * device_save() 로 저장해야 한다. 순서가 반대면 서버가 받지 않았을 때 예전 신원만 잃는다.
- * server_pub 은 서버가 답에 실어 준 서버 공개키다 — 다음 핸드셰이크부터 고정한다. */
+ * server_pub 은 서버가 답에 실어 준 서버 공개키다 — 다음 핸드셰이크부터 고정한다.
+ *
+ * device_pub 이 있으면(TPM 에 만든 고정 키의 공개키, device_tpm_begin) 그것을 올리고 key 는 채우지
+ * 않는다 — 부르는 쪽이 TPM 으로 뽑는다 (device_tpm_finish). NULL 이면 소프트웨어 키를 만들어 쓰고 버린다. */
 int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
 		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN],
-		uint8_t server_pub[VPN_PUB_LEN_WIRE], HANDLE stop_event);
+		uint8_t server_pub[VPN_PUB_LEN_WIRE], const uint8_t *device_pub, HANDLE stop_event);
 
 /* 폐기 이유의 짧은 영문 이름.
  * 코어는 표시 문자열을 가지지 않는다 — 여기서 한국어를 돌려주면 char* 가 되어

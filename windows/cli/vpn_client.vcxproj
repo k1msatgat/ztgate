@@ -102,6 +102,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(RepoRoot)\server\include</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="..\core\posture.c" />
+    <ClCompile Include="..\core\tpm.c" />
     <ClCompile Include="..\core\crypt.c" />
     <ClCompile Include="..\core\device.c" />
     <ClCompile Include="..\..\lib\common\src\proto.c" />
@@ -110,6 +111,7 @@
   <ItemGroup>
     <ClInclude Include="..\core\tunnel.h" />
     <ClInclude Include="..\core\posture.h" />
+    <ClInclude Include="..\core\tpm.h" />
     <ClInclude Include="..\..\lib\common\include\crypt.h" />
     <ClInclude Include="..\..\lib\common\include\secure.h" />
     <ClInclude Include="..\core\device.h" />

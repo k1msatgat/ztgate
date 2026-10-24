@@ -766,8 +766,16 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 
 	result = TUNNEL_ENROLL_ERROR;
 	if (device_generate(&dev) == DEVICE_OK) {
-		result = tunnel_enroll(&cfg, e.code, dev.id, dev.key, dev.server_pub, stop_all);
+		uint8_t tpub[VPN_PUB_LEN_WIRE];
+		const int tpm = device_tpm_begin(&dev, tpub) == 0;
+
+		slog("enroll: device key %s", tpm ? "in the TPM" : "software (no TPM), kept with DPAPI");
+		result = tunnel_enroll(&cfg, e.code, dev.id, dev.key, dev.server_pub, tpm ? tpub : NULL, stop_all);
 		dev.has_server_pub = result == TUNNEL_ENROLL_OK;
+		if (device_tpm_finish(&dev, result == TUNNEL_ENROLL_OK) < 0) {
+			slog("enroll: the TPM could not derive the device key");
+			result = TUNNEL_ENROLL_ERROR;
+		}
 
 		/* 서버가 받아 준 뒤에 저장한다. 먼저 저장하면 서버에 닿지 못했을 때 예전 신원만 잃는다. */
 		if (result == TUNNEL_ENROLL_OK && device_save(&dev) != DEVICE_OK) {

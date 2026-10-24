@@ -9,6 +9,7 @@
 #include "posture.h"
 #include "crypt.h"
 #include "device.h"
+#include "tpm.h"
 
 static HANDLE stop_event;
 
@@ -91,6 +92,8 @@ static int show_device(void)
 
 	/* 키는 등록할 때 한 번만 보여 준다. */
 	print_hex("device id  ", dev.id, sizeof(dev.id));
+	printf("device key %s\n", dev.tpm ? "in the TPM" : "DPAPI");
+	printf("server key %s\n", dev.has_server_pub ? "pinned" : "not pinned");
 	SecureZeroMemory(&dev, sizeof(dev));
 
 	return 0;
@@ -167,8 +170,18 @@ static int enroll_with_code(const char *server, const char *port, const char *co
 		return 1;
 	}
 
-	r = tunnel_enroll(&cfg, code, dev.id, dev.key, dev.server_pub, stop);
-	dev.has_server_pub = r == TUNNEL_ENROLL_OK;
+	{
+		uint8_t tpub[VPN_PUB_LEN_WIRE];
+		const int tpm = device_tpm_begin(&dev, tpub) == 0;
+
+		printf("device key: %s\n", tpm ? "in the TPM" : "software (no TPM), kept with DPAPI");
+		r = tunnel_enroll(&cfg, code, dev.id, dev.key, dev.server_pub, tpm ? tpub : NULL, stop);
+		dev.has_server_pub = r == TUNNEL_ENROLL_OK;
+		if (device_tpm_finish(&dev, r == TUNNEL_ENROLL_OK) < 0) {
+			fprintf(stderr, "the TPM could not derive the device key\n");
+			r = TUNNEL_ENROLL_ERROR;
+		}
+	}
 	CloseHandle(stop);
 
 	switch (r) {
@@ -250,6 +263,12 @@ int main(int argc, char *argv[])
 	}
 	if (argc == 2 && strcmp(argv[1], "device") == 0) {
 		return show_device();
+	}
+	if (argc == 2 && strcmp(argv[1], "tpm-selftest") == 0) {
+		int r = tpm_selftest();
+
+		printf("tpm ecdh %s\n", r == 0 ? "ok (same secret as software)" : r == 1 ? "unavailable (no TPM)" : "FAILED");
+		return r < 0 ? 1 : 0;
 	}
 	if ((argc == 5 || argc == 6) && strcmp(argv[1], "enroll") == 0) {
 		if (argc == 6 && strcmp(argv[5], "--force") != 0) {

@@ -2006,7 +2006,7 @@ static int pump_udp(tunnel_t *t)
  * 관리자 권한도 필요 없다. */
 int tunnel_enroll(const tunnel_config_t *base, const char *code,
 		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN],
-		uint8_t server_pub[VPN_PUB_LEN_WIRE], HANDLE stop_event)
+		uint8_t server_pub[VPN_PUB_LEN_WIRE], const uint8_t *device_pub, HANDLE stop_event)
 {
 	tunnel_config_t cfg = *base;
 	tunnel_t tunnel;
@@ -2033,8 +2033,10 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 
 	/* 이 기기의 고정 키 쌍 (proto.h 의 "기기 등록", v8). 비밀키는 기기 키를 뽑는 데 한 번 쓰고
 	 * 버린다 — 저장하는 것은 그 결과뿐이라 DPAPI 에 두는 신원의 모양이 그대로다. */
-	mine = crypt_ecdh_new(pub);
-	if (mine == NULL) {
+	if (device_pub != NULL) {
+		memcpy(pub, device_pub, VPN_PUB_LEN);	/* TPM 의 키. 기기 키는 부르는 쪽이 뽑는다 */
+	}
+	else if ((mine = crypt_ecdh_new(pub)) == NULL) {
 		crypt_wipe(&cfg, sizeof(cfg));
 		return TUNNEL_ENROLL_ERROR;
 	}
@@ -2116,7 +2118,7 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 
 			/* 서버의 공개키는 코드를 아는 서버만 열 수 있는 이 세션으로 왔다. 그것과 이 기기의
 			 * 비밀키로 기기 키를 뽑는다. 서버는 자기 비밀키와 이 기기의 공개키로 같은 값을 뽑는다. */
-			if (ret == TUNNEL_ENROLL_OK &&
+			if (ret == TUNNEL_ENROLL_OK && mine != NULL &&
 					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
 				ret = TUNNEL_ENROLL_ERROR;
 			}
