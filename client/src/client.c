@@ -25,7 +25,7 @@
 /* Linux 클라이언트 (프로토콜 버전 5).
  *
  *   vpn_client [-k 신원파일] enroll <server-ip> <port> <등록 코드>
- *   vpn_client [-k 신원파일] [-i tun 이름] [-t 토큰 파일] [-v] run <server-ip> <port>
+ *   vpn_client [-k 신원파일] [-i tun 이름] [-t 토큰 파일] [-v] run <server-ip>[,<server-ip>...] <port>
  *   vpn_client posture
  *   vpn_client selftest
  *
@@ -61,7 +61,14 @@ typedef struct client {
 	/* TCP 로 붙는다 (-T <port>). UDP 가 막힌 곳을 위한 것이다. 연결이 끊기면 다시 열고 핸드셰이크한다. */
 	int tcp_port;
 	int transport_down;		/* TCP 연결이 끊겼다 */
-	struct sockaddr_in server;	/* 다시 열 때 쓴다 */
+	struct sockaddr_in server;	/* 지금 붙는 서버. 다시 열 때 쓴다 */
+
+	/* 서버 여럿 (run 10.0.0.10,10.0.0.11 9000). 지금 서버가 답하지 않으면 다음 서버로 넘어간다.
+	 * 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다 — 세션은 서버마다 따로라 넘어가면 새로
+	 * 핸드셰이크한다. */
+	struct sockaddr_in servers[NETCFG_SERVERS_MAX];
+	int n_servers;
+	int cur_server;
 	int epfd;			/* 다시 연 소켓을 걸 epoll */
 
 	/* 사용자 로그인 (-t). 토큰 파일이 바뀌거나 세션을 새로 열 때마다 보낸다. */
@@ -510,6 +517,46 @@ static int open_transport(client_t *c)
 	return 0;
 }
 
+static int open_socket(const struct sockaddr_in *server);
+
+/* 다음 서버로 넘어간다 (서버를 여럿 적었을 때만). UDP 는 서버에 connect 해 둔 소켓이라 새로 열어
+ * 바꿔 끼운다. TCP 는 다음 핸드셰이크 앞에서 open_transport 가 새 서버로 연다. */
+static void next_server(client_t *c)
+{
+	char a[INET_ADDRSTRLEN], b[INET_ADDRSTRLEN];
+	struct epoll_event ev;
+	int sock;
+
+	if (c->n_servers < 2) {
+		return;
+	}
+	ip_str(c->server.sin_addr, a);
+	c->cur_server = (c->cur_server + 1) % c->n_servers;
+	c->server = c->servers[c->cur_server];
+	printf("[HS] %s does not answer, switching to %s\n", a, ip_str(c->server.sin_addr, b));
+
+	if (c->tcp_port) {
+		return;
+	}
+	sock = open_socket(&c->server);
+	if (sock < 0) {
+		return;
+	}
+	if (c->session.sock >= 0) {
+		if (c->epfd >= 0) {
+			epoll_ctl(c->epfd, EPOLL_CTL_DEL, c->session.sock, NULL);
+		}
+		close(c->session.sock);
+	}
+	c->session.sock = sock;
+	if (c->epfd >= 0) {
+		memset(&ev, 0, sizeof(ev));
+		ev.events = EPOLLIN;
+		ev.data.fd = sock;
+		epoll_ctl(c->epfd, EPOLL_CTL_ADD, sock, &ev);
+	}
+}
+
 static int open_socket(const struct sockaddr_in *server)
 {
 	int32_t sock;
@@ -530,7 +577,7 @@ static int open_socket(const struct sockaddr_in *server)
 	return sock;
 }
 
-static int run(client_t *c, const struct sockaddr_in *server, const char *ifname)
+static int run(client_t *c, const char *ifname)
 {
 	char sb[INET_ADDRSTRLEN];
 	uint8_t packet[BUF_SIZE];
@@ -541,26 +588,41 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 	uint64_t now;
 	int ret = 1;
 
-	c->server = *server;
 	c->epfd = -1;
 	c->session.sock = -1;
-	if (c->tcp_port ? open_transport(c) : (c->session.sock = open_socket(server)) < 0) {
-		return 1;
-	}
-
-	printf("tunneling to %s:%u%s\n", ip_str(server->sin_addr, sb),
-			c->tcp_port ? (unsigned)c->tcp_port : ntohs(server->sin_port), c->tcp_port ? " (tcp)" : "");
 
 	/* 서버가 받아 준 뒤에 tun 을 만든다. 순서를 반대로 하면 거절당하는 경우에도 장치와
-	 * 터널 대역 경로가 잠깐 생겼다 사라진다. 접근이 허락되기 전에는 터널이 없는 편이 맞다. */
-	hs = handshake(c);
+	 * 터널 대역 경로가 잠깐 생겼다 사라진다. 접근이 허락되기 전에는 터널이 없는 편이 맞다.
+	 * 서버를 여럿 적었으면 답하는 서버를 찾을 때까지 차례로 해 본다. 거절은 답이다 — 다른
+	 * 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. */
+	hs = HS_FAIL;
+	for (i = 0; i < c->n_servers && running; i++) {
+		c->cur_server = i;
+		c->server = c->servers[i];
+		if (c->session.sock >= 0) {
+			close(c->session.sock);
+			c->session.sock = -1;
+		}
+		if (c->tcp_port ? open_transport(c) : (c->session.sock = open_socket(&c->server)) < 0) {
+			continue;
+		}
+		printf("tunneling to %s:%u%s\n", ip_str(c->server.sin_addr, sb),
+				c->tcp_port ? (unsigned)c->tcp_port : ntohs(c->server.sin_port), c->tcp_port ? " (tcp)" : "");
+		hs = handshake(c);
+		if (hs != HS_FAIL) {
+			break;
+		}
+	}
 	if (hs != HS_OK) {
 		ret = hs == HS_DENIED ? EXIT_DENIED : 1;
 		goto out;
 	}
 
 	strncpy(c->net.ifname, ifname, IFNAMSIZ - 1);
-	c->net.server = server->sin_addr;
+	for (i = 0; i < c->n_servers; i++) {
+		c->net.servers[i] = c->servers[i].sin_addr;
+	}
+	c->net.n_servers = c->n_servers;
 	tun_fd = tun_alloc(c->net.ifname);
 	if (tun_fd < 0) {
 		fprintf(stderr, "tun_alloc failed\n");
@@ -651,12 +713,13 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 			/* TCP 는 연결부터 새로 연다. 끊긴 연결로는 핸드셰이크가 갈 수 없다. */
 			if (c->tcp_port && open_transport(c) < 0) {
 				c->transport_down = 1;
+				next_server(c);
 				now = get_current_time_ms();
 				c->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 5000;	/* 5초 뒤 다시 */
 				c->last_ka_ms = now;
 				continue;
 			}
-			switch (handshake(c)) {
+			switch ((hs = handshake(c))) {
 				case HS_OK:
 					if (apply_session_config(c) < 0) {
 						goto out;
@@ -676,13 +739,19 @@ static int run(client_t *c, const struct sockaddr_in *server, const char *ifname
 						break;
 					}
 					fprintf(stderr, "[HS] failed re-handshake[%s][%u], retry in %ds\n",
-							ip_str(server->sin_addr, sb), ntohs(server->sin_port),
-							SERVER_TIMEOUT_SEC);
+							ip_str(c->server.sin_addr, sb), ntohs(c->server.sin_port),
+							c->n_servers > 1 ? 2 : SERVER_TIMEOUT_SEC);
+					hs = HS_FAIL;
 					break;
 			}
 			now = get_current_time_ms();
 			c->last_rx_ms = now;
 			c->last_ka_ms = now;
+			/* 다른 서버가 있으면 30초를 기다리지 않고 2초 뒤에 그 서버로 해 본다. */
+			if (hs == HS_FAIL && c->n_servers > 1 && running) {
+				next_server(c);
+				c->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 2000;
+			}
 		}
 
 		/* keepalive 는 NAT 매핑 유지, 생존 확인(서버는 반드시 되돌려준다), 포스처 재보고를
@@ -833,8 +902,8 @@ static void usage(const char *prog)
 {
 	fprintf(stderr,
 		"usage: %s [-k identity-file] enroll <server-ip> <port> <enrollment-code> [-f]\n"
-		"       %s [-k identity-file] [-i ifname] [-t token-file] [-v] run <server-ip> <port>\n"
-		"       %s [-k identity-file] [-i ifname] [-v] connector <server-ip> <port> <lan-ifname>\n"
+		"       %s [-k identity-file] [-i ifname] [-t token-file] [-v] run <server-ip>[,<server-ip>...] <port>\n"
+		"       %s [-k identity-file] [-i ifname] [-v] connector <server-ip>[,...] <port> <lan-ifname>\n"
 		"       %s posture\n"
 		"       %s selftest\n"
 		"  -k  device identity file (default %s)\n"
@@ -842,6 +911,7 @@ static void usage(const char *prog)
 		"  -t  log in as the user whose token (JWT) is in this file; sent again when it changes\n"
 		"  -T  reach the server over TCP on this port (vpn_server -t) where UDP is blocked\n"
 		"  -f  replace an existing identity when enrolling\n"
+		"  several servers (up to 4, same port): when the current one stops answering, the next is tried\n"
 		"  -v  log every packet\n"
 		"  connector: forward what the server relays to this device onto <lan-ifname> (NAT,\n"
 		"             replies only back); the device must be listed with connector=<net>\n",
@@ -869,6 +939,35 @@ static int parse_server(const char *ip, const char *port, struct sockaddr_in *ou
 	}
 
 	return 0;
+}
+
+/* "10.0.0.10,10.0.0.11" 을 서버 목록으로. 개수, 틀리면 -1. */
+static int parse_servers(const char *list, const char *port, struct sockaddr_in *out, int max)
+{
+	char buf[256];
+	char *tok, *save = NULL;
+	int n = 0;
+
+	if (strlen(list) >= sizeof(buf)) {
+		fprintf(stderr, "server list too long\n");
+		return -1;
+	}
+	strcpy(buf, list);
+	for (tok = strtok_r(buf, ",", &save); tok != NULL; tok = strtok_r(NULL, ",", &save)) {
+		if (n == max) {
+			fprintf(stderr, "at most %d servers\n", max);
+			return -1;
+		}
+		if (parse_server(tok, port, &out[n]) < 0) {
+			return -1;
+		}
+		n++;
+	}
+	if (n == 0) {
+		fprintf(stderr, "no server address\n");
+		return -1;
+	}
+	return n;
 }
 
 int main(int argc, char *argv[])
@@ -946,7 +1045,8 @@ int main(int argc, char *argv[])
 	}
 
 	if (strcmp(cmd, "run") == 0 && argc - optind >= 3) {
-		if (parse_server(argv[optind + 1], argv[optind + 2], &server) < 0) {
+		client.n_servers = parse_servers(argv[optind + 1], argv[optind + 2], client.servers, NETCFG_SERVERS_MAX);
+		if (client.n_servers < 0) {
 			return 1;
 		}
 		switch (identity_load(ident_path, &client.ident)) {
@@ -958,7 +1058,7 @@ int main(int argc, char *argv[])
 			default:
 				return 1;
 		}
-		ret = run(&client, &server, ifname);
+		ret = run(&client, ifname);
 		crypt_wipe(&client.ident, sizeof(client.ident));
 		return ret;
 	}

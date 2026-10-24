@@ -25,6 +25,8 @@
 #      막히고, ACL 은 그대로 걸리며, 커넥터가 내려가면 다시 닿지 않는다.
 #   7. TCP -> 클라이언트 쪽에서 UDP 를 막으면 같은 기기로 TCP(-T) 로 붙는다.
 #   8. 서버 공개키 고정 -> 등록 때 받은 서버 공개키와 다른 공개키를 내미는 서버에는 답하지 않는다.
+#   9. 장애 조치 -> 서버를 여럿 적으면 답하지 않는 서버를 건너뛰고, 연결 중에 지금 서버로 가는 길이
+#      막히면 다음 서버로 넘어간다 (서버 veth 에 붙인 두 번째 주소를 두 번째 서버로 쓴다).
 #
 # 사용자 네임스페이스 안에서는 nft 규칙셋이 그 네임스페이스의 것이라 방화벽 포스처를
 # 마음대로 켜고 끌 수 있다. 실제 장비에서는 그 장비의 nftables / firewalld 를 읽는다.
@@ -407,6 +409,33 @@ check "pinning: a challenge with another server key is not answered" \
 	wait_for 5 log_has "$WORK/client-pin.log" "not the one this device enrolled with"
 check "pinning: so the server sees no AUTH from it" \
 	test "$(grep -c "authenticated as $CLI_TUN" "$SLOG")" = "$hs_before"
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+
+echo "== 9. failover"
+# 192.0.2.9 에는 아무도 없다. 192.0.2.3 은 같은 서버의 두 번째 주소 — 클라이언트에게는 다른 서버다.
+SRV_VETH2=192.0.2.3
+ip addr add "$SRV_VETH2/24" dev v-srv
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$IDENT" -i "$CLI_IF" \
+	run "192.0.2.9,$SRV_VETH,$SRV_VETH2" "$PORT" > "$WORK/client-fo.log" 2>&1 &
+CLI_PID=$!
+check "failover: a server that does not answer is skipped" wait_for 15 log_has "$WORK/client-fo.log" "] connected"
+check "failover: ...and the next one is used" log_has "$WORK/client-fo.log" "tunneling to $SRV_VETH:"
+check "failover: ping through the tunnel" ping_ok "$SRV_TUN"
+# 지금 서버로 가는 길만 끊는다. 30초 동안 답이 없으면 다시 핸드셰이크하고, 실패하면 다음 서버로.
+in_cli nft -f - <<EOF
+table inet e2e_fo {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		ip daddr $SRV_VETH udp dport $PORT drop
+	}
+}
+EOF
+check "failover: when the current server goes silent the client moves on" \
+	wait_for 50 log_has "$WORK/client-fo.log" "does not answer, switching to $SRV_VETH2"
+check "failover: connected again through the other server" \
+	wait_for 10 sh -c "[ \$(grep -c '] connected' '$WORK/client-fo.log') -ge 2 ]"
+check "failover: ping through the tunnel after the switch" ping_ok "$SRV_TUN"
+in_cli nft delete table inet e2e_fo
 kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 
 echo

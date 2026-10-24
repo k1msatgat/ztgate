@@ -53,11 +53,18 @@ int netcfg_usable(const net_config_t *c)
  *                     할 길이 터널 자신이 되어, 넣는 순간 연결이 끊긴다. */
 static int route_usable(const netcfg_t *n, const net_route_t *r)
 {
+	int i;
+
 	if (r->prefix_len == 0) {
 		return 0;
 	}
 
-	return (n->server.s_addr & prefix_mask(r->prefix_len)) != r->addr;
+	for (i = 0; i < n->n_servers; i++) {
+		if ((n->servers[i].s_addr & prefix_mask(r->prefix_len)) == r->addr) {
+			return 0;
+		}
+	}
+	return 1;
 }
 
 static int route_in(const net_config_t *c, const net_route_t *r)

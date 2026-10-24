@@ -19,10 +19,14 @@
 #define NETCFG_PREFIX_MIN	8
 #define NETCFG_PREFIX_MAX	30
 #define NETCFG_MTU_MIN		576
+#define NETCFG_SERVERS_MAX	4	/* client.c 의 서버 목록과 같다 */
 
 typedef struct netcfg {
 	char ifname[IFNAMSIZ];
-	struct in_addr server;		/* 이 주소를 덮는 경로는 넣지 않는다 */
+	/* 이 주소들을 덮는 경로는 넣지 않는다. 서버를 여럿 적었으면 모두 — 지금 붙은 서버만 빼면
+	 * 그 서버가 죽고 다른 서버로 넘어갈 때 새 서버로 가는 패킷이 죽은 터널로 들어간다. */
+	struct in_addr servers[NETCFG_SERVERS_MAX];
+	int n_servers;
 	net_config_t applied;
 	int has_applied;
 } netcfg_t;
