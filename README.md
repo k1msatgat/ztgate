@@ -399,6 +399,18 @@ sudo systemctl enable --now ztgate
 | `/var/log/ztgate/audit.log` | 감사 로그 (사건마다 JSON 한 줄) |
 | `/run/ztgate/status.sock` | 상태 소켓 (root 전용) |
 
+### 패키지로 설치하기 (DEB / RPM)
+
+저장소를 빌드할 수 없는 장비에는 서버 패키지 `ztgate-server` 를 씁니다. CI 가 만들어 산출물(`ztgate-server-deb`, `ztgate-server-rpm`)로 올리고, 직접 만들려면 `make server` 뒤에 `packaging/build.sh deb` 또는 `packaging/build.sh rpm` 입니다 (`packaging/out/`).
+
+```bash
+sudo apt install ./ztgate-server_0.8.0_amd64.deb        # Debian / Ubuntu (OpenSSL 3)
+sudo dnf install ./ztgate-server-0.8.0-1.x86_64.rpm     # Rocky / RHEL 9
+sudo systemctl enable --now ztgate
+```
+
+배치는 설치 스크립트와 같고(`/opt/ztgate`, `/etc/ztgate`), 다른 점은 셋입니다. 유닛은 `/usr/lib/systemd/system` 에, `ztgate_ctl` 은 `/usr/sbin` 에 놓입니다. MCP 서버는 npm 의존성이 있어 들어 있지 않습니다 — 필요하면 그 장비에서 `mcp/install.sh` 를 씁니다. `ztgate_ctl` 은 Node.js 가 있어야 돌아 권장 의존으로만 둡니다. 설정(`/etc/ztgate`)은 패키지의 파일이 아니라 설치할 때 처음 한 번 만들어집니다. 그래서 업그레이드해도 기기 목록과 서버 키가 그대로이고, 패키지를 지워도(`purge` 도) 남습니다. 업그레이드하면 돌고 있던 서버를 새 실행 파일로 다시 올리고, 붙어 있던 기기는 `DISCONNECT` 를 받고 바로 다시 붙습니다. CI 가 설치 → 시작 → 다시 설치(서버 키가 그대로인지) → 제거(설정이 남는지)를 Ubuntu 24.04 와 Rocky Linux 9 에서 확인합니다.
+
 유닛은 서버에 `CAP_NET_ADMIN`만 남기고(`CapabilityBoundingSet`), `ProtectSystem=strict`로 파일 시스템을 읽기 전용으로 만든 뒤 `/etc/ztgate`와 로그 디렉터리만 쓰게 엽니다. 설정이 틀려 서버가 스스로 1로 끝나면 다시 올리지 않고, 그 밖의 이유로 죽으면 2초 뒤에 다시 올립니다.
 
 ### 일상 운영
@@ -423,7 +435,7 @@ claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라�
 
 ### 업그레이드
 
-1. 저장소를 받고 `mcp/install.sh`를 다시 실행한 뒤 `sudo systemctl restart ztgate`.
+1. 저장소를 받고 `mcp/install.sh`를 다시 실행한 뒤 `sudo systemctl restart ztgate`. 패키지로 설치했으면 새 패키지를 설치하는 것으로 끝입니다 (서버를 스스로 다시 올립니다).
 2. **서버와 클라이언트의 프로토콜 버전은 같아야 합니다.** 서버는 버전이 다른 패킷을 헤더에서 버리므로(`[drop] bad header`), 클라이언트에는 서버가 응답하지 않는 것처럼 보입니다. 프로토콜 버전이 바뀌는 업그레이드는 서버와 모든 클라이언트를 함께 올립니다.
 3. 서버를 다시 시작하면 세션은 모두 사라집니다. 클라이언트는 서버에서 30초 동안 아무것도 받지 못하면 스스로 다시 핸드셰이크합니다.
 
