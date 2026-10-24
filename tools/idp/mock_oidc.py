@@ -72,14 +72,31 @@ def main():
     groups = [g for g in a.groups.split(",") if g]
     state = {"polls": 0, "refresh": set(), "issued": 0, "codes": {}, "pending": {}}
 
-    def issue():
+    def issue(jkt=None):
         state["issued"] += 1
         rt = secrets.token_urlsafe(16)
         state["refresh"].add(rt)
         now = int(time.time())
         tok = mint.token(a.keys, a.user, groups=groups, ttl=a.ttl, iss=a.issuer,
-                         exp=now + a.ttl + a.exp_offset, now=now)
-        return {"access_token": tok, "token_type": "Bearer", "expires_in": a.ttl, "refresh_token": rt}
+                         exp=now + a.ttl + a.exp_offset, now=now,
+                         claims={"cnf": {"jkt": jkt}} if jkt else None)
+        return {"access_token": tok, "token_type": "DPoP" if jkt else "Bearer", "expires_in": a.ttl, "refresh_token": rt}
+
+    def dpop_jkt(proof, htu):
+        """DPoP 헤더의 증명이 이 토큰 엔드포인트에 대한 것이면 그 키의 지문. 시험용이라 서명은 보지
+        않는다 (실제 IdP 가 하는 일이다) — 서버가 LOGIN 에서 서명을 보므로, 남의 키를 적은 증명으로
+        받은 토큰은 그 키 없이는 쓸 수 없다."""
+        try:
+            head, body, _ = proof.split(".")
+            h = json.loads(base64.urlsafe_b64decode(head + "=="))
+            b = json.loads(base64.urlsafe_b64decode(body + "=="))
+        except ValueError:
+            return None
+        if h.get("typ") != "dpop+jwt" or b.get("htm") != "POST" or b.get("htu") != htu:
+            return None
+        j = h.get("jwk", {})
+        canon = '{"crv":"%s","kty":"%s","x":"%s","y":"%s"}' % (j.get("crv"), j.get("kty"), j.get("x"), j.get("y"))
+        return mint.b64url(hashlib.sha256(canon.encode()).digest())
 
     def approved(req):
         """인가 요청 하나를 승인한다. 코드를 만들고 앱으로 돌아갈 주소를 돌려준다."""
@@ -168,11 +185,17 @@ def main():
             if self.path != "/token":
                 return self.reply(404, {})
             grant = form.get("grant_type")
+            jkt = None
+            if self.headers.get("DPoP"):
+                jkt = dpop_jkt(self.headers["DPoP"], base + "/token")
+                if jkt is None:
+                    return self.reply(400, {"error": "invalid_dpop_proof"})
+                print("mock_oidc: a DPoP-bound token for jkt %s" % jkt, flush=True)
             if grant == "urn:ietf:params:oauth:grant-type:device_code":
                 state["polls"] += 1
                 if state["polls"] == 1:
                     return self.reply(400, {"error": "authorization_pending"})
-                return self.reply(200, issue())
+                return self.reply(200, issue(jkt))
             if grant == "authorization_code":
                 req = state["codes"].pop(form.get("code", ""), None)     # 코드는 한 번만
                 if (req is None or form.get("client_id") != req["client_id"]
@@ -180,13 +203,13 @@ def main():
                     return self.reply(400, {"error": "invalid_grant"})
                 if s256(form.get("code_verifier", "")) != req["code_challenge"]:
                     return self.reply(400, {"error": "invalid_grant", "error_description": "PKCE verification failed"})
-                return self.reply(200, issue())
+                return self.reply(200, issue(jkt))
             if grant == "refresh_token" and a.refresh_delay:
                 print("mock_oidc: holding a refresh for %gs" % a.refresh_delay, flush=True)
                 time.sleep(a.refresh_delay)
             if grant == "refresh_token" and form.get("refresh_token") in state["refresh"]:
                 state["refresh"].discard(form["refresh_token"])     # 한 번 쓴 refresh token 은 버린다
-                return self.reply(200, issue())
+                return self.reply(200, issue(jkt))
             self.reply(400, {"error": "invalid_grant"})
 
     http.server.ThreadingHTTPServer(("127.0.0.1", a.port), Handler).serve_forever()

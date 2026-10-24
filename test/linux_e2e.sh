@@ -27,6 +27,8 @@
 #   8. 서버 공개키 고정 -> 등록 때 받은 서버 공개키와 다른 공개키를 내미는 서버에는 답하지 않는다.
 #   9. 장애 조치 -> 서버를 여럿 적으면 답하지 않는 서버를 건너뛰고, 연결 중에 지금 서버로 가는 길이
 #      막히면 다음 서버로 넘어간다 (서버 veth 에 붙인 두 번째 주소를 두 번째 서버로 쓴다).
+#  10. DPoP -> 기기 키에 묶인 토큰은 그 키(-D) 없이 보내면 거절되고, ztgate_login --dpop-key 로 받아
+#      같은 키로 보내면 받아들여진다.
 #
 # 사용자 네임스페이스 안에서는 nft 규칙셋이 그 네임스페이스의 것이라 방화벽 포스처를
 # 마음대로 켜고 끌 수 있다. 실제 장비에서는 그 장비의 nftables / firewalld 를 읽는다.
@@ -436,6 +438,32 @@ check "failover: connected again through the other server" \
 	wait_for 10 sh -c "[ \$(grep -c '] connected' '$WORK/client-fo.log') -ge 2 ]"
 check "failover: ping through the tunnel after the switch" ping_ok "$SRV_TUN"
 in_cli nft delete table inet e2e_fo
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+
+echo "== 10. dpop"
+DKEY=$WORK/dpop.pem
+DTOK=$WORK/dpop-token
+"$CLIENT" -D "$DKEY" dpop-jkt > "$WORK/jkt" 2>/dev/null
+check "dpop: the client makes its device key (mode 600)" test "$(stat -c %a "$DKEY" 2>/dev/null)" = 600
+python3 "$ROOT_DIR/tools/idp/mint.py" token "$IDP" alice --groups ops --dpop-key "$DKEY" > "$DTOK"
+chmod 600 "$DTOK"
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$IDENT" -i "$CLI_IF" -t "$DTOK" \
+	run "$SRV_VETH" "$PORT" > "$WORK/client-dpop1.log" 2>&1 &
+CLI_PID=$!
+check "dpop: a token bound to the key, sent without it, is rejected" \
+	wait_for 10 log_has "$WORK/client-dpop1.log" "bound to a device key"
+kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
+
+# 로그인 도구가 IdP 에 같은 키의 증명을 보내 그 키에 묶인 토큰을 받는다.
+python3 "$ROOT_DIR/client/ztgate_login" --issuer http://127.0.0.1:18080 --client-id ztgate \
+	--token-file "$DTOK" --dpop-key "$DKEY" > "$WORK/login-dpop.log" 2>&1
+check "dpop: the IdP bound the token to this device's key" \
+	log_has "$WORK/idp.log" "DPoP-bound token for jkt $(cat "$WORK/jkt")"
+nsenter -t "$NS_PID" -n --preserve-credentials "$CLIENT" -k "$IDENT" -i "$CLI_IF" -t "$DTOK" -D "$DKEY" \
+	run "$SRV_VETH" "$PORT" > "$WORK/client-dpop2.log" 2>&1 &
+CLI_PID=$!
+check "dpop: with the device key the server accepts it" \
+	wait_for 10 log_has "$WORK/client-dpop2.log" "[login] logged in as alice"
 kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 
 echo

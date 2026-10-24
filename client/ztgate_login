@@ -17,12 +17,19 @@ IdP 쪽 준비: 공개 클라이언트(client secret 없음) 하나에 기기 �
 서버의 audience 가 들어가게 하고(Keycloak 이면 audience 매퍼), 그룹을 쓸 거면 groups 클레임을
 넣는다. README 의 "사용자 로그인".
 
+--dpop-key 를 주면 토큰 요청마다 그 키(vpn_client -D 와 같은 파일, P-256)로 DPoP 증명(RFC 9449)을
+붙인다. IdP 는 그 키에 묶인 토큰(cnf.jkt)을 주고, 그 토큰은 같은 키로 증명하는 그 기기에서만 쓰인다.
+서명은 openssl 명령이 한다.
+
 표준 라이브러리만 쓴다. 주소는 https 만 받는다 (localhost 는 http 도 된다 — 시험용).
 """
 
 import argparse
+import base64
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -46,11 +53,50 @@ def check_url(url, what):
     die("%s must be https: %s" % (what, url))
 
 
+DPOP_KEY = None     # --dpop-key: 토큰 엔드포인트에 보낼 증명을 이 키로 만든다
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def dpop_proof(pem, htm, htu):
+    """RFC 9449 의 증명 한 줄. ES256 은 openssl 이 DER 로 서명한 것을 r | s 로 바꾼다."""
+    point = subprocess.run(["openssl", "ec", "-in", pem, "-pubout", "-outform", "DER"],
+                           capture_output=True, check=True).stdout[-65:]
+    header = {"typ": "dpop+jwt", "alg": "ES256",
+              "jwk": {"kty": "EC", "crv": "P-256", "x": b64url(point[1:33]), "y": b64url(point[33:65])}}
+    body = {"htm": htm, "htu": htu, "iat": int(time.time()), "jti": b64url(os.urandom(16))}
+    signing = (b64url(json.dumps(header, separators=(",", ":")).encode()) + "." +
+               b64url(json.dumps(body, separators=(",", ":")).encode())).encode()
+    der = subprocess.run(["openssl", "dgst", "-sha256", "-sign", pem], input=signing,
+                         capture_output=True, check=True).stdout
+    i, ints = 2 if der[1] < 0x80 else 3, []
+    while i < len(der):
+        n = der[i + 1]
+        ints.append(int.from_bytes(der[i + 2:i + 2 + n], "big"))
+        i += 2 + n
+    sig = ints[0].to_bytes(32, "big") + ints[1].to_bytes(32, "big")
+    return (signing + b"." + b64url(sig).encode()).decode()
+
+
+def dpop_key(path):
+    """없으면 만든다 (vpn_client -D 도 같은 파일을 만든다)."""
+    if not os.path.exists(path):
+        subprocess.run(["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+                        "-out", path], capture_output=True, check=True)
+        os.chmod(path, 0o600)
+    return path
+
+
 def http_json(url, form=None):
     """GET (form 이 없으면) 또는 form POST. (HTTP 상태, JSON) 을 돌려준다. 4xx 의 본문도
     읽는다 — 토큰 엔드포인트는 "아직 로그인 안 함"을 400 으로 알린다."""
     data = urllib.parse.urlencode(form).encode() if form is not None else None
-    req = urllib.request.Request(url, data=data, headers={"Accept": "application/json"})
+    headers = {"Accept": "application/json"}
+    if DPOP_KEY and form is not None and form.get("grant_type"):
+        headers["DPoP"] = dpop_proof(DPOP_KEY, "POST", url)
+    req = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             return r.status, json.load(r)
@@ -141,13 +187,21 @@ def main():
     p.add_argument("--use", choices=["access", "id"], default="access",
                    help="which token to hand to the VPN server (default: access)")
     p.add_argument("--keep", action="store_true", help="stay running and refresh the token before it expires")
+    p.add_argument("--dpop-key", help="bind the token to this device key (the same file as vpn_client -D)")
     a = p.parse_args()
+
+    global DPOP_KEY
+    if a.dpop_key:
+        DPOP_KEY = dpop_key(a.dpop_key)
 
     # --keep 으로 띄워 두고 출력을 파일로 돌리면 블록 버퍼링이라 갱신 소식이 늦게 보인다.
     sys.stdout.reconfigure(line_buffering=True)
 
     meta = discover(check_url(a.issuer, "issuer"))
     tokens = device_login(meta, a.client_id, a.scope)
+    if DPOP_KEY and tokens.get("token_type", "").lower() != "dpop":
+        print("warning: the IdP did not bind the token to the device key (token_type %s)" % tokens.get("token_type"),
+              file=sys.stderr)
     write_token(a.token_file, pick(tokens, a.use))
     print("signed in. token written to %s" % a.token_file)
 

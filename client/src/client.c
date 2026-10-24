@@ -18,6 +18,7 @@
 #include "common.h"
 #include "identity.h"
 #include "netcfg.h"
+#include "dpop.h"
 #include "posture.h"
 #include "session.h"
 #include "connector.h"
@@ -286,6 +287,20 @@ static void login_tick(client_t *c, uint64_t now)
 		/* 파일이 아직 없거나 쓰는 중이다. 바뀌면 다시 본다. */
 		c->login_due = 0;
 		return;
+	}
+	/* 기기 키가 있으면 증명을 붙인다 (토큰이 그 키에 묶여 있지 않으면 서버는 보지 않는다). */
+	if (dpop_ready()) {
+		char proof[1024];
+		int pl = dpop_proof((const char *)packet + PKT_HDR_LEN, (size_t)n, proof, sizeof(proof));
+
+		if (pl > 0 && (size_t)(n + 1 + pl) <= LOGIN_TOKEN_MAX) {
+			packet[PKT_HDR_LEN + n] = ' ';
+			memcpy(packet + PKT_HDR_LEN + n + 1, proof, (size_t)pl);
+			n += 1 + pl;
+		}
+		else {
+			fprintf(stderr, "[login] the token and its DPoP proof do not fit in one packet; sending the token alone\n");
+		}
 	}
 	if (session_send(&c->session, MSG_TYPE_LOGIN, packet, sizeof(packet), (size_t)n) < 0) {
 		fprintf(stderr, "[login] send failed\n");
@@ -910,6 +925,8 @@ static void usage(const char *prog)
 		"  -i  tun device name (default %s)\n"
 		"  -t  log in as the user whose token (JWT) is in this file; sent again when it changes\n"
 		"  -T  reach the server over TCP on this port (vpn_server -t) where UDP is blocked\n"
+		"  -D  DPoP device key (P-256 PEM, made if missing): LOGIN carries a proof with it, so a token\n"
+		"      bound to this key (ztgate_login --dpop-key) works only from this device. dpop-jkt prints its thumbprint\n"
 		"  -f  replace an existing identity when enrolling\n"
 		"  several servers (up to 4, same port): when the current one stops answering, the next is tried\n"
 		"  -v  log every packet\n"
@@ -986,8 +1003,13 @@ int main(int argc, char *argv[])
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	memset(&client, 0, sizeof(client));
 
-	while ((opt = getopt(argc, argv, "+k:i:t:T:vf")) != -1) {
+	while ((opt = getopt(argc, argv, "+k:i:t:T:D:vf")) != -1) {
 		switch (opt) {
+			case 'D':
+				if (dpop_load(optarg) < 0) {
+					return 1;
+				}
+				break;
 			case 'k': ident_path = optarg; break;
 			case 'i': ifname = optarg; break;
 			case 't': client.token_path = optarg; break;
@@ -1024,6 +1046,16 @@ int main(int argc, char *argv[])
 	}
 	if (strcmp(cmd, "posture") == 0) {
 		print_posture();
+		return 0;
+	}
+	if (strcmp(cmd, "dpop-jkt") == 0) {
+		char jkt[64];
+
+		if (!dpop_ready() || dpop_jkt(jkt) < 0) {
+			fprintf(stderr, "give the device key with -D <file>\n");
+			return 1;
+		}
+		printf("%s\n", jkt);
 		return 0;
 	}
 
