@@ -17,6 +17,7 @@
 #include "acl.h"
 #include "device.h"
 #include "status.h"
+#include "flow.h"
 
 server_stats_t stats;
 
@@ -169,7 +170,9 @@ static void build(int acl_enabled)
 	put("\"login_ok\":%llu,", (unsigned long long)stats.login_ok);
 	put("\"login_failed\":%llu,", (unsigned long long)stats.login_failed);
 	put("\"connector_offline\":%llu,", (unsigned long long)stats.connector_offline);
-	put("\"connector_dropped\":%llu},", (unsigned long long)stats.connector_dropped);
+	put("\"connector_dropped\":%llu,", (unsigned long long)stats.connector_dropped);
+	put("\"flow_dropped\":%llu},", (unsigned long long)stats.flow_dropped);
+	put("\"flows\":{\"enabled\":%s,\"open\":%d},", flow_enabled() ? "true" : "false", flow_count());
 
 	put("\"sessions\":[");
 	for (i = 0; i < MAX_PEERS; i++) {

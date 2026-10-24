@@ -931,6 +931,60 @@ def config_tests(srv, acl_path, dev_path):
     srv.reload()
 
 
+def flow_tests(path):
+    """-F: 서버 쪽에서 클라이언트로 먼저 거는 패킷은 버리고, 클라이언트가 연 흐름의 답만 들이는가.
+
+    시험 장비의 lo 에 10.77.0.1 을 붙여 '서버 뒤의 장비'로 쓴다. 서버의 tun 경로(10.0.0.0/24)로
+    그 주소에서 보내면 서버 프로세스의 tun_in 을 지난다."""
+    outside_ip = "10.77.0.1"
+    fd, acl_path = tempfile.mkstemp(prefix="acl.", suffix=".conf")
+    with os.fdopen(fd, "w") as f:
+        f.write("10.0.0.0/24 10.77.0.0/16 udp any allow\n10.0.0.0/24 10.0.0.1 icmp any allow\n")
+    subprocess.run(["ip", "addr", "add", outside_ip + "/32", "dev", "lo"], check=True)
+    srv = Server(path, acl_path, opts=["-F"])
+    outside = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    outside.bind((outside_ip, 7000))
+    outside.settimeout(2.0)
+    try:
+        c = Client()
+        idx = session(c)
+        c.drain()
+
+        def dropped():
+            return srv.status()["counters"]["flow_dropped"]
+
+        before = dropped()
+        outside.sendto(b"unsolicited", ("10.0.0.3", 40000))
+        expect("stateful: a packet the client did not ask for is not delivered", describe(c.recv()), "no response")
+        expect("stateful: ...and it is counted", dropped() - before, 1)
+
+        c.send(data(idx, None, udp_packet(TUN_IP, socket.inet_aton(outside_ip), 7000, 4321)))
+        try:
+            got, addr = outside.recvfrom(100)
+        except socket.timeout:
+            got, addr = None, None
+        expect("stateful: the client's packet reaches the outside host", (got, addr), (b"acl?", ("10.0.0.3", 40000)))
+
+        outside.sendto(b"reply", ("10.0.0.3", 40000))
+        r = c.recv()
+        inner = r[2] if r and r[0] == DATA else b""
+        expect("stateful: the reply to that flow is delivered",
+               (inner[12:16], struct.unpack("!HH", inner[20:24]) if len(inner) >= 24 else None, inner[28:]),
+               (socket.inet_aton(outside_ip), (7000, 40000), b"reply"))
+
+        before = dropped()
+        outside.sendto(b"other port", ("10.0.0.3", 40001))
+        expect("stateful: another port of the same client is still closed", (describe(c.recv()), dropped() - before),
+               ("no response", 1))
+        expect("stateful: the status shows the open flows", srv.status()["flows"]["open"] >= 1, True)
+    finally:
+        outside.close()
+        srv.stop()
+        subprocess.run(["ip", "addr", "del", outside_ip + "/32", "dev", "lo"])
+        os.unlink(acl_path)
+    return srv
+
+
 def tag_tests(path):
     """기기 태그(tag=)로 ACL 규칙의 주인을 고르는가. 태그가 맞지 않으면 그 규칙을 건너뛰고 다음
     규칙을 본다 (출발지 주소와 같다). 경로도 그 기기의 태그로 뽑는다."""
@@ -1960,6 +2014,7 @@ def main():
         logs.append(rekey_tests(path).text())
         logs.append(dns_tests(path).text())
         logs.append(tag_tests(path).text())
+        logs.append(flow_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)

@@ -28,6 +28,7 @@
 #include "idp.h"
 #include "dns.h"
 #include "serverkey.h"
+#include "flow.h"
 
 #define MAX_EVENTS 8
 
@@ -260,6 +261,14 @@ static int relay_from_connector(int32_t sock, peer_t *conn, const device_t *conn
 		LOG_LIMITED(LOG_DROP, "[drop] connector sent %s -> %s, source outside its networks\n",
 				ip_str(src, sb), ip_str(dst, db));
 		STAT_INC(spoofed_src);
+		return -1;
+	}
+
+	/* 내부망 쪽에서 먼저 거는 연결은 커넥터 장비의 nftables 가 막는다. -F 면 서버도 한 번 더 본다. */
+	if (!flow_inbound_ok(ip, n)) {
+		STAT_INC(flow_dropped);
+		LOG_LIMITED(LOG_DENY, "[deny] connector sent %s -> %s, not a reply to a flow the client opened\n",
+				ip_str(src, sb), ip_str(dst, db));
 		return -1;
 	}
 
@@ -1187,6 +1196,9 @@ static void udp_data(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int 
 	peer->rx_bytes += (uint64_t)n;
 	PEER_UNLOCK(peer);
 
+	/* 이 흐름의 답은 돌아올 때 들인다 (flow.h, -F). */
+	flow_outbound(ip, n);
+
 	conn_dev = device_connector_for(inner_dst);
 	if (conn_dev != NULL) {
 		LOG_VERBOSE("[udp->connector] %d bytes %s -> %s\n", n, ip_str(inner, ib),
@@ -1304,7 +1316,7 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 	char ib[INET_ADDRSTRLEN], ob[INET_ADDRSTRLEN];
 	struct sockaddr_in to;
 	socklen_t to_len;
-	struct in_addr inner;
+	struct in_addr inner, from;
 	peer_t *peer;
 	uint8_t *ip;
 	ssize_t sent;
@@ -1323,6 +1335,17 @@ static void tun_in(int32_t sock, uint8_t *packet, size_t cap, int n)
 	if (peer == NULL || peer->enroll) {
 		TABLE_UNLOCK();
 		LOG_LIMITED(LOG_DROP, "[drop] no peer for %s\n", ip_str(inner, ib));
+		return;
+	}
+
+	/* 서버 쪽에서 먼저 클라이언트로 거는 연결은 들이지 않는다 (-F). 터널 대역 안에서 오는 것은 다른
+	 * 클라이언트가 보내 그쪽의 ACL 을 이미 지났거나, 서버 자신의 터널 주소다. */
+	memcpy(&from, ip + IP_SRC_OFF, IP_ADDR_LEN);
+	if (flow_enabled() && tun_subnet_of(from).s_addr != tun_subnet_of(inner).s_addr &&
+			!flow_inbound_ok(ip, n)) {
+		TABLE_UNLOCK();
+		STAT_INC(flow_dropped);
+		LOG_LIMITED(LOG_DENY, "[deny] %s: not a reply to a flow the client opened (stateful, -F)\n", ip_str(inner, ib));
 		return;
 	}
 
@@ -1472,7 +1495,7 @@ int main(int argc, char *argv[])
 		return serverkey_generate(argv[2]) == 0 ? 0 : 1;
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:v")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:Fv")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -1511,6 +1534,9 @@ int main(int argc, char *argv[])
 		else if (opt == 'v') {
 			verbose = 1;
 		}
+		else if (opt == 'F') {
+			flow_enable();
+		}
 		else if (opt == 'w') {
 			long v = strtol(optarg, &end, 10);
 			if (*end != '\0' || v < 1 || v > MAX_WORKERS) {
@@ -1543,9 +1569,10 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-F] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -w: worker threads, each with its own UDP socket and tun queue (default 1)\n");
+		fprintf(stderr, "       -F: stateful: toward a client, pass only replies to flows the client opened\n");
 		fprintf(stderr, "       -v: a log line for every packet that passes (drops and denials are\n");
 		fprintf(stderr, "           always logged, at most %d lines a second of each kind)\n", LOG_BURST);
 		fprintf(stderr, "       -e: pending enrollments; with it the server adds devices to <device-file> itself\n");

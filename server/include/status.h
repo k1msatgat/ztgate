@@ -31,6 +31,7 @@ typedef struct server_stats {
 	uint64_t login_failed;
 	uint64_t connector_offline;		/* 커넥터가 맡은 대역으로 가는데 커넥터가 붙어 있지 않다 */
 	uint64_t connector_dropped;		/* 커넥터가 보낸 답의 목적지에 클라이언트가 없다 */
+	uint64_t flow_dropped;			/* 클라이언트가 연 흐름의 답이 아니라 들이지 않았다 (-F) */
 } server_stats_t;
 
 extern server_stats_t stats;

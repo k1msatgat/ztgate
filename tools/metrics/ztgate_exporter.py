@@ -40,6 +40,7 @@ COUNTERS = {
     "login_failed": "user tokens rejected",
     "connector_offline": "packets for a connector network while its connector was not connected",
     "connector_dropped": "packets from a connector to a client with no session",
+    "flow_dropped": "packets toward a client that were not replies to a flow it opened (-F)",
 }
 
 
@@ -84,6 +85,8 @@ def render(st, per_session):
     metric("ztgate_acl_rules", "gauge", "rules in the ACL (0 when the ACL is off)",
            [((), st.get("acl", {}).get("rules", 0) if st.get("acl", {}).get("enabled") else 0)])
     metric("ztgate_sessions", "gauge", "open device sessions", [((), len(sessions))])
+    metric("ztgate_flows", "gauge", "open flows in the stateful table (0 when -F is off)",
+           [((), st.get("flows", {}).get("open", 0))])
     metric("ztgate_sessions_logged_in", "gauge", "open sessions with a logged-in user",
            [((), sum(1 for s in sessions if s.get("user")))])
 

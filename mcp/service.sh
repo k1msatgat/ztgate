@@ -76,6 +76,11 @@ run)
 	# -k: 서버 키. 등록 코드로 올라오는 기기(공개키 기기)의 키를 그것으로 뽑는다. install.sh 가 만든다.
 	args=(-s /run/ztgate/status.sock -a /var/log/ztgate/audit.log -e "$ETC/enroll.conf" -k "$ETC/server.key" -n "$PREFIX" -m "$MTU")
 
+	# STATEFUL=1: 클라이언트로 가는 패킷은 그 클라이언트가 연 흐름의 답만 들인다 (-F).
+	if [ "${STATEFUL:-0}" = 1 ]; then
+		args+=(-F)
+	fi
+
 	# 세션 키의 수명. 적지 않으면 서버의 기본값(1시간)이다.
 	if [ -n "${SESSION_LIFETIME:-}" ]; then
 		args+=(-L "$SESSION_LIFETIME")
