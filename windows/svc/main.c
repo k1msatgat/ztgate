@@ -92,6 +92,8 @@ static ULONGLONG update_at;
 static HANDLE update_thread;
 static wchar_t update_url[512];
 static int update_http;
+static uint8_t update_keys[UPDATE_KEYS_MAX][UPDATE_PUB_LEN];
+static int update_nkeys;
 
 /* 기록. GUI 가 붙어 있지 않을 때에도 쌓인다 — 나중에 붙은 GUI 가 그동안의 일을 본다.
  * seq 는 지금까지 쌓은 개수이고, 항목 i 는 [i % RING] 자리에 있다. */
@@ -1074,7 +1076,7 @@ static void block_sync(void)
 static DWORD WINAPI update_main(LPVOID arg)
 {
 	(void)arg;
-	update_check(update_url, update_http, slog);
+	update_check(update_url, update_http, (const uint8_t (*)[UPDATE_PUB_LEN])update_keys, update_nkeys, slog);
 	SetEvent(notify);
 	return 0;
 }
@@ -1097,6 +1099,8 @@ static DWORD update_tick(void)
 	if (now >= update_at && !update_thread) {
 		wcscpy(update_url, pol.update_url);
 		update_http = pol.update_allow_http;
+		memcpy(update_keys, pol.update_keys, sizeof(update_keys));
+		update_nkeys = pol.n_update_keys;
 		update_at = now + UPDATE_EVERY_MSEC;
 		update_thread = CreateThread(NULL, 0, update_main, NULL, 0, NULL);
 	}

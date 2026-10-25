@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 #include <sddl.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +14,7 @@
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "version.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 #define MANIFEST_MAX	(16 * 1024)
 #define MSI_MAX		(64 * 1024 * 1024)
@@ -135,17 +138,72 @@ static unsigned long long version_self(void)
 	return v;
 }
 
-static int hex32(const char *s, uint8_t out[32])
+/* 정확히 2n 글자의 16진수 -> n 바이트. */
+static int hex_bytes(const char *s, uint8_t *out, size_t n)
 {
-	for (int i = 0; i < 32; i++) {
-		unsigned int b;
-
-		if (sscanf(s + 2 * i, "%2x", &b) != 1) {
+	for (size_t i = 0; i < 2 * n; i++) {
+		if (!isxdigit((unsigned char)s[i])) {
 			return -1;
 		}
+	}
+	if (s[2 * n] != '\0') {
+		return -1;
+	}
+	for (size_t i = 0; i < n; i++) {
+		unsigned int b;
+
+		sscanf(s + 2 * i, "%2x", &b);
 		out[i] = (uint8_t)b;
 	}
-	return s[64] == '\0' ? 0 : -1;
+	return 0;
+}
+
+/* ECDSA P-256 / SHA-256, 서명은 r | s (CNG 의 형식 그대로). 곡선 위의 점이 아닌 공개키는 가져오기에서 걸린다. */
+static int p256_verify(const uint8_t pub[UPDATE_PUB_LEN], const uint8_t *msg, size_t len, const uint8_t sig[64])
+{
+	struct { BCRYPT_ECCKEY_BLOB h; uint8_t xy[UPDATE_PUB_LEN]; } blob;
+	BCRYPT_ALG_HANDLE alg = NULL;
+	BCRYPT_KEY_HANDLE key = NULL;
+	uint8_t hash[32];
+	int ok = 0;
+
+	if (crypt_sha256(msg, len, hash) < 0) {
+		return 0;
+	}
+	blob.h.dwMagic = BCRYPT_ECDSA_PUBLIC_P256_MAGIC;
+	blob.h.cbKey = 32;
+	memcpy(blob.xy, pub, UPDATE_PUB_LEN);
+	if (BCRYPT_SUCCESS(BCryptOpenAlgorithmProvider(&alg, BCRYPT_ECDSA_P256_ALGORITHM, NULL, 0)) &&
+			BCRYPT_SUCCESS(BCryptImportKeyPair(alg, NULL, BCRYPT_ECCPUBLIC_BLOB, &key, (PUCHAR)&blob, sizeof(blob), 0)) &&
+			BCRYPT_SUCCESS(BCryptVerifySignature(key, NULL, hash, sizeof(hash), (PUCHAR)sig, 64, 0))) {
+		ok = 1;
+	}
+	if (key) BCryptDestroyKey(key);
+	if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+	return ok;
+}
+
+int update_verify(const char *version, const char *sha_hex, const char *sig_hex,
+		const uint8_t (*keys)[UPDATE_PUB_LEN], int n_keys)
+{
+	static const char label[] = "ztgate update v1\n";
+	char msg[sizeof(label) + 32 + 1 + 64];
+	uint8_t sig[64];
+	int n, i;
+
+	if (hex_bytes(sig_hex, sig, sizeof(sig)) < 0) {
+		return 0;
+	}
+	n = snprintf(msg, sizeof(msg), "%s%s\n%s", label, version, sha_hex);
+	if (n < 0 || (size_t)n >= sizeof(msg)) {
+		return 0;
+	}
+	for (i = 0; i < n_keys; i++) {
+		if (p256_verify(keys[i], (const uint8_t *)msg, (size_t)n, sig)) {
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /* 같은 버전을 하루 안에 다시 하지 않는다. */
@@ -208,12 +266,13 @@ static int str_field(const char *s, const json_tok_t *t, const char *key, char *
 	return i < 0 ? -1 : json_string(s, t, i, out, cap);
 }
 
-int update_check(const wchar_t *manifest_url, int allow_http, update_log_fn log)
+int update_check(const wchar_t *manifest_url, int allow_http, const uint8_t (*keys)[UPDATE_PUB_LEN], int n_keys,
+		update_log_fn log)
 {
 	json_tok_t tok[32];
 	char *man = NULL, *msi = NULL;
 	size_t man_len = 0, msi_len = 0;
-	char version[32], msi_url[1024], sha_hex[80];
+	char version[32], msi_url[1024], sha_hex[80], sig_hex[160];
 	wchar_t wurl[1024], dir[MAX_PATH], file[MAX_PATH], cmd[2 * MAX_PATH + 64];
 	uint8_t want[32], got[32];
 	unsigned long long newv, mine;
@@ -223,6 +282,10 @@ int update_check(const wchar_t *manifest_url, int allow_http, update_log_fn log)
 	DWORD written;
 	int n, ret = -1;
 
+	if (n_keys <= 0) {
+		log("update: no usable UpdatePublicKey policy (missing or not 128 hex), not updating");
+		return -1;
+	}
 	if (http_get(manifest_url, allow_http, MANIFEST_MAX, &man, &man_len) < 0) {
 		log("update: cannot fetch the manifest");
 		return -1;
@@ -232,8 +295,14 @@ int update_check(const wchar_t *manifest_url, int allow_http, update_log_fn log)
 			str_field(man, tok, "version", version, sizeof(version)) < 0 ||
 			str_field(man, tok, "msi", msi_url, sizeof(msi_url)) < 0 ||
 			str_field(man, tok, "sha256", sha_hex, sizeof(sha_hex)) < 0 ||
-			hex32(sha_hex, want) < 0 || (newv = version_parse(version)) == 0) {
+			hex_bytes(sha_hex, want, sizeof(want)) < 0 || (newv = version_parse(version)) == 0) {
 		log("update: the manifest is not usable");
+		goto out;
+	}
+	/* 서명부터 본다. 맞지 않는 매니페스트는 버전도 믿지 않는다. */
+	if (str_field(man, tok, "sig", sig_hex, sizeof(sig_hex)) < 0 ||
+			!update_verify(version, sha_hex, sig_hex, keys, n_keys)) {
+		log("update: the manifest is not signed by an UpdatePublicKey key, ignoring it");
 		goto out;
 	}
 	mine = version_self();
@@ -287,4 +356,51 @@ out:
 	free(man);
 	free(msi);
 	return ret;
+}
+
+/* ---- selftest ---------------------------------------------------------------
+ * tools/update/ztgate_update_sign.py 가 만든 매니페스트다 (openssl 로 서명). 여기서 CNG 로 맞으면 도구와
+ * 서비스가 같은 것에 서명하고 확인한다는 뜻이다. */
+
+static const char st_pub_a[] =
+	"ac8ae8b75a48ca50ab3785aeb2a2e218c26e2be85f9c817f4f53677f1e4919eb"
+	"8c14fa3ab8fd698137a80e0f5c2c866ed2bcfa7b9f0fc623be7317ea27b28fa1";
+static const char st_pub_b[] =		/* 다른 키 */
+	"c5d7edabe824dca9cf0ddff3eca9e0306f55d464407f165967b6adfac179cab4"
+	"0843b5ba92bf12a71092199667e589c15eca601bd0dbd4dc10bb7120bce85ee0";
+static const char st_sha[] = "3a03ad80fb48b7ca3d5b51e735aca8c2694c6043e3d6cefa75cfd63cb89d2da0";
+static const char st_sig[] =
+	"750d542b9acdbce4cb914a148a444a746e22db6e32081d761211b1032f538127"
+	"f1117e05adcacb943a9e91eb4fc3d9983e546220de722873e972f2a2bc64efbe";
+
+static int st_report(const char *name, int ok)
+{
+	printf("%-28s %s\n", name, ok ? "ok" : "FAIL");
+	return !ok;
+}
+
+int update_selftest(void)
+{
+	uint8_t k[3][UPDATE_PUB_LEN];	/* a, b, a — k + 1 부터 둘이면 [b, a] */
+	const uint8_t (*keys)[UPDATE_PUB_LEN] = (const uint8_t (*)[UPDATE_PUB_LEN])k;
+	char sha[sizeof(st_sha)], sig[sizeof(st_sig)];
+	int failed = 0;
+
+	hex_bytes(st_pub_a, k[0], UPDATE_PUB_LEN);
+	hex_bytes(st_pub_b, k[1], UPDATE_PUB_LEN);
+	memcpy(k[2], k[0], UPDATE_PUB_LEN);
+
+	failed |= st_report("update: signed manifest", update_verify("0.9.3", st_sha, st_sig, keys, 1) == 1);
+	failed |= st_report("update: another version", update_verify("0.9.4", st_sha, st_sig, keys, 1) == 0);
+	memcpy(sha, st_sha, sizeof(sha));
+	sha[63] = sha[63] == '0' ? '1' : '0';
+	failed |= st_report("update: another installer", update_verify("0.9.3", sha, st_sig, keys, 1) == 0);
+	memcpy(sig, st_sig, sizeof(sig));
+	sig[10] = sig[10] == '0' ? '1' : '0';
+	failed |= st_report("update: altered signature", update_verify("0.9.3", st_sha, sig, keys, 1) == 0);
+	failed |= st_report("update: short signature", update_verify("0.9.3", st_sha, "abcd", keys, 1) == 0);
+	failed |= st_report("update: another key", update_verify("0.9.3", st_sha, st_sig, keys + 1, 1) == 0);
+	failed |= st_report("update: second of two keys", update_verify("0.9.3", st_sha, st_sig, keys + 1, 2) == 1);
+	failed |= st_report("update: no key", update_verify("0.9.3", st_sha, st_sig, keys, 0) == 0);
+	return failed;
 }

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <string.h>
 #include <wchar.h>
+#include <wctype.h>
 
 #include "policy.h"
 
@@ -55,6 +56,33 @@ int policy_parse_nets(const wchar_t *text, net_route_t *out, int max)
 	return n;
 }
 
+int policy_parse_keys(const wchar_t *text, uint8_t (*out)[UPDATE_PUB_LEN], int max)
+{
+	wchar_t buf[512];
+	wchar_t *tok, *ctx = NULL;
+	int n = 0;
+
+	if (wcslen(text) >= sizeof(buf) / sizeof(buf[0])) {
+		return -1;
+	}
+	wcscpy_s(buf, sizeof(buf) / sizeof(buf[0]), text);
+	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL; tok = wcstok_s(NULL, L", ", &ctx)) {
+		if (n == max || wcslen(tok) != 2 * UPDATE_PUB_LEN) {
+			return -1;
+		}
+		for (int i = 0; i < UPDATE_PUB_LEN; i++) {
+			wchar_t hex[3] = { tok[2 * i], tok[2 * i + 1], 0 };
+
+			if (!iswxdigit(hex[0]) || !iswxdigit(hex[1])) {
+				return -1;
+			}
+			out[n][i] = (uint8_t)wcstoul(hex, NULL, 16);
+		}
+		n++;
+	}
+	return n;
+}
+
 int policy_load(ztgate_policy_t *p)
 {
 	wchar_t nets[512];
@@ -93,6 +121,12 @@ int policy_load(ztgate_policy_t *p)
 	}
 	if (reg_str(L"UpdateUrl", p->update_url, sizeof(p->update_url) / sizeof(p->update_url[0]))) {
 		any = 1;
+	}
+	if (reg_str(L"UpdatePublicKey", nets, sizeof(nets) / sizeof(nets[0]))) {
+		int n = policy_parse_keys(nets, p->update_keys, UPDATE_KEYS_MAX);
+
+		any = 1;
+		p->n_update_keys = n > 0 ? n : 0;
 	}
 	if (reg_dword(L"UpdateAllowHttp", &v)) {
 		any = 1;

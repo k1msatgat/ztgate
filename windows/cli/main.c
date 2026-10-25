@@ -11,6 +11,7 @@
 #include "device.h"
 #include "tpm.h"
 #include "dpop.h"
+#include "update.h"
 
 static HANDLE stop_event;
 
@@ -62,7 +63,7 @@ static int print_posture(void)
  * 서버의 `vpn_server selftest` 도 같은 것을 돌린다. */
 static int selftest(void)
 {
-	return crypt_selftest();
+	return crypt_selftest() | update_selftest();
 }
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len)

@@ -58,6 +58,7 @@
       <supportedOn ref="SUPPORTED_ZTGATE_09" />
       <elements>
         <text id="UpdateUrl" valueName="UpdateUrl" required="true" />
+        <text id="UpdatePublicKey" valueName="UpdatePublicKey" required="true" />
       </elements>
     </policy>
   </policies>

@@ -13,6 +13,7 @@
  *                                      마지막으로 내려 준 경로와 터널 대역을 막는다
  *     Issuer, ClientId  REG_SZ     사용자 로그인의 IdP (GUI 설정 대신)
  *     UpdateUrl         REG_SZ     자동 업데이트의 매니페스트 (https://..., update.h). 비우면 하지 않는다
+ *     UpdatePublicKey   REG_SZ     매니페스트 서명을 확인할 공개키 (128 hex, 쉼표로 둘까지). 없으면 업데이트하지 않는다
  *     UpdateAllowHttp   REG_DWORD  1   시험용: 평문 HTTP 매니페스트 / MSI 도 받는다
  *
  * Policies 아래는 관리자만 쓸 수 있고 모든 사용자가 읽을 수 있다 — 서비스와 GUI 가 같은 값을 본다.
@@ -24,6 +25,7 @@
 #include <stdint.h>
 
 #include "tunnel.h"
+#include "update.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,6 +52,8 @@ typedef struct ztgate_policy {
 
 	wchar_t update_url[512];	/* 비어 있으면 자동 업데이트를 하지 않는다 */
 	int update_allow_http;
+	uint8_t update_keys[UPDATE_KEYS_MAX][UPDATE_PUB_LEN];
+	int n_update_keys;		/* 틀린 값이 하나라도 있으면 0 — 업데이트하지 않는다 */
 } ztgate_policy_t;
 
 /* 읽는다. 정책이 하나라도 있으면 1, 없으면 0 (p 는 0 으로 채워진다). 틀린 값(주소가 아닌 서버,
@@ -58,6 +62,9 @@ int policy_load(ztgate_policy_t *p);
 
 /* "10.0.0.0/8, 172.16.0.0/12" 를 대역으로. 읽은 수, 틀리면 -1. */
 int policy_parse_nets(const wchar_t *text, net_route_t *out, int max);
+
+/* "<128 hex>, <128 hex>" 를 공개키로. 읽은 수, 틀리면 -1. */
+int policy_parse_keys(const wchar_t *text, uint8_t (*out)[UPDATE_PUB_LEN], int max);
 
 #ifdef __cplusplus
 }

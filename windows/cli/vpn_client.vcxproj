@@ -102,6 +102,9 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(RepoRoot)\server\include</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="..\core\posture.c" />
+    <ClCompile Include="..\core\update.c">
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(RepoRoot)\server\include</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="..\core\tpm.c" />
     <ClCompile Include="..\core\dpop.c" />
     <ClCompile Include="..\core\crypt.c" />
