@@ -242,7 +242,7 @@ int acl_check(const unsigned char *pkt, int len, const posture_report_t *posture
 	struct in_addr src, dst;
 	unsigned char  proto;
 	unsigned short dport = 0;
-	int            ihl, i;
+	int            ihl, i, later;
 
 	if (len < IP_MIN_HDR) {
 		return ACL_DENY; 
@@ -257,7 +257,13 @@ int acl_check(const unsigned char *pkt, int len, const posture_report_t *posture
 	memcpy(&dst, pkt + IP_DST_OFF, IP_ADDR_LEN);
 	proto = pkt[IP_PROTO_OFF];
 
-	if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+	/* 뒷조각에는 포트가 없다 — 그 자리는 데이터다. 포트를 적은 deny 는 걸지 않고, allow 는 포트를
+	 * 보지 않고 맞춘다 (Cisco ACL 의 non-initial fragment 와 같다). 첫 조각은 포트로 판정되므로,
+	 * 첫 조각이 막힌 패킷은 목적지에서 합쳐지지 않고 뒷조각만으로는 아무것도 전달되지 않는다.
+	 * 겹치는 조각으로 첫 조각의 포트를 덮어쓰는 것은 Linux 가 합칠 때 버린다. */
+	later = IP_FRAG_OFF(pkt) != 0;
+
+	if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && !later) {
 		if (len >= ihl + L4_DPORT_OFF + L4_PORT_LEN) {
 			memcpy(&dport, pkt + ihl + L4_DPORT_OFF, L4_PORT_LEN);
 		}
@@ -284,7 +290,10 @@ int acl_check(const unsigned char *pkt, int len, const posture_report_t *posture
 			continue;
 		}
 
-		if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
+		if ((proto == IPPROTO_TCP || proto == IPPROTO_UDP) && later) {
+			if (r->action == ACL_DENY && (r->dport_lo != 0 || r->dport_hi != 65535)) continue;
+		}
+		else if (proto == IPPROTO_TCP || proto == IPPROTO_UDP) {
 			if (dport < r->dport_lo || dport > r->dport_hi) continue;
 		}
 

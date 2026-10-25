@@ -32,6 +32,8 @@ extern "C" {
 
 #define IP_VERSION(buf)  ((buf)[0] >> 4)
 #define IP_IHL(buf)      (((buf)[0] & 0x0F) * 4)
+/* 조각 위치(8바이트 단위). 0 이 아니면 뒷조각이라 L4 헤더가 없다. */
+#define IP_FRAG_OFF(buf) ((((buf)[6] & 0x1F) << 8) | (buf)[7])
 
 #define PKT_HDR_LEN (sizeof(msg_header_t) + sizeof(data_header_t))
 

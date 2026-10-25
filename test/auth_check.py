@@ -838,6 +838,13 @@ def udp_packet(src, dst, dport, ident):
     return ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:] + udp
 
 
+def ip_fragment(src, dst, proto, ident, offset, more, payload):
+    """IPv4 조각 하나. offset 은 8바이트 단위, more 는 MF. 뒷조각(offset > 0)의 앞 4바이트는 포트가 아니다."""
+    frag = (0x2000 if more else 0) | offset
+    ip = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(payload), ident, frag, 64, proto, 0, src, dst)
+    return ip[:10] + struct.pack("!H", checksum(ip)) + ip[12:] + payload
+
+
 def acl_tests(srv, acl_path):
     """ACL 을 서버를 끄지 않고 바꾼다 (kill -HUP). 판정은 서버 로그에서 읽는다 —
     통과한 패킷은 [udp->tun], 막힌 패킷은 [deny] 로 찍힌다."""
@@ -911,6 +918,20 @@ def acl_tests(srv, acl_path):
     # 핸드셰이크에서 보고한 값도 같은 자리에 쓰인다 (첫 keepalive 를 기다리지 않는다).
     r = c.handshake(post=posture(firewall=STATE_OFF))
     expect("posture from the handshake, firewall off", verdict(udp(53), r[1]), "denied")
+
+    # 뒷조각에는 포트가 없다. 그 자리의 바이트는 데이터라, 포트로 읽으면 판정이 데이터에 따라
+    # 달라진다. 포트를 적은 deny 는 뒷조각에 걸지 않고, allow 는 주소와 프로토콜로 맞춘다 —
+    # 첫 조각이 막히면 목적지에서 합쳐지지 않으므로 뒷조각만으로는 아무것도 전달되지 않는다.
+    rules("10.0.0.0/24 10.0.0.1 udp 22 deny", "10.0.0.0/24 10.0.0.1 udp 53 allow", "any any any any deny")
+    idx = session(c)
+    looks_like = lambda port: struct.pack("!HH", 40000, port) + b"\0" * 12
+    frag = lambda proto, offset, more, payload: ip_fragment(TUN_IP, server_ip, proto, seq[0], offset, more, payload)
+    first = lambda port: struct.pack("!HHHH", 40000, port, 8 + 16, 0) + b"\0" * 8
+    expect("fragments: the first fragment to udp/53", verdict(frag(17, 0, True, first(53)), idx), "passed")
+    expect("fragments: the first fragment to udp/22", verdict(frag(17, 0, True, first(22)), idx), "denied")
+    expect("fragments: a later one whose data reads as port 22", verdict(frag(17, 2, False, looks_like(22)), idx), "passed")
+    expect("fragments: a later one whose data reads as port 9999", verdict(frag(17, 2, False, looks_like(9999)), idx), "passed")
+    expect("fragments: a later tcp one (no tcp rule)", verdict(frag(6, 2, False, looks_like(53)), idx), "denied")
 
 
 def config_tests(srv, acl_path, dev_path):

@@ -234,7 +234,8 @@ void audit_access(peer_t *peer, const uint8_t *ip, int len, int allowed, const c
 
 	/* 길이는 받은 패킷이 말하는 값이라 그대로 믿지 않는다. */
 	ihl = IP_IHL(ip);
-	if ((proto == 6 || proto == 17) && ihl >= IP_MIN_HDR && len >= ihl + L4_DPORT_OFF + L4_PORT_LEN) {
+	if ((proto == 6 || proto == 17) && IP_FRAG_OFF(ip) == 0 && ihl >= IP_MIN_HDR &&
+			len >= ihl + L4_DPORT_OFF + L4_PORT_LEN) {
 		memcpy(&dport, ip + ihl + L4_DPORT_OFF, L4_PORT_LEN);
 		dport = ntohs(dport);
 	}
