@@ -1793,12 +1793,14 @@ def rekey_tests(path):
     expect("rekey: the next handshake opens a new session", new != idx, True)
     expect("rekey: ...with new keys", SESSIONS[new][0] != old[0] and SESSIONS[new][1] != old[1], True)
 
+    # 새 세션부터 본다. 옛 세션이 답하지 않는 것을 기다리는 동안 새 세션도 수명(2초)이 다할 수 있다.
     c.drain()
-    c.send(keepalive(idx))
-    expect("rekey: the old session no longer answers", describe(c.recv()), "no response")
     c.send(keepalive(new))
     r = c.recv()
     expect("rekey: the new session answers", r and r[0], KEEPALIVE)
+    c.send(keepalive(idx))
+    r = c.recv()        # 그동안 새 세션의 DISCONNECT 가 올 수 있다 — 옛 번호로 온 답만 따진다
+    expect("rekey: the old session no longer answers", describe(r) if r and r[1] == idx else "no response", "no response")
 
     reasons = [e["reason"] for e in srv.events() if e["event"] == "session_close" and e.get("session") == "%08x" % idx]
     expect("rekey: audited as rekey", reasons, ["rekey"])
