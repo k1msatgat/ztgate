@@ -1196,7 +1196,7 @@ ztgate/
 
 이 프로젝트는 AI(Claude Code)와 함께 개발했습니다. 어디까지 직접 했고 어디를 AI가 했는지, AI가 쓴 코드를 무엇으로 확인하는지 구분해서 밝힙니다.
 
-**검증 방식: AI로 구현하고, 직접 실행하고 패킷을 캡처·재전송·변조해 보는 실험으로 검증합니다 — [docs/experiments.md](docs/experiments.md).** 실험 기록은 진행 중이고, 지금 기록된 것은 0번(성능 측정의 해석)입니다. 자동 시험(`auth_check.py`, `linux_e2e.sh`)은 CI에서 매번 돕니다.
+**검증 방식: AI가 작성한 자동 시험(`auth_check.py`, `linux_e2e.sh`)을 CI가 푸시마다 돌립니다.** 패킷을 캡처·재전송·변조해 보는 직접 실험은 절차만 [docs/experiments.md](docs/experiments.md)에 있고, 지금 기록된 것은 0번(성능 측정의 해석)뿐입니다.
 
 | 구분 | 내용 |
 |---|---|
