@@ -12,6 +12,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -172,6 +173,53 @@ def main():
         expect("log out", st, 303)
         st, _, _ = req("GET", "/devices", cookie=sid)
         expect("the old cookie no longer works", st, 401)
+
+        def raw(text):
+            s = socket.create_connection(("127.0.0.1", port), 5)
+            s.sendall(text.encode())
+            try:
+                data = s.recv(200).decode(errors="replace")
+            except socket.timeout:
+                data = "timeout"
+            s.close()
+            return data.split(" ", 2)[1] if data.startswith("HTTP/") else data
+
+        # 음수 길이를 그대로 read() 에 넘기면 연결이 닫힐 때까지 기다린다 (그러면 recv 가 5초 뒤 실패한다).
+        expect("a negative Content-Length is refused at once", raw("POST /login HTTP/1.0\r\nContent-Length: -1\r\n\r\n"), "400")
+        expect("a Content-Length that is not a number is refused", raw("POST /login HTTP/1.0\r\nContent-Length: x\r\n\r\n"), "400")
+    finally:
+        proc.terminate()
+        proc.wait()
+
+    # TLS: 연결만 열고 핸드셰이크를 하지 않는 상대가 있어도 다른 사람은 들어온다.
+    cert, key = os.path.join(work, "cert.pem"), os.path.join(work, "key.pem")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                    "-subj", "/CN=localhost", "-days", "1", "-keyout", key, "-out", cert],
+                   check=True, capture_output=True)
+    port = free_port()
+    proc = subprocess.Popen([sys.executable, CONSOLE, "-l", "127.0.0.1:%d" % port, "--ctl", fake,
+                             "--token-file", token_file, "--tls-cert", cert, "--tls-key", key],
+                            env=env, stderr=subprocess.PIPE)
+    try:
+        for _ in range(50):
+            try:
+                socket.create_connection(("127.0.0.1", port), 0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        idle = socket.create_connection(("127.0.0.1", port), 5)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            c = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=ctx)
+            c.request("GET", "/")
+            r = c.getresponse()
+            got = (r.status, r.getheader("Strict-Transport-Security"))
+        except OSError as ex:
+            got = type(ex).__name__
+        expect("tls: a silent connection does not hold up the next one", got, (200, "max-age=31536000"))
+        idle.close()
     finally:
         proc.terminate()
         proc.wait()

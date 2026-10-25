@@ -325,6 +325,15 @@ LOGIN = ('<h2>로그인</h2><form method="post" action="/login"><p>관리 토큰
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "ztgate-console"
     console = None
+    timeout = 30        # 요청을 끝까지 보내지 않고 붙잡고 있는 연결은 이만큼 뒤에 끊는다
+
+    def setup(self):
+        # TLS 핸드셰이크는 이 연결의 스레드에서 한다. 듣는 소켓에서 하면 accept 가 그 동안 멈춰, 연결만
+        # 열고 아무것도 보내지 않는 상대 하나가 콘솔 전체를 세운다.
+        self.request.settimeout(self.timeout)
+        if isinstance(self.request, ssl.SSLSocket):
+            self.request.do_handshake()
+        super().setup()
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
@@ -346,6 +355,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; "
                          "script-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if self.console.secure:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -381,7 +393,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         c = self.console
-        n = int(self.headers.get("Content-Length") or 0)
+        # 음수면 read(-1) 이 연결이 닫힐 때까지 읽어 크기 제한을 비켜 간다.
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0:
+            self.send(400, page("/", "<p>Content-Length 가 맞지 않습니다.</p>"))
+            return
         if n > 16384:
             self.send(413, page("/", "<p>요청이 너무 큽니다.</p>"))
             return
@@ -488,7 +507,7 @@ def main():
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(a.tls_cert, a.tls_key)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
     elif host not in ("127.0.0.1", "localhost", "::1"):
         print("console: listening on %s without TLS — the token and cookies cross the network in clear" % host,
               file=sys.stderr)
