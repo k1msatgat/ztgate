@@ -990,7 +990,7 @@ static void handle_keepalive(int32_t sock, peer_t *peer, const uint8_t *body, in
 	send_keepalive(sock, peer, dev);
 }
 
-/* ENROLL (C -> S): device_id(16) | device_key(32). 등록 코드로 연 세션에서만 온다.
+/* ENROLL (C -> S): device_id(16) | 기기 공개키(64). 등록 코드로 연 세션에서만 온다.
  *
  * 여기까지 온 것은 코드를 아는 쪽이다. 기기가 스스로 만든 ID 와 키를 받아 기기 목록에
  * 올린다. 터널 주소, 포스처 조건, 이름은 관리자가 코드를 만들 때 정해 둔 것을 쓴다 —
