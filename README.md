@@ -591,6 +591,8 @@ sequenceDiagram
 
 ## 서버 구조
 
+왜 이렇게 짰는지(고른 것, 버린 다른 길, 떠안은 것)는 [설계 결정 기록](docs/decisions/README.md)에 한 장씩 있습니다.
+
 ```mermaid
 flowchart TB
     UDP(["UDP 소켓 (받기)"]) --> HDR{"헤더 · 버전"}
