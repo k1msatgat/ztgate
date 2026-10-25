@@ -527,7 +527,8 @@ static void send_session_deny(int32_t sock, peer_t *peer, const net_ep_t *dst,
 static uint8_t cookie_key[VPN_KEY_LEN];
 
 /* 기기 목록이나 등록 대기 목록을 다시 읽은 시각. 다시 읽으면 기기마다 기억한 "마지막으로 쓴
- * nonce" 가 사라지므로, 그 전에 발급한 nonce 는 받지 않는다 (진행 중이던 핸드셰이크는 다시 한다). */
+ * nonce" 가 사라지므로, 그 전에 발급한 nonce 는 받지 않는다 (진행 중이던 핸드셰이크는 다시 한다).
+ * 표 잠금 밖의 auth_precheck 도 읽으므로 __atomic 으로 읽고 쓴다. */
 static uint64_t nonce_floor;
 
 /* 기기 ID 를 푸는 키 쌍. 서버 키(-k)가 있으면 그것, 없으면 뜰 때 만든 일회용 키다. */
@@ -571,7 +572,7 @@ static uint64_t nonce_check(const uint8_t n[AUTH_NONCE_LEN], const net_ep_t *src
 	for (i = 0; i < 8; i++) {
 		issued = issued << 8 | n[i];
 	}
-	if (issued == 0 || issued <= nonce_floor || issued > now ||
+	if (issued == 0 || issued <= __atomic_load_n(&nonce_floor, __ATOMIC_RELAXED) || issued > now ||
 			now - issued > (uint64_t)NONCE_TTL_SEC * 1000000u ||
 			nonce_make(issued, src, want) < 0 || !crypt_equal(want, n, AUTH_NONCE_LEN)) {
 		return 0;
@@ -709,9 +710,33 @@ out:
  *
  * 터널 IP 는 클라이언트가 대지 않는다. 기기 목록에 적힌 것을 서버가 준다. 전에는
  * 클라이언트가 적어 보낸 값이 목록과 같은지 대조했는데, 틀릴 수만 있고 고를 수는
- * 없는 값을 받는 셈이었다. */
+ * 없는 값을 받는 셈이었다.
+ *
+ * nonce 와 감싼 ID 는 표 잠금 밖에서 미리 본다 (auth_precheck). */
+typedef struct auth_pre {
+	uint64_t issued;			/* nonce 의 발급 시각. 0 이면 이 서버가 내준 것이 아니다 */
+	int opened;				/* 감싼 부분이 열렸나 */
+	uint8_t plain[AUTH_SEALED_PLAIN_LEN];	/* 연 것: device_id | posture */
+} auth_pre_t;
+
+/* 표의 어떤 것도 보지 않는다 — cookie_key 와 hs_key 는 뜰 때 정해진다. ID 를 푸는 ECDH 는 비싸서,
+ * 쓰기 잠금 안에서 하면 nonce 하나를 받아 둔 상대가 그 nonce 로 엉터리 AUTH 를 쏟아부어 그동안
+ * 모든 워커의 데이터 패킷을 세울 수 있다. */
+static void auth_precheck(const uint8_t *packet, int32_t n, const net_ep_t *src, auth_pre_t *pre)
+{
+	memset(pre, 0, sizeof(*pre));
+	if (n < (int32_t)AUTH_PACKET_LEN) {
+		return;
+	}
+	pre->issued = nonce_check(packet + sizeof(msg_header_t) + AUTH_OFF_NONCE, src);
+	if (pre->issued != 0) {
+		/* pub_c 가 곡선 위의 점이 아니어도 여기서 걸린다. */
+		pre->opened = secure_auth_open(hs_key, hs_pub, packet, pre->plain) == 0;
+	}
+}
+
 static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
-		const net_ep_t *src, socklen_t srclen)
+		const net_ep_t *src, socklen_t srclen, const auth_pre_t *pre)
 {
 	char ids[DEVICE_ID_STRLEN];
 	char ib[INET_ADDRSTRLEN];
@@ -736,7 +761,8 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 	}
 
 	/* 기기를 모르는 채 거절하는 두 경우는 감사 로그에 기기 칸을 0 으로 적는다. */
-	issued = nonce_check(body + AUTH_OFF_NONCE, src);
+	/* 미리 본 뒤 이 잠금을 잡기까지 기기 목록을 다시 읽었으면, 그 전에 발급한 nonce 는 이제 받지 않는다. */
+	issued = pre->issued > nonce_floor ? pre->issued : 0;
 	if (issued == 0) {
 		LOG_LIMITED(LOG_HS, "[HS] auth with a stale or foreign nonce\n");
 		memset(id, 0, DEVICE_ID_LEN);
@@ -744,14 +770,14 @@ static void handle_auth(int32_t sock, const uint8_t *packet, int32_t n,
 		send_deny(sock, src, srclen, DENY_BAD_AUTH, NULL, NULL);
 		return;
 	}
-	/* pub_c 가 곡선 위의 점이 아니어도 여기서 걸린다. */
-	if (secure_auth_open(hs_key, hs_pub, packet, plain) < 0) {
+	if (!pre->opened) {
 		LOG_LIMITED(LOG_HS, "[HS] auth whose device id does not open\n");
 		memset(id, 0, DEVICE_ID_LEN);
 		audit_auth_denied(id, src, DENY_BAD_AUTH);
 		send_deny(sock, src, srclen, DENY_BAD_AUTH, NULL, NULL);
 		return;
 	}
+	memcpy(plain, pre->plain, sizeof(plain));
 
 	dev = device_find(id);
 	if (dev == NULL) {
@@ -1014,7 +1040,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 						device_id_str(body, ids), device_path);
 				status = ENROLL_CONFLICT;
 			}
-			else if (done < 0 || (nonce_floor = mono_us(), device_load(device_path)) < 0 ||
+			else if (done < 0 || (__atomic_store_n(&nonce_floor, mono_us(), __ATOMIC_RELAXED), device_load(device_path)) < 0 ||
 					device_find(body) == NULL) {
 				printf("[enroll] could not add device %s to %s\n",
 						device_id_str(body, ids), device_path);
@@ -1324,11 +1350,6 @@ static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t
 		handle_request(sock, packet, n, src, srclen);
 		return;
 	}
-	if (h->type == MSG_TYPE_AUTH) {
-		handle_auth(sock, packet, n, src, srclen);
-		return;
-	}
-
 	peer = peer_find_idx(h->session_idx);
 	if (peer == NULL) {
 		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", h->session_idx);
@@ -1381,7 +1402,7 @@ static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t
 }
 
 /* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. 헤더의 종류를 보고 데이터면 표의
- * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다. */
+ * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. AUTH 는 표를 보지 않는 비싼 앞부분을 잠금 밖에서 먼저 한다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다. */
 static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 		const net_ep_t *src, socklen_t srclen)
 {
@@ -1395,6 +1416,14 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	if (h.type == MSG_TYPE_DATA) {
 		TABLE_RDLOCK();
 		udp_data(sock, tun_fd, packet, cap, n, &h, src, srclen);
+		TABLE_UNLOCK();
+	}
+	else if (h.type == MSG_TYPE_AUTH) {
+		auth_pre_t pre;
+
+		auth_precheck(packet, n, src, &pre);
+		TABLE_WRLOCK();
+		handle_auth(sock, packet, n, src, srclen, &pre);
 		TABLE_UNLOCK();
 	}
 	else {
@@ -1977,7 +2006,7 @@ int main(int argc, char *argv[])
 
 			/* 기기 목록보다 먼저 찍는다. 관리 도구는 "device:" 줄을 보고 다시 읽기가
 			 * 끝났다고 판단한다. */
-			nonce_floor = mono_us();
+			__atomic_store_n(&nonce_floor, mono_us(), __ATOMIC_RELAXED);
 			if (enroll_path != NULL) {
 				int ne = enroll_load(enroll_path);
 				if (ne < 0) {
