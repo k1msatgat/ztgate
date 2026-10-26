@@ -1,0 +1,2 @@
+{"alg":"ES256","kid":"k1","typ":"dpop+jwt","exp":1700000000.5,"aud":["ztgate","x"],"s":"a\u00e9
+","n":null,"b":true}

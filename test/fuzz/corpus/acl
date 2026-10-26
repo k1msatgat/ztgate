@@ -1,0 +1,3 @@
+10.0.0.0/24 10.0.0.1 tcp 22 allow firewall=on disk=on min-build=22000 group=ops user=alice tag=eng
+10.0.0.0/24 192.168.10.0/24 udp 53 allow
+any any any any deny

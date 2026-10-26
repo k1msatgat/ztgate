@@ -44,7 +44,7 @@ SERVER_BIN	= $(SERVER_DIR)/bin/vpn_server
 LOADGEN_BIN	= $(LOADGEN_DIR)/bin/loadgen
 
 # ---- top level ------------------------------------------------------------
-.PHONY: all build lib client server tools clean distclean test help
+.PHONY: all build lib client server tools fuzz clean distclean test help
 .DEFAULT_GOAL := all
 
 all: lib client server tools
@@ -111,6 +111,18 @@ $(LOADGEN_DIR)/bin/%.o: $(LOADGEN_DIR)/%.c
 
 -include $(DEPS)
 
+# ---- fuzz -----------------------------------------------------------------
+# Parsers that read bytes from the network or from admin-edited files, linked into a
+# libFuzzer binary with ASan + UBSan. Needs clang. Run: $(FUZZ_BIN) test/fuzz/corpus
+FUZZ_BIN	= test/fuzz/bin/fuzz_parsers
+FUZZ_SRCS	= test/fuzz/fuzz_parsers.c $(addprefix $(SERVER_DIR)/src/,json.c policy.c device.c acl.c serverkey.c) $(LIB_SRCS)
+
+fuzz: $(FUZZ_BIN)
+
+$(FUZZ_BIN): $(FUZZ_SRCS)
+	@mkdir -p $(@D)
+	clang -g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all $(CPPFLAGS) $(FUZZ_SRCS) $(LDLIBS) -o $@
+
 # ---- housekeeping ---------------------------------------------------------
 # clean removes only what we generated; distclean drops the bin/ dirs too.
 clean:
@@ -129,5 +141,6 @@ help:
 	@echo "  client     $(CLIENT_BIN)"
 	@echo "  server     $(SERVER_BIN)"
 	@echo "  tools      $(LOADGEN_BIN) (server load generator)"
+	@echo "  fuzz       $(FUZZ_BIN) (libFuzzer, needs clang)"
 	@echo "  clean      remove generated objects and artifacts"
 	@echo "  distclean  remove the bin/ directories entirely"
