@@ -74,7 +74,8 @@ jobs:
   sanitize:
     runs-on: ubuntu-24.04
     env:
-      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:log_path=/tmp/san/asan
+      # 시험은 서버를 stdbuf(LD_PRELOAD)로 띄우므로 ASan 런타임이 맨 앞이 아니다. 그 검사만 끈다.
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:verify_asan_link_order=0:log_path=/tmp/san/asan
       UBSAN_OPTIONS: print_stacktrace=1:log_path=/tmp/san/ubsan
     steps:
       - uses: actions/checkout@v4
