@@ -50,6 +50,14 @@ tar -czf "$W/nokey.tar.gz" -C "$W/nokey" ztgate
 check "restore: refuses a backup without the server key" "$("$B" restore "$W/nokey.tar.gz" > /dev/null 2>&1 || echo refused)" refused
 check "a refused restore leaves the configuration alone" "$(cat "$ZTGATE_ETC/devices.conf")" "device-list v1"
 
+mkdir -p "$ZTGATE_ETC-console"
+echo "alice admin v1" > "$ZTGATE_ETC-console/console.users"
+withconsole=$("$B")
+check "backup: the console accounts go in too" "$(tar -tzf "$withconsole" | grep -c 'ztgate-console/console.users')" 1
+echo "mallory admin" > "$ZTGATE_ETC-console/console.users"
+"$B" restore "$withconsole" > /dev/null
+check "restore: the console accounts come back" "$(cat "$ZTGATE_ETC-console/console.users")" "alice admin v1"
+
 echo
 [ "$failed" = 0 ] && echo "all passed" || echo "$failed FAILED"
 exit $((failed > 0))

@@ -410,7 +410,7 @@ sudo systemctl enable --now ztgate
 
 배치는 설치 스크립트와 같고(`/opt/ztgate`, `/etc/ztgate`), 다른 점은 셋입니다. 유닛은 `/usr/lib/systemd/system` 에, `ztgate_ctl` 은 `/usr/sbin` 에 놓입니다. MCP 서버는 npm 의존성이 있어 들어 있지 않습니다 — 필요하면 그 장비에서 `mcp/install.sh` 를 씁니다. `ztgate_ctl` 은 Node.js 가 있어야 돌아 권장 의존으로만 둡니다. 설정(`/etc/ztgate`)은 패키지의 파일이 아니라 설치할 때 처음 한 번 만들어집니다. 그래서 업그레이드해도 기기 목록과 서버 키가 그대로이고, 패키지를 지워도(`purge` 도) 남습니다. 업그레이드하면 돌고 있던 서버를 새 실행 파일로 다시 올리고, 붙어 있던 기기는 `DISCONNECT` 를 받고 바로 다시 붙습니다. CI 가 설치 → 시작 → 다시 설치(서버 키가 그대로인지) → 제거(설정이 남는지)를 Ubuntu 24.04 와 Rocky Linux 9 에서 확인합니다.
 
-유닛은 서버에 `CAP_NET_ADMIN`만 남기고(`CapabilityBoundingSet`), `ProtectSystem=strict`로 파일 시스템을 읽기 전용으로 만든 뒤 `/etc/ztgate`와 로그 디렉터리만 쓰게 엽니다. 설정이 틀려 서버가 스스로 1로 끝나면 다시 올리지 않고, 그 밖의 이유로 죽으면 2초 뒤에 다시 올립니다.
+서버는 root 가 아닌 시스템 계정 `ztgate` 로 돌고, 받는 힘은 `CAP_NET_ADMIN`(tun)과 `CAP_NET_BIND_SERVICE`(낮은 TCP 포트)뿐입니다 ([0011](docs/decisions/0011-server-runs-as-ztgate.md)). tun 주소와 전달 규칙은 root 로 따로 붙이고, `ProtectSystem=strict`로 파일 시스템을 읽기 전용으로 만든 뒤 `/etc/ztgate`(ztgate 소유)와 로그 디렉터리만 쓰게 엽니다. 콘솔의 계정과 토큰은 서버가 쓰지 못하는 `/etc/ztgate-console`(root)에 있습니다. 설정이 틀려 서버가 스스로 1로 끝나면 다시 올리지 않고, 그 밖의 이유로 죽으면 2초 뒤에 다시 올립니다.
 
 ### 일상 운영
 
@@ -444,7 +444,7 @@ sudo /opt/ztgate/tools/ztgate_console.py user add bob --role viewer           # 
 ssh -L 9470:127.0.0.1:9470 <서버>                    # 관리자 PC 에서. 브라우저로 http://127.0.0.1:9470/
 ```
 
-관리자마다 계정을 둡니다 (`/etc/ztgate/console.users`, 600). 비밀번호는 scrypt 로만 남고, `--totp` 로 만든 계정은 인증 앱의 6자리 코드도 맞아야 들어옵니다. 역할은 `admin`(바꾸기)과 `viewer`(보기만)이고, 조회 전용 계정에는 바꾸는 단추가 보이지 않으며 요청도 `ztgate_ctl` 에 닿기 전에 거절됩니다. 바꾼 일은 감사 로그에 `{"event":"admin","actor":"console:alice",...}` 로 남습니다 (MCP 는 `mcp`, sudo 계정은 `via`). 계정이 하나도 없을 때만 처음 뜰 때 만든 토큰(`sudo cat /etc/ztgate/console.token`)으로 들어오고, 계정을 만들면 토큰 로그인은 닫힙니다.
+관리자마다 계정을 둡니다 (`/etc/ztgate-console/console.users`, 600). 비밀번호는 scrypt 로만 남고, `--totp` 로 만든 계정은 인증 앱의 6자리 코드도 맞아야 들어옵니다. 역할은 `admin`(바꾸기)과 `viewer`(보기만)이고, 조회 전용 계정에는 바꾸는 단추가 보이지 않으며 요청도 `ztgate_ctl` 에 닿기 전에 거절됩니다. 바꾼 일은 감사 로그에 `{"event":"admin","actor":"console:alice",...}` 로 남습니다 (MCP 는 `mcp`, sudo 계정은 `via`). 계정이 하나도 없을 때만 처음 뜰 때 만든 토큰(`sudo cat /etc/ztgate-console/console.token`)으로 들어오고, 계정을 만들면 토큰 로그인은 닫힙니다.
 
 기본은 127.0.0.1 에서만 듣습니다. 밖에 열려면 `--tls-cert` / `--tls-key` 로 TLS 를 켜고 `-l 0.0.0.0:9470` 입니다. 쿠키는 HttpOnly / SameSite=Strict (TLS 면 Secure), 바꾸는 요청은 세션마다의 CSRF 값이 맞아야 받고, 로그인 실패는 출발지 주소마다 1초에 한 번까지입니다. 화면은 다른 사이트의 프레임에 들어가지 않습니다. ACL 을 켜고 끄는 것(서버 재시작)은 하지 않습니다. `test/console_check.py` 가 가짜 `ztgate_ctl` 앞에서 47가지를 봅니다 (계정, 역할, TOTP, 행위자, 기기 편집 포함, CI).
 

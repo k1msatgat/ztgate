@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """ztgate 웹 관리 콘솔. 표준 라이브러리만 쓴다.
 
-    ztgate_console.py [-l 127.0.0.1:9470] [--ctl /usr/sbin/ztgate_ctl] [--token-file /etc/ztgate/console.token]
-                      [--users-file /etc/ztgate/console.users] [--tls-cert cert.pem --tls-key key.pem]
+    ztgate_console.py [-l 127.0.0.1:9470] [--ctl /usr/sbin/ztgate_ctl] [--token-file /etc/ztgate-console/console.token]
+                      [--users-file /etc/ztgate-console/console.users] [--tls-cert cert.pem --tls-key key.pem]
     ztgate_console.py user add <이름> --role admin|viewer [--totp] [--password-stdin]
     ztgate_console.py user del <이름>
     ztgate_console.py user list
@@ -14,11 +14,12 @@
 누가 들어오는가
   - 기본은 127.0.0.1 에서만 듣는다. 밖에서는 SSH 포워딩(ssh -L 9470:127.0.0.1:9470 서버)으로 들어오거나,
     --tls-cert / --tls-key 로 TLS 를 켜고 -l 0.0.0.0:9470 으로 연다.
-  - 관리자마다 계정이 있다 (--users-file, `ztgate_console.py user add`). 비밀번호는 scrypt 로만 남고,
+  - 관리자마다 계정이 있다 (--users-file, `ztgate_console.py user add`). 토큰과 계정은 서버(ztgate 계정)가
+    쓰는 /etc/ztgate 밖, root 만 여는 /etc/ztgate-console 에 둔다. 비밀번호는 scrypt 로만 남고,
     --totp 로 만든 계정은 인증 앱의 6자리 코드도 맞아야 한다. 역할은 admin(바꾸기)과 viewer(보기만).
     바꾸는 일은 감사 로그에 console:<이름> 으로 남는다 (ztgate_ctl 이 쓴다).
   - 계정이 하나도 없을 때만 토큰 하나로 들어온다 (처음 설치, 비상용). 처음 뜰 때 --token-file 에 무작위
-    값을 만들어 둔다 (600, root 전용). 관리자는 `sudo cat /etc/ztgate/console.token` 으로 읽는다.
+    값을 만들어 둔다 (600, root 전용). 관리자는 `sudo cat /etc/ztgate-console/console.token` 으로 읽는다.
   - 세션 쿠키는 HttpOnly, SameSite=Strict (TLS 면 Secure). 바꾸는 요청(POST)은 세션마다의 CSRF 값이
     맞아야 받는다. 로그인 실패는 출발지 주소마다 1초에 한 번까지만 받는다.
 
@@ -701,7 +702,7 @@ def login_view(err=None, accounts=False):
     else:
         fields = ('<label class="field"><span>관리 토큰</span>'
                   '<input type="password" name="token" autocomplete="current-password" autofocus></label>')
-        foot = ('서버에서 <code>sudo cat /etc/ztgate/console.token</code> 으로 읽습니다. 관리자 계정을 만들면 '
+        foot = ('서버에서 <code>sudo cat /etc/ztgate-console/console.token</code> 으로 읽습니다. 관리자 계정을 만들면 '
                 '(<code>ztgate_console.py user add</code>) 토큰 로그인은 닫힙니다.')
     return ('<div class="card">%s<h1>ztgate 콘솔</h1><p class="lead">Zero Trust Gateway 관리</p>%s'
             '<form method="post" action="/login">%s<button class="btn primary">들어가기</button></form>'
@@ -913,7 +914,7 @@ def user_command(argv):
     ap.add_argument("--role", choices=tuple(ROLES), default="admin")
     ap.add_argument("--totp", action="store_true", help="인증 앱의 6자리 코드도 받는다")
     ap.add_argument("--password-stdin", action="store_true")
-    ap.add_argument("--users-file", default="/etc/ztgate/console.users")
+    ap.add_argument("--users-file", default="/etc/ztgate-console/console.users")
     a = ap.parse_args(argv)
     users = load_users(a.users_file)
     if a.action == "list":
@@ -950,8 +951,8 @@ def main():
     ap = argparse.ArgumentParser(description="ztgate web console")
     ap.add_argument("-l", "--listen", default="127.0.0.1:9470")
     ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl") else "/usr/local/sbin/ztgate_ctl")
-    ap.add_argument("--token-file", default="/etc/ztgate/console.token")
-    ap.add_argument("--users-file", default="/etc/ztgate/console.users")
+    ap.add_argument("--token-file", default="/etc/ztgate-console/console.token")
+    ap.add_argument("--users-file", default="/etc/ztgate-console/console.users")
     ap.add_argument("--tls-cert")
     ap.add_argument("--tls-key")
     a = ap.parse_args()

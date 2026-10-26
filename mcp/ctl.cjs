@@ -235,9 +235,26 @@ function readEnv() {
  * 그 사이에 SIGHUP 을 받은 서버가 잘린 파일을 읽을 일도 없다. */
 function writeAtomic(path, text) {
 	const tmp = `${path}.tmp.${process.pid}`;
+	const owner = serverAccount();
 
 	fs.writeFileSync(tmp, text, { mode: 0o600 });
+	/* 서버는 ztgate 계정으로 돈다 (packaging/ztgate-user.sh). root 가 쓴 600 파일은 서버가 읽지 못한다. */
+	if (owner) {
+		fs.chownSync(tmp, owner.uid, owner.gid);
+	}
 	fs.renameSync(tmp, path);
+}
+
+/* /etc/passwd 의 ztgate 계정. 없으면 (예전 설치, 시험) null — 그때는 root 소유 그대로 둔다. */
+function serverAccount() {
+	try {
+		const line = fs.readFileSync('/etc/passwd', 'utf8').split('\n').find((l) => l.startsWith('ztgate:'));
+		const f = line ? line.split(':') : null;
+
+		return f ? { uid: Number(f[2]), gid: Number(f[3]) } : null;
+	} catch (e) {
+		return null;
+	}
 }
 
 function readDevices() {

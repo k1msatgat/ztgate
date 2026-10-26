@@ -229,6 +229,9 @@ jobs:
           systemctl is-active ztgate
           echo '{"cmd":"status"}' | sudo /usr/sbin/ztgate_ctl
           sudo ztgate status
+          [ "$(ps -o user= -C vpn_server | head -n 1)" = ztgate ]
+          [ "$(sudo stat -c %U:%a /etc/ztgate/server.key)" = ztgate:600 ]
+          [ "$(sudo stat -c %U:%a /etc/ztgate-console)" = root:700 ]
           backup=$(sudo ztgate-backup)
           sudo tar -tzf "$backup" | grep -qx ztgate/server.key
           sudo test -f /etc/logrotate.d/ztgate

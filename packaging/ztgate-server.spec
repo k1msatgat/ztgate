@@ -6,6 +6,7 @@ Summary:        ztgate ZTNA server
 License:        Proprietary
 URL:            https://github.com/k1msatgat/ztgate
 Requires:       openssl-libs >= 3.0, iproute, python3
+Requires(post): shadow-utils
 Recommends:     nftables, nodejs
 # 미리 빌드한 실행 파일을 담는다. 하드닝 플래그는 Makefile 이 넣고 디버그 정보는 stage.sh 가 뗀다.
 %global debug_package %{nil}

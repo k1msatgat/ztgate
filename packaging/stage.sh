@@ -7,6 +7,7 @@
 #   /opt/ztgate/server/bin/vpn_server
 #   /opt/ztgate/libexec/service.sh               systemd 가 부른다 (mcp/service.sh)
 #   /opt/ztgate/libexec/postinst.sh              설치 뒤 한 번: /etc/ztgate 와 서버 키
+#   /opt/ztgate/libexec/ztgate-user.sh           서버 계정(ztgate)과 파일 소유. 서비스가 뜨고 다시 읽기 전에도 돈다
 #   /opt/ztgate/tools/ztgate_exporter.py         Prometheus 지표
 #   /opt/ztgate/tools/ztgate_jwks.py             JWKS 갱신
 #   /opt/ztgate/tools/ztgate_console.py          웹 관리 콘솔
@@ -33,6 +34,7 @@ install -d "$S/opt/ztgate/server/bin" "$S/opt/ztgate/libexec" "$S/opt/ztgate/too
 install -m 755 -s "$ROOT/server/bin/vpn_server" "$S/opt/ztgate/server/bin/vpn_server"
 install -m 755 "$ROOT/mcp/service.sh" "$S/opt/ztgate/libexec/service.sh"
 install -m 755 "$ROOT/packaging/postinst.sh" "$S/opt/ztgate/libexec/postinst.sh"
+install -m 755 "$ROOT/packaging/ztgate-user.sh" "$S/opt/ztgate/libexec/ztgate-user.sh"
 install -m 755 "$ROOT/tools/metrics/ztgate_exporter.py" "$S/opt/ztgate/tools/ztgate_exporter.py"
 install -m 755 "$ROOT/tools/idp/ztgate_jwks.py" "$S/opt/ztgate/tools/ztgate_jwks.py"
 install -m 755 "$ROOT/tools/console/ztgate_console.py" "$S/opt/ztgate/tools/ztgate_console.py"

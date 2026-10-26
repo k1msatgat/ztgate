@@ -6,7 +6,8 @@
 #   ztgate-backup restore <파일>  서버를 내리고 /etc/ztgate 를 그 백업으로 바꾼 뒤 다시 올린다.
 #                                 지금 것은 먼저 백업해 둔다
 #
-# 들어가는 것: 기기 목록, ACL, 등록 대기, 서버 키, server.env, IdP / JWKS, DNS, 콘솔 계정과 토큰.
+# 들어가는 것: 기기 목록, ACL, 등록 대기, 서버 키, server.env, IdP / JWKS, DNS (/etc/ztgate), 콘솔 계정과
+# 토큰 (/etc/ztgate-console, 있으면).
 # 서버 키가 들어 있으므로 백업 파일은 서버 키와 같은 무게로 다룬다 (다른 장비로 옮길 때 암호화).
 #
 # 환경 변수: ZTGATE_ETC(기본 /etc/ztgate), BACKUP_DIR(기본 /var/backups/ztgate), KEEP(기본 14),
@@ -14,6 +15,7 @@
 set -euo pipefail
 
 ETC=${ZTGATE_ETC:-/etc/ztgate}
+CONSOLE=${ZTGATE_CONSOLE_ETC:-$ETC-console}
 DIR=${BACKUP_DIR:-/var/backups/ztgate}
 KEEP=${KEEP:-14}
 UNIT=${ZTGATE_UNIT-ztgate.service}
@@ -30,10 +32,12 @@ backup() {
 	out="$DIR/ztgate-$(date -u +%Y%m%dT%H%M%S.%NZ).tar.gz"
 	tmp="$out.tmp"
 	# 기기 목록은 서버와 ztgate_ctl 이 잠금을 잡고 고친다. 같은 잠금 안에서 묶어 반쯤 쓴 파일이 들어가지 않게 한다.
+	local dirs=("$(basename "$ETC")")
+	[ -d "$CONSOLE" ] && [ "$(dirname "$CONSOLE")" = "$(dirname "$ETC")" ] && dirs+=("$(basename "$CONSOLE")")
 	if [ -e "$ETC/.ztgate.lock" ] && command -v flock > /dev/null; then
-		flock -x -w 10 "$ETC/.ztgate.lock" tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "$(basename "$ETC")"
+		flock -x -w 10 "$ETC/.ztgate.lock" tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "${dirs[@]}"
 	else
-		tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "$(basename "$ETC")"
+		tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "${dirs[@]}"
 	fi
 	mv "$tmp" "$out"
 	echo "$out"
@@ -58,8 +62,8 @@ restore() {
 			*) die "refusing $path: not a regular file or directory" ;;
 		esac
 		case "$path" in
-			"$name"|"$name"/*) ;;
-			*) die "refusing $path: outside $name/" ;;
+			"$name"|"$name"/*|"$name-console"|"$name-console"/*) ;;
+			*) die "refusing $path: outside $name/ and $name-console/" ;;
 		esac
 		case "/$path/" in
 			*/../*) die "refusing $path: contains .." ;;
@@ -79,6 +83,13 @@ restore() {
 	rm -rf "$ETC.old"
 	mv "$ETC" "$ETC.old"
 	mv "$stage/$name" "$ETC"
+	if [ -d "$stage/$name-console" ]; then
+		chmod 700 "$stage/$name-console"
+		rm -rf "$CONSOLE.old"
+		[ ! -e "$CONSOLE" ] || mv "$CONSOLE" "$CONSOLE.old"
+		mv "$stage/$name-console" "$CONSOLE"
+		rm -rf "$CONSOLE.old"
+	fi
 	rmdir "$stage"
 	rm -rf "$ETC.old"
 	[ -z "$UNIT" ] || systemctl start "$UNIT"

@@ -6,6 +6,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/ztgate/server.env
+# root 가 아니다 (packaging/ztgate-user.sh 가 계정과 파일 소유를 맞춘다). 패킷을 다루는 코드에 버그가
+# 있어도 서버 자신의 파일 말고는 고치지 못한다. 콘솔 계정은 /etc/ztgate-console (root) 에 있다.
+User=ztgate
+Group=ztgate
 RuntimeDirectory=ztgate
 RuntimeDirectoryMode=0700
 
@@ -18,22 +22,29 @@ LogsDirectoryMode=0700
 # enroll.conf 에서 쓰인 줄을 지운다). ProtectSystem=strict 는 /etc 를 읽기 전용으로
 # 만들므로 이 디렉터리만 따로 연다.
 ReadWritePaths=/etc/ztgate
+# 관리자가 root 로 고친 설정 파일도 서버가 읽도록, 띄우고 다시 읽기 직전에 소유를 맞춘다 (root, +).
+ExecStartPre=+/opt/ztgate/libexec/ztgate-user.sh
 ExecStart=/opt/ztgate/libexec/service.sh run
-ExecStartPost=/opt/ztgate/libexec/service.sh tun-up $MAINPID
+# tun 에 주소를 붙이고 전달 규칙(nft)을 넣는 것은 root 로 (+).
+ExecStartPost=+/opt/ztgate/libexec/service.sh tun-up $MAINPID
+ExecReload=+/opt/ztgate/libexec/ztgate-user.sh
 ExecReload=/bin/kill -HUP $MAINPID
-ExecStopPost=/opt/ztgate/libexec/service.sh forward-down
+ExecStopPost=+/opt/ztgate/libexec/service.sh forward-down
 
 # 죽으면 다시 올리되, 설정이 틀려 스스로 1 로 끝난 경우는 올려 봐야 같은 결과다.
 Restart=on-failure
 RestartSec=2
 RestartPreventExitStatus=1
 
-# 서버는 패킷마다 한 줄씩 찍는다. journald 의 기본 제한에 걸리면 세션이 생기고
-# 사라진 줄까지 버려지고, MCP 는 그 줄들로 현재 세션을 계산한다.
+# 세션이 생기고 사라진 줄이 journald 의 기본 제한에 걸려 버려지지 않게 한다. 밖에서 일으킬 수
+# 있는 줄은 서버가 스스로 1초에 20줄로 묶는다 (LOG_LIMITED).
 LogRateLimitIntervalSec=0
 
-# TUN 을 만들고 주소를 붙이는 것 말고는 root 의 힘이 필요 없다.
-CapabilityBoundingSet=CAP_NET_ADMIN
+# 서버가 받는 힘은 tun 을 여는 것(CAP_NET_ADMIN)과 443 같은 낮은 TCP 포트를 여는 것
+# (CAP_NET_BIND_SERVICE, -t) 뿐이다.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

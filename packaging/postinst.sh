@@ -19,6 +19,9 @@ if [ ! -e "$ETC/server.key" ]; then
 	/opt/ztgate/server/bin/vpn_server genkey "$ETC/server.key" > /dev/null
 fi
 
+# 서버는 ztgate 계정으로 돈다. 계정을 만들고 /etc/ztgate 를 그 소유로, 콘솔 계정은 /etc/ztgate-console 로.
+/opt/ztgate/libexec/ztgate-user.sh
+
 if command -v systemctl > /dev/null 2>&1 && [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
 	# 돌고 있던 서버는 새 실행 파일로 다시 올린다. 세션은 DISCONNECT 를 받고 바로 다시 붙는다.

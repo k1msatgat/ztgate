@@ -10,6 +10,9 @@ Description=ztgate Prometheus exporter
 After=ztgate.service
 
 [Service]
+# 서버의 상태 소켓은 ztgate 소유 /run/ztgate 안에 있다.
+User=ztgate
+Group=ztgate
 ExecStart=/usr/bin/python3 -I /opt/ztgate/tools/ztgate_exporter.py -s /run/ztgate/status.sock -l 127.0.0.1:9469
 Restart=on-failure
 RestartSec=5

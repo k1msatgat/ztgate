@@ -3,7 +3,8 @@
 #   sudo install -m 755 tools/console/ztgate_console.py /opt/ztgate/tools/ztgate_console.py
 #   sudo install -m 644 tools/console/ztgate-console.service /etc/systemd/system/
 #   sudo systemctl enable --now ztgate-console
-#   sudo cat /etc/ztgate/console.token                # 로그인 토큰 (처음 뜰 때 만든다)
+#   sudo /opt/ztgate/tools/ztgate_console.py user add <이름> --role admin --totp   # 관리자 계정
+#   sudo cat /etc/ztgate-console/console.token        # 계정이 없을 때만 쓰는 토큰 (처음 뜰 때 만든다)
 #   ssh -L 9470:127.0.0.1:9470 <서버>                 # 관리자 PC 에서. 브라우저로 http://127.0.0.1:9470/
 #
 # 일은 ztgate_ctl 이 하므로 그것과 같이 root 로 돈다 (/etc/ztgate 를 고치고 systemctl 을 부른다).
@@ -15,6 +16,9 @@ After=ztgate.service
 ExecStart=/usr/bin/python3 -I /opt/ztgate/tools/ztgate_console.py -l 127.0.0.1:9470
 Restart=on-failure
 RestartSec=5
+# 토큰과 계정을 두는 곳. 서버(ztgate 계정)가 쓰는 /etc/ztgate 밖이다.
+ConfigurationDirectory=ztgate-console
+ConfigurationDirectoryMode=0700
 PrivateTmp=yes
 NoNewPrivileges=yes
 

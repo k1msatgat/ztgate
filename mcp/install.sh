@@ -37,6 +37,7 @@ sudo install -d -m 755 "$OPT/server/bin" "$OPT/test" "$OPT/libexec" "$OPT/mcp"
 sudo install -m 755 "$ROOT_DIR/server/bin/vpn_server" "$OPT/server/bin/vpn_server"
 sudo install -m 644 "$ROOT_DIR/test/auth_check.py" "$OPT/test/auth_check.py"
 sudo install -m 755 "$MCP_DIR/service.sh" "$OPT/libexec/service.sh"
+sudo install -m 755 "$ROOT_DIR/packaging/ztgate-user.sh" "$OPT/libexec/ztgate-user.sh"
 sudo install -m 755 "$MCP_DIR/ctl.cjs" "$CTL"
 
 sudo rm -rf "$OPT/mcp/node_modules"
@@ -60,6 +61,9 @@ fi
 if ! sudo test -e "$ETC/server.key"; then
 	sudo "$OPT/server/bin/vpn_server" genkey "$ETC/server.key" > /dev/null
 fi
+
+# 서버는 ztgate 계정으로 돈다 (계정, /etc/ztgate 소유, 콘솔 계정은 /etc/ztgate-console).
+sudo "$OPT/libexec/ztgate-user.sh"
 
 sudo install -m 644 "$MCP_DIR/ztgate.service" /etc/systemd/system/ztgate.service
 sudo systemctl daemon-reload
