@@ -669,18 +669,18 @@ bool CMainDlg::ServiceReady()
 	case VPN_REMOTE_UP:
 		return true;
 	case VPN_REMOTE_MISMATCH:
-		AfxMessageBox(_T("서비스가 이 프로그램과 다른 버전입니다.\n\n")
-				_T("같이 빌드된 vpn_service.exe 로 다시 설치하세요:\n")
-				_T("관리자 명령 프롬프트에서  vpn_service.exe install"), MB_ICONWARNING);
+		AfxMessageBox(_T("ztgate 서비스와 이 프로그램의 버전이 다릅니다.\n\n")
+				_T("업데이트가 아직 끝나지 않았을 수 있습니다. 잠시 뒤 다시 열어 보고, 그래도 같으면 ")
+				_T("ztgate 를 다시 설치하세요. 계속되면 IT 담당자에게 알려 주세요."), MB_ICONWARNING);
 		return false;
 	case VPN_REMOTE_BUSY:
 		AfxMessageBox(_T("다른 프로그램이 이미 서비스에 붙어 있습니다.\n\n")
 				_T("이 창이 하나 더 떠 있는지 확인하세요."), MB_ICONWARNING);
 		return false;
 	default:
-		AfxMessageBox(_T("터널을 맡는 서비스가 돌고 있지 않습니다.\n\n")
-				_T("한 번 설치하면 됩니다. 관리자 명령 프롬프트에서:\n")
-				_T("vpn_service.exe install"), MB_ICONWARNING);
+		AfxMessageBox(_T("터널을 맡는 ztgate 서비스가 돌고 있지 않습니다.\n\n")
+				_T("PC 를 다시 시작하거나 ztgate 를 다시 설치해 보세요. ")
+				_T("계속되면 IT 담당자에게 알려 주세요."), MB_ICONWARNING);
 		return false;
 	}
 }
@@ -1690,13 +1690,13 @@ void CMainDlg::UpdateStatus()
 		/* 서비스에 붙지 못했으면 연결을 눌러도 아무 일도 일어나지 않는다. 그 이유가
 		 * 가장 먼저 보여야 한다. */
 		if (m_link == VPN_REMOTE_MISMATCH) {
-			hint = _T("서비스가 이 프로그램과 다른 버전입니다. 관리자 권한으로 vpn_service.exe install 로 다시 설치하세요.");
+			hint = _T("서비스와 이 프로그램의 버전이 다릅니다. 업데이트 중일 수 있으니 잠시 뒤 다시 열고, 계속되면 ztgate 를 다시 설치하세요.");
 		}
 		else if (m_link == VPN_REMOTE_BUSY) {
 			hint = _T("다른 프로그램이 이미 서비스에 붙어 있습니다. 이 창이 하나 더 떠 있는지 확인하세요.");
 		}
 		else if (m_link != VPN_REMOTE_UP) {
-			hint = _T("터널을 맡는 서비스가 돌고 있지 않습니다. 관리자 권한으로 vpn_service.exe install 을 한 번 실행하세요.");
+			hint = _T("터널을 맡는 ztgate 서비스가 돌고 있지 않습니다. PC 를 다시 시작하거나 ztgate 를 다시 설치해 보세요.");
 		}
 		else if (m_device_id.IsEmpty()) {
 			hint = _T("이 PC 는 아직 등록되지 않았습니다. 아래 [기기 등록] 에 관리자에게 받은 코드를 넣어 주세요.");
