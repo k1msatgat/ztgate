@@ -7,10 +7,19 @@
 **프로토콜이 v9 로 올라갔습니다.** v7 에서 터널 설정에 내부 DNS 칸이, v8 에서 등록 메시지에 공개키가, v9 에서 핸드셰이크의 모양(감싼 기기 ID 와 포스처)이 바뀌어 이전 버전과는 통하지 않으므로 서버와 모든 클라이언트를 함께 올립니다. **서버에는 서버 키가 있어야 합니다** — `vpn_server genkey /etc/ztgate/server.key` (설치 스크립트와 Docker 이미지는 스스로 만듭니다). 등록 코드(`-e`)를 쓰는 서버는 `-k` 없이 뜨지 않습니다. 세션 키를 뽑는 라벨(`"ztgate v6 session"`)은 그대로입니다 — 버전을 가르는 것은 헤더의 버전 바이트입니다.
 
 ### 바뀜
+- **서버는 root 가 아닌 `ztgate` 계정으로 돕니다** ([ADR 0011](docs/decisions/0011-server-runs-as-ztgate.md)). 콘솔의 토큰과 계정은 `/etc/ztgate-console` 로 옮겨집니다 (설치하면 저절로). 관리자가 `/etc/ztgate` 를 root 로 고친 뒤에는 `systemctl reload ztgate` 로 다시 읽게 합니다.
+- **인증 전 패킷이 쓰기 잠금을 잡지 않습니다.** `REQ` 는 잠금 없이, 없는 세션 번호의 패킷은 읽기 잠금 안에서 버리고, `AUTH` 는 주소마다 초당 20개(`-r`, `AUTH_RATE`)까지 받습니다. 상태 소켓과 지표에 `auth_rate_limited`.
+- **하드닝 빌드가 기본입니다.** Linux 는 PIE / 전체 RELRO / FORTIFY / 스택 보호(`tools/check_hardening.sh` 가 확인), Windows 는 Control Flow Guard 와 CET. Windows 실행 파일은 C 런타임과 MFC 를 정적으로 묶어 VC++ 재배포 패키지 없이 돕니다.
+- **버전은 `VERSION` 하나에서** 옵니다 (deb 0.9.2 / Windows 0.9.3 으로 갈렸던 것). 이제 둘 다 0.9.3.
 - **서버 로그.** 통과한 패킷마다의 줄(`[udp->tun]`, `[tun->udp]`, `[udp->connector]`)은 이제 `-v` 일 때만 찍습니다. 위조 / 모르는 세션 / ACL 거부 / 짧은 핸드셰이크처럼 밖에서 일으킬 수 있는 줄은 종류마다 1초에 20줄까지만 찍고 넘친 수를 `[log] N drop lines suppressed` 로 알립니다. 버린 수는 상태 소켓의 카운터에 그대로 셉니다. `bench.sh` 에 운영 기본값(quiet) 줄이 생겼습니다.
 - **서버 한 대가 받는 수를 늘렸습니다.** 동시 세션 8 → 4096, 기기 16 → 4096, ACL 규칙 32 → 1024, 등록 대기 16 → 256. 세션과 기기는 해시 색인으로 찾아 수가 늘어도 패킷마다의 비용이 그대로이고, 상태 소켓은 크기 제한 없이 루프를 막지 않고 끝까지 씁니다. 세션 번호의 자리 번호가 8bit 에서 16bit 로 바뀌었지만 클라이언트는 번호를 그대로 돌려줄 뿐이라 프로토콜은 v6 그대로입니다. 관리 도구(`ztgate_ctl`)의 상한도 같이 올렸습니다.
 
 ### 추가
+- **콘솔 관리자 계정.** 이름 / 비밀번호(scrypt) / 선택한 TOTP, 역할 admin 과 viewer, `ztgate_console.py user add|del|list`. 계정이 생기면 토큰 로그인은 닫힙니다. 기기 편집 화면, 출발지별 로그인 제한.
+- **관리 작업의 감사 기록.** 바꾸는 명령마다 감사 로그에 `admin` 사건 (`actor` 는 콘솔 로그인 이름 또는 `mcp`, `via` 는 sudo 계정).
+- **백업과 되살리기.** `ztgate-backup` (+ 하루 한 번 도는 `ztgate-backup.timer`), 감사 로그의 logrotate.
+- **검증.** 파서 퍼저(`make fuzz`), ASan / UBSan 으로 빌드한 시험, CodeQL, 패키지가 하드닝과 런타임 DLL 을 확인하는 CI 단계. 코드 서명 단계(인증서를 Secrets 에 넣으면 켜짐).
+- **LICENSE, THIRD_PARTY_NOTICES.md, SECURITY.md** — MSI 와 deb / rpm 에도 들어갑니다.
 - **화면 다듬기 — 네이비 + 청록 한 벌의 색.** [디자인 토큰](docs/design/tokens.md) 하나를 모든 화면이 함께 씁니다. 웹 콘솔은 사이드바 레이아웃, 숫자 카드, 연결 / 포스처 / 허용 · 거부 배지, 어두운 화면(시스템 설정을 따르고 단추로 바꿈), 만든 등록 코드의 복사 단추, 좁은 화면 배치를 얻었습니다 (요청 경로와 동작은 그대로). Windows GUI 는 같은 색과 상태 판 위의 상태색 띠, Linux 클라이언트는 터미널에서 볼 때 연결 / 거절 / 로그인 줄에 색(파일로 받는 로그는 그대로). README 에 배너, 구조도, 화면 절. Windows 는 새 로고 아이콘과 함께 버전 0.9.3.
 - **운영자 명령 `ztgate`.** `ztgate status` / `devices` / `enroll` / `acl` / `audit` 가 `ztgate_ctl` 의 답을 칸을 맞춘 표와 색으로 보여 줍니다 (읽기 전용, 터미널일 때만 색, `NO_COLOR` 존중, `--json`). 패키지의 `/usr/bin/ztgate`, CI 의 `test/cli_check.py`.
 - **핸드셰이크의 기기 ID 와 포스처 감싸기 (v9).** `REQ_HANDSHAKE` 는 이제 아무것도 밝히지 않고, `AUTH` 가 기기 ID 와 포스처를 서버 공개키(`CHALLENGE` 에 실려 온다)와 일회용 키의 ECDH 로 감싸 싣습니다. 오가는 패킷을 엿보는 쪽은 어느 기기가 언제 어디서 붙는지, 그 PC 의 방화벽 / 백신 상태가 어떤지 알 수 없습니다. nonce 는 상태 없는 쿠키(발급 시각 + 출발지 IP 의 mac)가 되어 서버가 `REQ` 에 아무것도 기억하지 않고, 같은 `AUTH` 의 재전송은 기기마다 마지막으로 쓴 nonce 의 발급 시각으로 막습니다. `REQ` 를 `CHALLENGE` 만큼 채워 출발지를 위조한 요청이 남에게 더 큰 답을 보내게 할 수 없습니다 (전에는 모르는 기기 ID 의 `DENY` 가 약 1.7배였습니다). 서버 키(`-k`)가 없는 서버는 뜰 때 일회용 키를 만들어 씁니다. 감사 로그의 `auth_denied` 는 ID 를 풀기 전의 거절(오래되었거나 다른 주소의 nonce, 풀리지 않는 ID)이면 기기 칸이 0 입니다.
