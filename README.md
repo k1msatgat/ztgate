@@ -421,7 +421,8 @@ sudo systemctl enable --now ztgate
 | 기기 폐기 | `devices.conf`에서 그 줄을 지우고 reload. 다음 keepalive에서 끊긴다 |
 | IdP 키 교체 | `ztgate-jwks.timer` 가 15분마다 받아 바뀌었으면 reload 한다. 바로 받으려면 `sudo systemctl start ztgate-jwks`. 깨진 묶음은 깔지 않고, 서버도 깨진 파일이면 이전 키를 그대로 쓴다 |
 | ACL 켜기 / 끄기 | `acl.conf`를 만들거나 지우고 restart. 켜고 끄는 것은 시작할 때만 정해진다 |
-| 무슨 일이 있었나 | `sudo tail -f /var/log/ztgate/audit.log` (세션, 거절, 접근, 로그인, 정책 변경) |
+| 무슨 일이 있었나 | `sudo tail -f /var/log/ztgate/audit.log` (세션, 거절, 접근, 로그인, 정책 변경, 관리 작업). 패키지의 logrotate 가 주마다 돌려 12주를 남긴다 |
+| 백업과 되살리기 | `sudo ztgate-backup` 이 `/etc/ztgate`(기기 목록, ACL, 서버 키, IdP, 콘솔 계정)를 `/var/backups/ztgate` 에 묶는다 (600, 최근 14개). 하루 한 번 돌리려면 `sudo systemctl enable --now ztgate-backup.timer`. 되살리기는 `sudo ztgate-backup restore <파일>` — 압축 안의 경로를 먼저 검사하고, 지금 설정을 백업한 뒤 서버를 내렸다 올린다. 서버 키가 들어 있으니 다른 장비로 옮길 때는 암호화한다 |
 | 지금 누가 붙어 있나 | `ztgate status` (세션, 포스처, 사용자, 사유별 거절 수). 기기 · 등록 코드 · ACL · 감사 로그는 `ztgate devices` / `enroll` / `acl` / `audit`. 스크립트에는 `--json` 이나 `echo '{"cmd":"status"}' \| sudo ztgate_ctl` |
 | 서버 로그 | `journalctl -u ztgate` |
 | 지표 (Prometheus) | `tools/metrics/ztgate_exporter.py` 가 상태 소켓을 `127.0.0.1:9469/metrics` 로 내준다 (`ztgate-exporter.service`). 세션 수, 사유별 거절 수, 주고받은 양. `--per-session` 이면 세션마다 (기기 ID, 터널 주소, 사용자가 라벨에 들어가므로 밖으로 열 때는 인증하는 프록시를 앞에 둔다) |

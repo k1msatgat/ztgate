@@ -13,6 +13,8 @@
 #   /opt/ztgate/test/auth_check.py               ztgate_ctl 의 자체 시험이 돌린다
 #   /usr/sbin/ztgate_ctl                         관리 헬퍼 (node 가 있어야 돈다)
 #   /usr/bin/ztgate                              운영자가 터미널에서 읽는 상태 (ztgate status 등)
+#   /usr/sbin/ztgate-backup                      설정과 서버 키의 백업 / 되살리기 (+ ztgate-backup.timer, 하루 한 번)
+#   /etc/logrotate.d/ztgate                      감사 로그 돌리기
 #   /usr/lib/systemd/system/ztgate.service, ztgate-exporter.service, ztgate-console.service, ztgate-jwks.{service,timer}
 #
 # 넣지 않는 것: MCP 서버(npm 의존성이 있다 — mcp/install.sh), /etc/ztgate 의 설정. 설정은 패키지의
@@ -25,7 +27,7 @@ S=${1:?usage: stage.sh <stage-dir>}
 [ -x "$ROOT/server/bin/vpn_server" ] || { echo "build first: make server" >&2; exit 1; }
 
 install -d "$S/opt/ztgate/server/bin" "$S/opt/ztgate/libexec" "$S/opt/ztgate/tools" "$S/opt/ztgate/test" \
-	"$S/usr/sbin" "$S/usr/bin" "$S/usr/lib/systemd/system"
+	"$S/usr/sbin" "$S/usr/bin" "$S/usr/lib/systemd/system" "$S/etc/logrotate.d"
 # 디버그 정보는 떼고 넣는다 (-s). 빌드 트리의 실행 파일에는 남아 있다.
 install -m 755 -s "$ROOT/server/bin/vpn_server" "$S/opt/ztgate/server/bin/vpn_server"
 install -m 755 "$ROOT/mcp/service.sh" "$S/opt/ztgate/libexec/service.sh"
@@ -36,6 +38,9 @@ install -m 755 "$ROOT/tools/console/ztgate_console.py" "$S/opt/ztgate/tools/ztga
 install -m 644 "$ROOT/test/auth_check.py" "$S/opt/ztgate/test/auth_check.py"
 install -m 755 "$ROOT/mcp/ctl.cjs" "$S/usr/sbin/ztgate_ctl"
 install -m 755 "$ROOT/tools/cli/ztgate" "$S/usr/bin/ztgate"
+install -m 755 "$ROOT/tools/backup/ztgate-backup" "$S/usr/sbin/ztgate-backup"
+install -m 644 "$ROOT/tools/backup/ztgate-backup.service" "$ROOT/tools/backup/ztgate-backup.timer" "$S/usr/lib/systemd/system/"
+install -m 644 "$ROOT/packaging/ztgate.logrotate" "$S/etc/logrotate.d/ztgate"
 install -m 644 "$ROOT/mcp/ztgate.service" "$S/usr/lib/systemd/system/ztgate.service"
 install -m 644 "$ROOT/tools/metrics/ztgate-exporter.service" "$S/usr/lib/systemd/system/ztgate-exporter.service"
 install -m 644 "$ROOT/tools/console/ztgate-console.service" "$S/usr/lib/systemd/system/ztgate-console.service"

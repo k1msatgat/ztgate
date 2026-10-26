@@ -1,0 +1,7 @@
+# 설정과 서버 키를 /var/backups/ztgate 로 (tools/backup/ztgate-backup). ztgate-backup.timer 가 하루 한 번 부른다.
+[Unit]
+Description=ztgate configuration backup
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ztgate-backup

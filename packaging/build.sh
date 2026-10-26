@@ -38,8 +38,9 @@ Description: ztgate ZTNA server
 EOF
 	printf '#!/bin/sh\nset -e\n/opt/ztgate/libexec/postinst.sh\n' > "$S/DEBIAN/postinst"
 	# 지울 때 서비스를 멈춘다. /etc/ztgate 는 남긴다 (purge 에서도 — 기기 키를 실수로 잃지 않게).
-	printf '#!/bin/sh\nset -e\nif [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then\n\tsystemctl disable --now ztgate.service ztgate-exporter.service ztgate-console.service ztgate-jwks.timer 2>/dev/null || true\nfi\n' > "$S/DEBIAN/prerm"
+	printf '#!/bin/sh\nset -e\nif [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then\n\tsystemctl disable --now ztgate.service ztgate-exporter.service ztgate-console.service ztgate-jwks.timer ztgate-backup.timer 2>/dev/null || true\nfi\n' > "$S/DEBIAN/prerm"
 	chmod 755 "$S/DEBIAN/postinst" "$S/DEBIAN/prerm"
+	echo /etc/logrotate.d/ztgate > "$S/DEBIAN/conffiles"
 	dpkg-deb --root-owner-group --build "$S" "$OUT/ztgate-server_${VERSION}_${ARCH}.deb"
 	;;
 rpm)

@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# ztgate 서버의 설정과 키를 백업하고 되살린다. root 로 돈다.
+#
+#   ztgate-backup                 /etc/ztgate 를 /var/backups/ztgate/ztgate-<시각>.tar.gz 로 (600). 최근 KEEP 개만 남긴다
+#   ztgate-backup list            가진 백업
+#   ztgate-backup restore <파일>  서버를 내리고 /etc/ztgate 를 그 백업으로 바꾼 뒤 다시 올린다.
+#                                 지금 것은 먼저 백업해 둔다
+#
+# 들어가는 것: 기기 목록, ACL, 등록 대기, 서버 키, server.env, IdP / JWKS, DNS, 콘솔 계정과 토큰.
+# 서버 키가 들어 있으므로 백업 파일은 서버 키와 같은 무게로 다룬다 (다른 장비로 옮길 때 암호화).
+#
+# 환경 변수: ZTGATE_ETC(기본 /etc/ztgate), BACKUP_DIR(기본 /var/backups/ztgate), KEEP(기본 14),
+#            ZTGATE_UNIT(기본 ztgate.service, 비우면 서버를 내리고 올리지 않는다)
+set -euo pipefail
+
+ETC=${ZTGATE_ETC:-/etc/ztgate}
+DIR=${BACKUP_DIR:-/var/backups/ztgate}
+KEEP=${KEEP:-14}
+UNIT=${ZTGATE_UNIT-ztgate.service}
+
+die() { echo "ztgate-backup: $*" >&2; exit 1; }
+
+backup() {
+	[ -d "$ETC" ] || die "$ETC not found"
+	umask 077
+	mkdir -p "$DIR"
+	chmod 700 "$DIR"
+	local out tmp
+	# 초 아래까지 넣는다. 같은 초에 두 번(되살리기 직전의 백업) 만들어도 앞의 것을 덮지 않는다.
+	out="$DIR/ztgate-$(date -u +%Y%m%dT%H%M%S.%NZ).tar.gz"
+	tmp="$out.tmp"
+	# 기기 목록은 서버와 ztgate_ctl 이 잠금을 잡고 고친다. 같은 잠금 안에서 묶어 반쯤 쓴 파일이 들어가지 않게 한다.
+	if [ -e "$ETC/.ztgate.lock" ] && command -v flock > /dev/null; then
+		flock -x -w 10 "$ETC/.ztgate.lock" tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "$(basename "$ETC")"
+	else
+		tar -czf "$tmp" -C "$(dirname "$ETC")" --exclude='.ztgate.lock' "$(basename "$ETC")"
+	fi
+	mv "$tmp" "$out"
+	echo "$out"
+	# 오래된 것부터 지워 KEEP 개만 남긴다.
+	ls -1 "$DIR"/ztgate-*.tar.gz 2> /dev/null | sort | head -n "-$KEEP" | while read -r old; do rm -f -- "$old"; done
+}
+
+list() {
+	ls -1 "$DIR"/ztgate-*.tar.gz 2> /dev/null | sort || true
+}
+
+restore() {
+	local file=${1:-}
+	[ -f "$file" ] || die "no such backup: $file"
+	local name
+	name=$(basename "$ETC")
+	# 압축 안의 모든 경로가 <name>/ 아래의 보통 파일이나 폴더여야 한다. 절대 경로, .., 링크는 받지 않는다.
+	tar -tzvf "$file" > /dev/null || die "not a readable tar.gz: $file"
+	while read -r mode _ _ _ _ path rest; do
+		case "$mode" in
+			-*|d*) ;;
+			*) die "refusing $path: not a regular file or directory" ;;
+		esac
+		case "$path" in
+			"$name"|"$name"/*) ;;
+			*) die "refusing $path: outside $name/" ;;
+		esac
+		case "/$path/" in
+			*/../*) die "refusing $path: contains .." ;;
+		esac
+		[ -z "$rest" ] || die "refusing $path: odd entry"
+	done < <(tar -tzvf "$file")
+	tar -tzf "$file" | grep -qx "$name/server.key" || die "the backup has no $name/server.key"
+
+	local before
+	before=$(backup)
+	echo "current configuration saved to $before"
+	[ -z "$UNIT" ] || systemctl stop "$UNIT"
+	local stage
+	stage=$(mktemp -d "$(dirname "$ETC")/.ztgate-restore.XXXXXX")
+	tar -xzf "$file" -C "$stage" --no-same-owner
+	chmod 700 "$stage/$name"
+	rm -rf "$ETC.old"
+	mv "$ETC" "$ETC.old"
+	mv "$stage/$name" "$ETC"
+	rmdir "$stage"
+	rm -rf "$ETC.old"
+	[ -z "$UNIT" ] || systemctl start "$UNIT"
+	echo "restored $ETC from $file"
+}
+
+case "${1:-backup}" in
+	backup) backup ;;
+	list) list ;;
+	restore) restore "${2:-}" ;;
+	*) die "usage: ztgate-backup [backup | list | restore <file>]" ;;
+esac

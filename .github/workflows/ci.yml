@@ -59,6 +59,9 @@ jobs:
       - name: Operator CLI (test/cli_check.py)
         run: python3 test/cli_check.py
 
+      - name: Backup and restore (test/backup_check.sh)
+        run: test/backup_check.sh
+
       - name: MCP server syntax
         working-directory: mcp
         run: |
@@ -222,6 +225,10 @@ jobs:
           sleep 2
           systemctl is-active ztgate
           echo '{"cmd":"status"}' | sudo /usr/sbin/ztgate_ctl
+          sudo ztgate status
+          backup=$(sudo ztgate-backup)
+          sudo tar -tzf "$backup" | grep -qx ztgate/server.key
+          sudo test -f /etc/logrotate.d/ztgate
           sudo apt-get install -y -qq --reinstall ./out/ztgate-server_*.deb > /dev/null
           systemctl is-active ztgate
           [ "$(sudo sha256sum /etc/ztgate/server.key)" = "$key" ]

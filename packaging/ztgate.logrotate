@@ -1,0 +1,10 @@
+# 감사 로그. 서버가 O_APPEND 로 열어 두므로 복사한 뒤 비운다 (copytruncate) — 서버에 신호를 보내지 않는다.
+/var/log/ztgate/*.log {
+	weekly
+	rotate 12
+	compress
+	delaycompress
+	missingok
+	notifempty
+	copytruncate
+}
