@@ -56,6 +56,9 @@ jobs:
       - name: Web console (test/console_check.py)
         run: python3 test/console_check.py
 
+      - name: Operator CLI (test/cli_check.py)
+        run: python3 test/cli_check.py
+
       - name: MCP server syntax
         working-directory: mcp
         run: |

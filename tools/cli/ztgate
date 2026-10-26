@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""ztgate — 운영자가 터미널에서 읽는 서버 상태. 표준 라이브러리만 쓴다.
+
+    ztgate status                 서버, 카운터, 붙어 있는 세션
+    ztgate devices                등록된 기기 (지금 연결됐는지 함께)
+    ztgate enroll                 기다리는 등록 코드
+    ztgate acl                    ACL 규칙 (위에서부터 첫 일치)
+    ztgate audit [-n 50] [-e 종류]  감사 로그
+
+    --json            ztgate_ctl 의 답을 그대로 (스크립트용)
+    --color WHEN      auto(기본) | always | never. auto 는 터미널이고 NO_COLOR 가 없을 때만
+    --ctl PATH        ztgate_ctl 위치. root 가 아니면 sudo 로 부른다
+
+일은 모두 ztgate_ctl(mcp/ctl.cjs)이 한다. 이 명령은 읽기만 하고, 답을 표로 바꿔 보여 줄 뿐이다.
+색은 docs/design/tokens.md 의 터미널 표를 따른다.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import unicodedata
+
+CTL_TIMEOUT = 60
+
+
+class Paint:
+    """상태에 따라 ANSI 16색. 꺼져 있으면 글자만."""
+
+    CODES = {"ok": "36", "warn": "33", "bad": "31", "dim": "2", "bold": "1", "accent": "34"}
+
+    def __init__(self, on):
+        self.on = on
+
+    def __call__(self, kind, text):
+        if not self.on or not text:
+            return text
+        return "\033[%sm%s\033[0m" % (self.CODES[kind], text)
+
+
+def width(s):
+    """터미널에서 차지하는 칸. 한글은 두 칸, 색 코드는 0칸."""
+    n, i = 0, 0
+    while i < len(s):
+        if s[i] == "\033":
+            i = s.index("m", i) + 1
+            continue
+        n += 2 if unicodedata.east_asian_width(s[i]) in ("W", "F") else 1
+        i += 1
+    return n
+
+
+def table(head, rows, paint, right=()):
+    """칸을 맞춘 표. right 에 든 칸은 오른쪽 정렬."""
+    if not rows:
+        return
+    cols = [max([width(head[i])] + [width(r[i]) for r in rows]) for i in range(len(head))]
+
+    def line(cells, style=None):
+        out = []
+        for i, c in enumerate(cells):
+            pad = " " * (cols[i] - width(c))
+            out.append(pad + c if i in right else c + pad)
+        text = "  ".join(out).rstrip()
+        return paint(style, text) if style else text
+
+    print("  " + line(head, "dim"))
+    for r in rows:
+        print("  " + line(r))
+
+
+def size(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return "%.0f %s" % (n, unit) if unit == "B" else "%.1f %s" % (n, unit)
+        n /= 1024.0
+
+
+def ago(sec):
+    sec = max(0, int(sec or 0))
+    if sec < 60:
+        return "%d초" % sec
+    if sec < 3600:
+        return "%d분" % (sec // 60)
+    return "%d시간 %d분" % (sec // 3600, sec % 3600 // 60)
+
+
+def num(v):
+    return "{:,}".format(v) if isinstance(v, int) else str(v if v is not None else "-")
+
+
+def req_text(r):
+    if not r:
+        return ""
+    t = [k + "=on" for k in ("firewall", "antivirus", "disk") if r.get(k)]
+    if r.get("min_build"):
+        t.append("min-build=%d" % r["min_build"])
+    return " ".join(t)
+
+
+def call(ctl, cmd, **args):
+    argv = [ctl] if os.geteuid() == 0 or os.environ.get("ZTGATE_CTL_NO_SUDO") else ["sudo", ctl]
+    try:
+        p = subprocess.run(argv, input=json.dumps(dict(args, cmd=cmd)), capture_output=True, text=True,
+                           timeout=CTL_TIMEOUT)
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": "ztgate_ctl: %s" % type(e).__name__}
+
+
+def posture(p, paint):
+    out = []
+    for key, name in (("firewall", "방화벽"), ("antivirus", "백신"), ("disk", "디스크")):
+        v = p.get(key)
+        out.append(paint("ok", name) if v == "on" else paint("bad", name) if v == "off" else paint("dim", name))
+    return " ".join(out)
+
+
+def show_status(r, paint):
+    cnt = r.get("counters", {})
+    sessions = r.get("sessions", [])
+    run = paint("ok", "● 실행 중") if r.get("running") else paint("bad", "● 멈춤")
+    print("%s  %s" % (paint("bold", "ztgate 서버"), run))
+    denied = sum(cnt.get(k, 0) for k in ("deny_unknown_device", "deny_bad_auth", "deny_posture"))
+    facts = [("세션", num(len(sessions))), ("등록 기기", num(r.get("registered_devices"))),
+             ("ACL 규칙", num(r.get("acl", {}).get("rules", 0))), ("핸드셰이크", num(cnt.get("handshake_ok", 0))),
+             ("거절", paint("bad", num(denied)) if denied else "0"),
+             ("ACL 차단", paint("warn", num(cnt.get("acl_denied", 0))) if cnt.get("acl_denied") else "0")]
+    print("  " + paint("dim", " · ").join("%s %s" % (paint("dim", k), v) for k, v in facts))
+    if denied:
+        print("  " + paint("dim", "거절 사유: 모르는 기기 %s · 인증 %s · 포스처 %s" % (
+            num(cnt.get("deny_unknown_device", 0)), num(cnt.get("deny_bad_auth", 0)), num(cnt.get("deny_posture", 0)))))
+    print()
+    if not sessions:
+        print("  " + paint("dim", "붙어 있는 세션이 없습니다."))
+        return
+    rows = []
+    for s in sessions:
+        user = (s.get("user") or {}).get("name") or "-"
+        rows.append([paint("ok", "●") + " " + str(s.get("tunnel_ip")), (s.get("device_id") or "")[:12], user,
+                     str(s.get("endpoint")), posture(s.get("posture", {}), paint),
+                     "%s / %s" % (size(s.get("rx_bytes", 0)), size(s.get("tx_bytes", 0))), ago(s.get("age_sec"))])
+    table(["  터널 주소", "기기", "사용자", "출발지", "포스처", "받음 / 보냄", "연결"], rows, paint, right=(5, 6))
+
+
+def show_devices(r, st, paint):
+    online = {s.get("device_id") for s in st.get("sessions", [])} if st.get("ok") else set()
+    devs = r.get("devices", [])
+    print("%s  %s" % (paint("bold", "기기"), paint("dim", "%d대 · 연결 %d" % (len(devs), sum(d.get("id") in online for d in devs)))))
+    print()
+    if not devs:
+        print("  " + paint("dim", "등록된 기기가 없습니다. ztgate enroll 로 기다리는 코드를 봅니다."))
+        return
+    rows = []
+    for d in devs:
+        on = d.get("id") in online
+        rows.append([(paint("ok", "●") if on else paint("dim", "○")) + " " + (d.get("label") or "(이름 없음)"),
+                     d.get("id") or "", d.get("tunnel_ip") or "", paint("ok", "연결됨") if on else paint("dim", "끊김"),
+                     d.get("key_type") or "", req_text(d.get("requirements")) or "-",
+                     " ".join("#" + t for t in d.get("tags", [])) or "-"])
+    table(["  이름", "ID", "터널 주소", "상태", "키", "접속 조건", "태그"], rows, paint)
+
+
+def show_enroll(r, paint):
+    pend = r.get("pending", [])
+    print("%s  %s" % (paint("bold", "기다리는 등록 코드"), paint("dim", "%d개" % len(pend))))
+    print()
+    if not pend:
+        print("  " + paint("dim", "기다리는 등록 코드가 없습니다."))
+        return
+    rows = []
+    for p in pend:
+        left = max(0, p.get("expires_in_sec", 0))
+        rows.append([p.get("label") or "(이름 없음)", p.get("tunnel_ip") or "", req_text(p.get("requirements")) or "-",
+                     " ".join("#" + t for t in p.get("tags", [])) or "-",
+                     paint("warn" if left < 180 else "dim", "%d분 남음" % (left // 60))])
+    table(["이름", "터널 주소", "접속 조건", "태그", "남은 시간"], rows, paint, right=(4,))
+
+
+def show_acl(r, paint):
+    if not r.get("enabled"):
+        print(paint("dim", "ACL 이 꺼져 있습니다 (터널 대역 안까지만 닿습니다)."))
+        return
+    rules = r.get("rules") or []
+    print("%s  %s" % (paint("bold", "ACL"), paint("dim", "%d 규칙 · 위에서부터 첫 일치, 일치하지 않으면 거부" % len(rules))))
+    print()
+    rows = []
+    for i, rule in enumerate(rules, 1):
+        u = rule.get("users") or {}
+        cond = [req_text(rule.get("require") or rule.get("requirements"))]
+        cond += ["user=" + n for n in u.get("users", [])] + ["group=" + n for n in u.get("groups", [])]
+        cond += ["tag=" + n for n in rule.get("tags", [])]
+        allow = rule.get("action") == "allow"
+        rows.append([str(i), str(rule.get("src")), str(rule.get("dst")), str(rule.get("proto")), str(rule.get("dport")),
+                     paint("ok", "allow") if allow else paint("bad", "deny"), " ".join(x for x in cond if x) or "-"])
+    table(["#", "출발지", "목적지", "프로토콜", "포트", "판정", "조건"], rows, paint, right=(0,))
+
+
+EVENT_KIND = {"session_open": "ok", "session_close": "dim", "auth_denied": "bad", "enrolled": "accent",
+              "access": "warn", "login": "accent", "reload": "accent"}
+
+
+def show_audit(r, paint):
+    events = r.get("events", [])
+    if not events:
+        print(paint("dim", "기록이 없습니다."))
+        return
+    w = max(len(ev.get("event") or "") for ev in events)
+    for ev in events:
+        kind = ev.get("event") or ""
+        rest = " ".join("%s=%s" % (paint("dim", k), json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v)
+                        for k, v in ev.items() if k not in ("time", "event"))
+        print("%s  %s  %s" % (paint("dim", (ev.get("time") or "").replace("T", " ").rstrip("Z")),
+                              paint(EVENT_KIND.get(kind, "dim"), kind.ljust(w)), rest))
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="ztgate", description="ztgate 서버 상태를 터미널에서 읽는다")
+    ap.add_argument("--json", action="store_true", help="ztgate_ctl 의 답을 그대로")
+    ap.add_argument("--color", choices=("auto", "always", "never"), default="auto")
+    ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl") else "/usr/local/sbin/ztgate_ctl")
+    sub = ap.add_subparsers(dest="what", metavar="명령")
+    sub.add_parser("status", help="서버, 카운터, 세션")
+    sub.add_parser("devices", help="등록된 기기")
+    sub.add_parser("enroll", help="기다리는 등록 코드")
+    sub.add_parser("acl", help="ACL 규칙")
+    au = sub.add_parser("audit", help="감사 로그")
+    au.add_argument("-n", type=int, default=30, help="최근 몇 건 (기본 30)")
+    au.add_argument("-e", "--event", help="종류: session_open session_close auth_denied access reload enrolled")
+    a = ap.parse_args()
+    what = a.what or "status"
+
+    on = a.color == "always" or (a.color == "auto" and sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
+    paint = Paint(on)
+
+    cmd = {"status": "status", "devices": "device_list", "enroll": "enroll_list", "acl": "acl_get", "audit": "audit"}[what]
+    args = {}
+    if what == "audit":
+        args["lines"] = max(1, a.n)
+        if a.event:
+            args["event"] = a.event
+    r = call(a.ctl, cmd, **args)
+    if a.json:
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+        return 0 if r.get("ok") else 1
+    if not r.get("ok"):
+        print(paint("bad", "오류: ") + str(r.get("error")), file=sys.stderr)
+        return 1
+    if what == "status":
+        show_status(r, paint)
+    elif what == "devices":
+        show_devices(r, call(a.ctl, "status"), paint)
+    elif what == "enroll":
+        show_enroll(r, paint)
+    elif what == "acl":
+        show_acl(r, paint)
+    else:
+        show_audit(r, paint)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:     # ztgate audit | head
+        sys.exit(0)

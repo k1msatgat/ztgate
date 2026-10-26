@@ -33,6 +33,7 @@ fi
 %files
 /opt/ztgate
 /usr/sbin/ztgate_ctl
+/usr/bin/ztgate
 /usr/lib/systemd/system/ztgate.service
 /usr/lib/systemd/system/ztgate-exporter.service
 /usr/lib/systemd/system/ztgate-console.service
