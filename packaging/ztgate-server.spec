@@ -36,6 +36,7 @@ fi
 /usr/bin/ztgate
 /usr/sbin/ztgate-backup
 %config(noreplace) /etc/logrotate.d/ztgate
+/usr/share/doc/ztgate-server
 /usr/lib/systemd/system/ztgate-backup.service
 /usr/lib/systemd/system/ztgate-backup.timer
 /usr/lib/systemd/system/ztgate.service

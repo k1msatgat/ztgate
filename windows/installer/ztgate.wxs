@@ -70,6 +70,14 @@
         <File Id="wintun_LICENSE.txt" Source="$(var.BinDir)\wintun-LICENSE.txt" />
       </Component>
 
+      <!-- ztgate 의 라이선스와 함께 배포하는 구성 요소의 고지 (저장소 맨 위의 LICENSE, THIRD_PARTY_NOTICES.md). -->
+      <Component Id="License" Guid="*" Win64="yes">
+        <File Id="LICENSE.txt" Source="$(var.BinDir)\LICENSE.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="Notices" Guid="*" Win64="yes">
+        <File Id="THIRD_PARTY_NOTICES.md" Source="$(var.BinDir)\THIRD_PARTY_NOTICES.md" KeyPath="yes" />
+      </Component>
+
       <Component Id="Gui" Guid="*" Win64="yes">
         <File Id="vpn_gui.exe" Source="$(var.BinDir)\vpn_gui.exe" KeyPath="yes">
           <Shortcut Id="GuiShortcut" Directory="ProgramMenuFolder" Name="ztgate"
@@ -85,6 +93,8 @@
     <Feature Id="Main" Title="ztgate" Level="1">
       <ComponentRef Id="Service" />
       <ComponentRef Id="Wintun" />
+      <ComponentRef Id="License" />
+      <ComponentRef Id="Notices" />
       <ComponentRef Id="Gui" />
       <ComponentRef Id="Console" />
     </Feature>

@@ -31,6 +31,8 @@ $license = Join-Path $bin 'wintun-LICENSE.txt'
 if (-not (Test-Path $license)) {
 	Copy-Item (Join-Path $here '..\third_party\wintun\LICENSE.txt') $license
 }
+Copy-Item (Join-Path $here '..\..\LICENSE') (Join-Path $bin 'LICENSE.txt') -Force
+Copy-Item (Join-Path $here '..\..\THIRD_PARTY_NOTICES.md') (Join-Path $bin 'THIRD_PARTY_NOTICES.md') -Force
 
 foreach ($f in 'vpn_service.exe', 'vpn_gui.exe', 'vpn_client.exe', 'wintun.dll') {
 	if (-not (Test-Path (Join-Path $bin $f))) { throw "missing $f in $bin (build the solution first)" }

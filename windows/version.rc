@@ -27,6 +27,7 @@ BEGIN
 			VALUE "FileDescription", ZTGATE_FILE_DESC
 			VALUE "FileVersion", ZTGATE_VERSION_STR
 			VALUE "InternalName", ZTGATE_FILE_NAME
+			VALUE "LegalCopyright", "Copyright (c) 2026 Jinwoo Lee. All rights reserved."
 			VALUE "OriginalFilename", ZTGATE_FILE_NAME
 			VALUE "ProductName", "ztgate"
 			VALUE "ProductVersion", ZTGATE_VERSION_STR
