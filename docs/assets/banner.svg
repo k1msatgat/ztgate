@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="340" viewBox="0 0 1280 340" font-family="Segoe UI, Malgun Gothic, Apple SD Gothic Neo, sans-serif" role="img" aria-label="ztgate — Linux에서 C로 만든 L3 VPN + ZTNA 접근 제어">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1626"/><stop offset="0.6" stop-color="#0F1E36"/><stop offset="1" stop-color="#16294A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.45" r="0.45">
+      <stop offset="0" stop-color="#1E4E8C" stop-opacity="0.55"/><stop offset="1" stop-color="#1E4E8C" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#5B8FD6" stroke-opacity="0.07"/>
+    </pattern>
+    <marker id="t" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3FBFAE"/></marker>
+  </defs>
+  <rect width="1280" height="340" rx="18" fill="url(#bg)"/>
+  <rect width="1280" height="340" rx="18" fill="url(#grid)"/>
+  <rect width="1280" height="340" rx="18" fill="url(#glow)"/>
+
+  <!-- 로고 -->
+  <g transform="translate(64 78) scale(1.5)">
+    <path d="M32 4 56 12v18c0 15-10 25-24 30C18 55 8 45 8 30V12z" fill="#13233A"/>
+    <path d="M32 7.5 53 14.5V30c0 13-8.6 21.8-21 26.4C19.6 51.8 11 43 11 30V14.5z" fill="none" stroke="#2C5E9E" stroke-width="1.5"/>
+    <rect x="20" y="19" width="3.5" height="26" rx="1.5" fill="#5B8FD6"/>
+    <rect x="34" y="19" width="3.5" height="26" rx="1.5" fill="#5B8FD6"/>
+    <path d="M14 32h32" stroke="#2A9D8F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M43 26.5l6 5.5-6 5.5" fill="none" stroke="#2A9D8F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="178" y="140" fill="#FFFFFF" font-size="64" font-weight="700" letter-spacing="-1">ztgate</text>
+  <text x="182" y="182" fill="#C9D4E5" font-size="24">Linux에서 C로 만든 L3 VPN + ZTNA 접근 제어</text>
+  <text x="182" y="218" fill="#8FA1BC" font-size="17">등록된 기기만 들어오고, 들어온 뒤에도 계속 확인하고, 허락한 곳에만 닿는다.</text>
+  <g font-size="14" font-weight="600">
+    <rect x="182" y="246" width="150" height="34" rx="17" fill="#123A3A" stroke="#2A9D8F"/>
+    <text x="257" y="268" text-anchor="middle" fill="#3FBFAE">기기 인증</text>
+    <rect x="344" y="246" width="150" height="34" rx="17" fill="#123A3A" stroke="#2A9D8F"/>
+    <text x="419" y="268" text-anchor="middle" fill="#3FBFAE">지속 포스처 검증</text>
+    <rect x="506" y="246" width="150" height="34" rx="17" fill="#123A3A" stroke="#2A9D8F"/>
+    <text x="581" y="268" text-anchor="middle" fill="#3FBFAE">패킷 단위 ACL</text>
+  </g>
+
+  <!-- 그림: 기기 → 관문 → 자원 -->
+  <g transform="translate(860 70)">
+    <rect x="0" y="70" width="92" height="64" rx="10" fill="#16294A" stroke="#24395A"/>
+    <rect x="18" y="84" width="56" height="34" rx="3" fill="none" stroke="#9AA8BD" stroke-width="2"/>
+    <path d="M12 124h68" stroke="#9AA8BD" stroke-width="2" stroke-linecap="round"/>
+    <text x="46" y="156" text-anchor="middle" fill="#8FA1BC" font-size="13">기기</text>
+
+    <path d="M96 102 H164" stroke="#3FBFAE" stroke-width="3.5" stroke-dasharray="2 7" stroke-linecap="round"/>
+
+    <path d="M206 30 248 44v44c0 28-18 46-42 54-24-8-42-26-42-54V44z" fill="#13233A" stroke="#2C5E9E" stroke-width="2"/>
+    <path d="M186 102l14 14 26-28" fill="none" stroke="#3FBFAE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="206" y="168" text-anchor="middle" fill="#8FA1BC" font-size="13">ztgate</text>
+
+    <path d="M252 102 H316" stroke="#3FBFAE" stroke-width="3.5" stroke-linecap="round" marker-end="url(#t)"/>
+
+    <rect x="326" y="52" width="70" height="30" rx="6" fill="#16294A" stroke="#2A9D8F"/>
+    <rect x="326" y="88" width="70" height="30" rx="6" fill="#16294A" stroke="#2A9D8F"/>
+    <rect x="326" y="124" width="70" height="30" rx="6" fill="#16294A" stroke="#3B5478" stroke-dasharray="4 3"/>
+    <circle cx="340" cy="67" r="4" fill="#3FBFAE"/><circle cx="340" cy="103" r="4" fill="#3FBFAE"/><circle cx="340" cy="139" r="4" fill="#E5636D"/>
+    <path d="M352 67h32M352 103h32M352 139h32" stroke="#6F7D93" stroke-width="3" stroke-linecap="round"/>
+    <text x="361" y="182" text-anchor="middle" fill="#8FA1BC" font-size="13">허락한 곳만</text>
+  </g>
+</svg>

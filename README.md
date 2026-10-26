@@ -1,20 +1,16 @@
 <div align="center">
 
-# ztgate
-
-**Linux에서 C로 설계한 L3 VPN + ZTNA 접근 제어**
-
-등록된 기기만 들어오고, 들어온 뒤에도 계속 확인하고, 허락한 곳에만 닿는다.
+<img src="docs/assets/banner.svg" alt="ztgate — Linux에서 C로 만든 L3 VPN + ZTNA 접근 제어. 등록된 기기만 들어오고, 들어온 뒤에도 계속 확인하고, 허락한 곳에만 닿는다." width="100%">
 
 [![ci](https://github.com/k1msatgat/ztgate/actions/workflows/ci.yml/badge.svg)](https://github.com/k1msatgat/ztgate/actions/workflows/ci.yml)
-![server](https://img.shields.io/badge/server-Linux%20%C2%B7%20C%20%C2%B7%20epoll-2f6f4f)
-![client](https://img.shields.io/badge/client-Linux%20%C2%B7%20C%20%C2%B7%20tun-2f6f4f)
-![crypto](https://img.shields.io/badge/crypto-ECDH%20P--256%20%C2%B7%20AES--256--GCM-6b4fbb)
-![protocol](https://img.shields.io/badge/protocol-v6-555)
-![identity](https://img.shields.io/badge/identity-device%20%2B%20OIDC%20user-6b4fbb)
-![windows](https://img.shields.io/badge/also-Windows%20client-888)
+![server](https://img.shields.io/badge/server-Linux%20%C2%B7%20C%20%C2%B7%20epoll-0F1E36)
+![client](https://img.shields.io/badge/client-Linux%20%C2%B7%20Windows-0F1E36)
+![crypto](https://img.shields.io/badge/crypto-ECDH%20P--256%20%C2%B7%20AES--256--GCM-1E4E8C)
+![protocol](https://img.shields.io/badge/protocol-v9-1E4E8C)
+![identity](https://img.shields.io/badge/identity-device%20%2B%20OIDC%20user-2A9D8F)
+![policy](https://img.shields.io/badge/policy-posture%20%C2%B7%20per--packet%20ACL-2A9D8F)
 
-[한눈에 보기](#한눈에-보기) · [시작하기](#시작하기) · [배포와 운영](#배포와-운영) · [동작 흐름](#동작-흐름--등록부터-차단과-복구까지) · [서버 구조](#서버-구조) · [프로토콜](#프로토콜) · [보안 모델](#보안-모델) · [표준 프로토콜과의 대조](#표준-프로토콜과의-대조) · [알려진 제약](#알려진-제약) · [Windows 클라이언트](#windows-클라이언트) · [빌드와 의존성](#빌드와-의존성)
+[한눈에 보기](#한눈에-보기) · [화면](#화면) · [시작하기](#시작하기) · [배포와 운영](#배포와-운영) · [동작 흐름](#동작-흐름--등록부터-차단과-복구까지) · [서버 구조](#서버-구조) · [프로토콜](#프로토콜) · [보안 모델](#보안-모델) · [표준 프로토콜과의 대조](#표준-프로토콜과의-대조) · [알려진 제약](#알려진-제약) · [Windows 클라이언트](#windows-클라이언트) · [빌드와 의존성](#빌드와-의존성)
 
 </div>
 
@@ -37,42 +33,11 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 | 어디까지 가는가 | 내부망 전체 | **적어서 연 곳만.** 규칙이 없으면 터널 대역 밖으로 나가지 못한다 |
 | 설정은 누가 갖는가 | 클라이언트의 설정 파일 | **서버.** 터널 주소와 경로를 서버가 내려 주고, 정책을 고치면 붙어 있는 기기가 따라온다 |
 
-> **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 30개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
+> **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 30개, 운영 CLI 시험 16개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
 
 ## 한눈에 보기
 
-```mermaid
-flowchart LR
-    subgraph DEV["기기"]
-        direction TB
-        LC["Linux 클라이언트<br/>vpn_client"]
-        WC["Windows 클라이언트<br/>서비스 + GUI"]
-    end
-
-    subgraph SRV["ztgate 서버 (Linux)"]
-        direction TB
-        VS["vpn_server<br/>인증 · 암호화 · ACL"]
-        CONF[("정책 파일<br/>기기 · ACL · IdP 공개키")]
-        CONF --> VS
-    end
-
-    subgraph LAN["보호할 내부망"]
-        direction TB
-        CN["커넥터"]
-        RES[("내부 자원")]
-        CN --> RES
-    end
-
-    IDP["IdP<br/>Keycloak 등"]
-    ADMIN["관리자"]
-
-    LC <==>|"UDP 9000 · 암호화 터널"| VS
-    WC <==>|"UDP 9000 · 암호화 터널"| VS
-    CN ==>|"커넥터가 밖으로 연 세션"| VS
-    DEV -.->|"사용자 로그인"| IDP
-    IDP -.->|"공개키 (관리자가 복사)"| CONF
-    ADMIN -->|"ssh · MCP"| CONF
-```
+<p align="center"><img src="docs/assets/architecture.svg" alt="ztgate 구조: 기기는 암호화 UDP 터널로 서버에 붙고, 서버는 패킷마다 ACL · 포스처 · 사용자 조건을 보고, 앱 커넥터가 내부망 자원을 내어 준다" width="100%"></p>
 
 - **기기**는 서버로 암호화된 UDP 터널을 열고, 서버가 허락한 곳으로만 패킷을 보냅니다.
 - **서버**는 기기와 사용자를 확인하고 패킷마다 ACL로 판정합니다. IdP와는 통신하지 않고, 관리자가 받아 둔 공개키로 토큰만 확인합니다.
@@ -87,6 +52,27 @@ flowchart LR
 | **MCP 서버 / `ztgate_ctl`** | Linux | 관리자(또는 AI 에이전트)가 서버를 올리고 내리고, 등록 코드를 만들고, 정책을 바꾸고, 감사 로그를 본다 |
 | **`tools/loadgen`** | Linux | 서버 데이터 경로의 부하 생성기. 클라이언트와 같은 프로토콜 코드를 쓴다 |
 | Windows 클라이언트 | Windows | 같은 프로토콜의 추가 구현 — 서비스 + GUI. [아래](#windows-클라이언트) |
+
+## 화면
+
+<table>
+<tr>
+<td colspan="2"><img src="docs/assets/screens/console-overview.png" alt="웹 관리 콘솔 개요: 서버 상태 카드와 세션별 포스처"></td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/assets/screens/console-devices-dark.png" alt="웹 관리 콘솔 기기 목록 (어두운 화면)"></td>
+<td width="50%"><img src="docs/assets/screens/console-acl.png" alt="웹 관리 콘솔 ACL: 허용 / 거부 배지와 조건, 파일과 같은 문법의 편집기"></td>
+</tr>
+<tr>
+<td width="62%"><img src="docs/assets/screens/cli.png" alt="ztgate status / ztgate acl 터미널 출력"></td>
+<td width="38%" align="center"><img src="docs/assets/screens/windows-gui.png" alt="Windows 클라이언트: 연결됨 상태와 보안 상태" width="300"></td>
+</tr>
+</table>
+
+- **웹 관리 콘솔** — 세션, 기기, 등록 코드, ACL, 감사 로그. 밝은 / 어두운 화면 ([배포와 운영](#웹-관리-콘솔)). 위 그림은 데모 데이터다.
+- **`ztgate` 명령** — 서버에서 같은 정보를 표와 색으로 (`ztgate status`, `devices`, `enroll`, `acl`, `audit`).
+- **Windows 클라이언트** — 상태 판의 색 띠와 원이 연결 상태를 보여 주고, 보안 상태를 항목별로 보여 준다.
+- 색과 글꼴은 [디자인 토큰](docs/design/tokens.md) 하나를 모든 화면이 함께 쓴다.
 
 ## 시작하기
 
@@ -435,11 +421,11 @@ sudo systemctl enable --now ztgate
 | IdP 키 교체 | `ztgate-jwks.timer` 가 15분마다 받아 바뀌었으면 reload 한다. 바로 받으려면 `sudo systemctl start ztgate-jwks`. 깨진 묶음은 깔지 않고, 서버도 깨진 파일이면 이전 키를 그대로 쓴다 |
 | ACL 켜기 / 끄기 | `acl.conf`를 만들거나 지우고 restart. 켜고 끄는 것은 시작할 때만 정해진다 |
 | 무슨 일이 있었나 | `sudo tail -f /var/log/ztgate/audit.log` (세션, 거절, 접근, 로그인, 정책 변경) |
-| 지금 누가 붙어 있나 | `echo '{"cmd":"status"}' \| sudo ztgate_ctl` (세션, 포스처, 사용자, 사유별 거절 수) |
+| 지금 누가 붙어 있나 | `ztgate status` (세션, 포스처, 사용자, 사유별 거절 수). 기기 · 등록 코드 · ACL · 감사 로그는 `ztgate devices` / `enroll` / `acl` / `audit`. 스크립트에는 `--json` 이나 `echo '{"cmd":"status"}' \| sudo ztgate_ctl` |
 | 서버 로그 | `journalctl -u ztgate` |
 | 지표 (Prometheus) | `tools/metrics/ztgate_exporter.py` 가 상태 소켓을 `127.0.0.1:9469/metrics` 로 내준다 (`ztgate-exporter.service`). 세션 수, 사유별 거절 수, 주고받은 양. `--per-session` 이면 세션마다 (기기 ID, 터널 주소, 사용자가 라벨에 들어가므로 밖으로 열 때는 인증하는 프록시를 앞에 둔다) |
 
-`ztgate_ctl`은 표준 입력으로 JSON 명령 하나를 받는 root 헬퍼입니다(`status`, `start` / `stop` / `restart` / `reload`, `logs`, `audit`, `device_*`, `enroll_*`, `acl_get` / `acl_set`). MCP 서버는 이 헬퍼를 감싸 AI 에이전트가 SSH로 같은 일을 하게 합니다. 셸은 열어 주지 않고, sudoers는 `ztgate_ctl`을 인자 없이 부르는 것 하나만 허용합니다.
+`ztgate` 는 `ztgate_ctl` 의 답을 칸을 맞춘 표와 색으로 보여 주는 읽기 전용 명령입니다 (터미널일 때만 색, `NO_COLOR` 존중, `test/cli_check.py`). `ztgate_ctl`은 표준 입력으로 JSON 명령 하나를 받는 root 헬퍼입니다(`status`, `start` / `stop` / `restart` / `reload`, `logs`, `audit`, `device_*`, `enroll_*`, `acl_get` / `acl_set`). MCP 서버는 이 헬퍼를 감싸 AI 에이전트가 SSH로 같은 일을 하게 합니다. 셸은 열어 주지 않고, sudoers는 `ztgate_ctl`을 인자 없이 부르는 것 하나만 허용합니다.
 
 ```bash
 claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라이언트 쪽 (선택)
@@ -447,7 +433,7 @@ claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라�
 
 ### 웹 관리 콘솔
 
-브라우저로 지금 붙어 있는 세션(기기, 사용자, 출발지, 포스처, 주고받은 양), 기기 목록과 지우기, 등록 코드 만들기 / 거두기, ACL 보기와 고치기(파일과 같은 한 줄 문법), 감사 로그를 봅니다 (`tools/console/ztgate_console.py`, 표준 라이브러리만). 일은 모두 `ztgate_ctl` 이 하므로 검증, 파일 잠금, 서버 다시 읽기가 MCP 와 같습니다.
+브라우저로 ([화면](#화면)) 지금 붙어 있는 세션(기기, 사용자, 출발지, 포스처, 주고받은 양), 기기 목록과 지우기, 등록 코드 만들기 / 거두기, ACL 보기와 고치기(파일과 같은 한 줄 문법), 감사 로그를 봅니다 (`tools/console/ztgate_console.py`, 표준 라이브러리만). 일은 모두 `ztgate_ctl` 이 하므로 검증, 파일 잠금, 서버 다시 읽기가 MCP 와 같습니다.
 
 ```bash
 sudo systemctl enable --now ztgate-console          # 패키지에 들어 있다. 127.0.0.1:9470
@@ -504,6 +490,7 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
 ### 1. 등록 — 키를 손으로 옮기지 않는다
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 sequenceDiagram
     actor A as 관리자
     participant S as 서버
@@ -521,6 +508,7 @@ sequenceDiagram
 ### 2. 연결 — 서로를 확인하고 세션 키를 만든다
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 sequenceDiagram
     participant C as 기기
     participant S as 서버
@@ -537,6 +525,7 @@ sequenceDiagram
 ### 3. 통신 — 규칙에 있는 곳만 지나간다
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 sequenceDiagram
     participant C as 기기
     participant S as 서버
@@ -553,6 +542,7 @@ sequenceDiagram
 ### 4. 지속 검증 — 한 번 통과했다고 끝까지 믿지 않는다
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 sequenceDiagram
     actor A as 관리자
     participant S as 서버
@@ -574,6 +564,7 @@ sequenceDiagram
 ### 5. 사용자 로그인 — 이 기기를 누가 쓰는가
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 sequenceDiagram
     participant I as IdP (Keycloak 등)
     participant C as 기기
@@ -594,6 +585,7 @@ sequenceDiagram
 왜 이렇게 짰는지(고른 것, 버린 다른 길, 떠안은 것)는 [설계 결정 기록](docs/decisions/README.md)에 한 장씩 있습니다.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#E6EEF8','primaryTextColor':'#1A2333','primaryBorderColor':'#1E4E8C','lineColor':'#5B6678','secondaryColor':'#E3F4F1','tertiaryColor':'#F5F7FA','actorBkg':'#0F1E36','actorTextColor':'#FFFFFF','actorBorder':'#1E4E8C','actorLineColor':'#8A95A8','signalColor':'#1A2333','signalTextColor':'#1A2333','noteBkgColor':'#E3F4F1','noteTextColor':'#1A2333','noteBorderColor':'#2A9D8F','labelBoxBkgColor':'#0F1E36','labelTextColor':'#FFFFFF','activationBkgColor':'#E6EEF8','activationBorderColor':'#1E4E8C','clusterBkg':'#F5F7FA','clusterBorder':'#1E4E8C'}}}%%
 flowchart TB
     UDP(["UDP 소켓 (받기)"]) --> HDR{"헤더 · 버전"}
     HDR -->|"REQ / AUTH"| HS["핸드셰이크<br/><i>device.c · enroll.c</i>"]
