@@ -2,7 +2,10 @@
 """ztgate 웹 관리 콘솔. 표준 라이브러리만 쓴다.
 
     ztgate_console.py [-l 127.0.0.1:9470] [--ctl /usr/sbin/ztgate_ctl] [--token-file /etc/ztgate/console.token]
-                      [--tls-cert cert.pem --tls-key key.pem]
+                      [--users-file /etc/ztgate/console.users] [--tls-cert cert.pem --tls-key key.pem]
+    ztgate_console.py user add <이름> --role admin|viewer [--totp] [--password-stdin]
+    ztgate_console.py user del <이름>
+    ztgate_console.py user list
 
 브라우저로 지금 붙어 있는 세션, 기기 목록, 등록 코드, ACL, 감사 로그를 보고 기기 지우기 / 등록 코드
 만들기와 거두기를 한다. 일은 모두 ztgate_ctl(관리 헬퍼, mcp/ctl.cjs)에 넘긴다 — 검증과 파일 잠금,
@@ -11,23 +14,31 @@
 누가 들어오는가
   - 기본은 127.0.0.1 에서만 듣는다. 밖에서는 SSH 포워딩(ssh -L 9470:127.0.0.1:9470 서버)으로 들어오거나,
     --tls-cert / --tls-key 로 TLS 를 켜고 -l 0.0.0.0:9470 으로 연다.
-  - 로그인은 토큰 하나다. 처음 뜰 때 --token-file 에 무작위 값을 만들어 둔다 (600, root 전용).
-    관리자는 `sudo cat /etc/ztgate/console.token` 으로 읽는다.
+  - 관리자마다 계정이 있다 (--users-file, `ztgate_console.py user add`). 비밀번호는 scrypt 로만 남고,
+    --totp 로 만든 계정은 인증 앱의 6자리 코드도 맞아야 한다. 역할은 admin(바꾸기)과 viewer(보기만).
+    바꾸는 일은 감사 로그에 console:<이름> 으로 남는다 (ztgate_ctl 이 쓴다).
+  - 계정이 하나도 없을 때만 토큰 하나로 들어온다 (처음 설치, 비상용). 처음 뜰 때 --token-file 에 무작위
+    값을 만들어 둔다 (600, root 전용). 관리자는 `sudo cat /etc/ztgate/console.token` 으로 읽는다.
   - 세션 쿠키는 HttpOnly, SameSite=Strict (TLS 면 Secure). 바꾸는 요청(POST)은 세션마다의 CSRF 값이
-    맞아야 받는다. 로그인 실패는 1초에 한 번까지만 받는다.
+    맞아야 받는다. 로그인 실패는 출발지 주소마다 1초에 한 번까지만 받는다.
 
 ztgate_ctl 이 root 로만 돌므로 이 콘솔도 root 로 돈다 (tools/console/ztgate-console.service).
 """
 
 import argparse
+import base64
+import getpass
+import hashlib
 import hmac
 import html
 import http.server
 import json
 import os
+import re
 import secrets
 import socketserver
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -38,18 +49,106 @@ SESSION_TTL = 8 * 3600
 CTL_TIMEOUT = 60
 
 
+ROLES = {"admin": "관리자", "viewer": "조회 전용"}
+NAME_RE = re.compile(r"^[a-z0-9_.-]{1,32}$")
+SCRYPT = (16384, 8, 1)
+
+
+def _b64(b):
+    return base64.b64encode(b).decode()
+
+
+def hash_password(password):
+    salt = secrets.token_bytes(16)
+    n, r, p = SCRYPT
+    h = hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=32)
+    return "scrypt$%d$%d$%d$%s$%s" % (n, r, p, _b64(salt), _b64(h))
+
+
+def password_ok(password, stored):
+    try:
+        kind, n, r, p, salt, want = stored.split("$")
+        if kind != "scrypt":
+            return False
+        got = hashlib.scrypt(password.encode(), salt=base64.b64decode(salt), n=int(n), r=int(r), p=int(p),
+                             dklen=len(base64.b64decode(want)))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(got, base64.b64decode(want))
+
+
+def totp(secret, when, step=0):
+    """RFC 6238 (SHA-1, 30초, 6자리). 인증 앱이 보여 주는 코드."""
+    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    mac = hmac.new(key, struct.pack(">Q", int(when // 30) + step), "sha1").digest()
+    off = mac[-1] & 15
+    return "%06d" % ((struct.unpack(">I", mac[off:off + 4])[0] & 0x7fffffff) % 1000000)
+
+
+def totp_ok(secret, code, when):
+    return any(hmac.compare_digest(totp(secret, when, step), code) for step in (-1, 0, 1))
+
+
+def load_users(path):
+    """{이름: (역할, 비밀번호 해시, TOTP 비밀 또는 "")}. 파일이 없으면 빈 dict."""
+    users = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                t = line.split("#", 1)[0].split()
+                if len(t) in (3, 4) and NAME_RE.match(t[0]) and t[1] in ROLES:
+                    users[t[0]] = (t[1], t[2], t[3] if len(t) == 4 else "")
+    except FileNotFoundError:
+        pass
+    return users
+
+
+def save_users(path, users):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("# ztgate 콘솔 계정: 이름 역할(admin|viewer) 비밀번호(scrypt) [TOTP 비밀]\n")
+        for name, (role, h, secret) in sorted(users.items()):
+            f.write(" ".join(x for x in (name, role, h, secret) if x) + "\n")
+    os.replace(tmp, path)
+
+
+class Session:
+    __slots__ = ("csrf", "expires", "user", "role")
+
+    def __init__(self, user, role, now):
+        self.csrf = secrets.token_urlsafe(24)
+        self.expires = now + SESSION_TTL
+        self.user = user
+        self.role = role
+
+    @property
+    def admin(self):
+        return self.role == "admin"
+
+    @property
+    def who(self):
+        return "%s · %s" % (self.user, ROLES[self.role])
+
+
 class Console:
-    def __init__(self, ctl, token, secure):
+    def __init__(self, ctl, token, secure, users_path=None):
         self.ctl = ctl
         self.token = token
         self.secure = secure
-        self.sessions = {}          # 쿠키 -> (CSRF 값, 만료 시각)
+        self.users_path = users_path
+        self.sessions = {}          # 쿠키 -> Session
         self.lock = threading.Lock()
-        self.last_fail = 0.0
+        self.fails = {}             # 출발지 주소 -> 마지막 실패 시각
 
-    def call(self, cmd, **args):
-        """ztgate_ctl 에 명령 하나. 결과 dict (ok, error ...)."""
+    def users(self):
+        return load_users(self.users_path) if self.users_path else {}
+
+    def call(self, cmd, actor=None, **args):
+        """ztgate_ctl 에 명령 하나. 결과 dict (ok, error ...). actor 는 감사 로그에 남는 사람."""
         req = dict(args, cmd=cmd)
+        if actor:
+            req["actor"] = "console:" + actor
         try:
             p = subprocess.run([self.ctl], input=json.dumps(req), capture_output=True, text=True,
                                timeout=CTL_TIMEOUT)
@@ -57,27 +156,43 @@ class Console:
         except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
             return {"ok": False, "error": "ztgate_ctl: %s" % type(e).__name__}
 
-    def login(self, given):
+    def login(self, addr, form):
+        """(쿠키 또는 None, 실패했을 때 보여 줄 글). 계정이 있으면 이름 / 비밀번호(/ 코드), 없으면 토큰."""
+        now = time.time()
         with self.lock:
-            now = time.time()
-            if now - self.last_fail < 1.0:
-                return None
-            if not hmac.compare_digest(given.encode(), self.token.encode()):
-                self.last_fail = now
-                return None
+            if now - self.fails.get(addr, 0.0) < 1.0:
+                return None, "잠시 뒤에 다시 해 주세요."
+        users = self.users()
+        who = None
+        if users:
+            u = users.get(form.get("name", "").strip())
+            if u and password_ok(form.get("password", ""), u[1]) and \
+                    (not u[2] or totp_ok(u[2], form.get("code", "").strip(), now)):
+                who = (form["name"].strip(), u[0])
+            err = "이름, 비밀번호 또는 인증 코드가 맞지 않습니다."
+        else:
+            if hmac.compare_digest(form.get("token", "").encode(), self.token.encode()):
+                who = ("token", "admin")
+            err = "토큰이 맞지 않습니다."
+        with self.lock:
+            if who is None:
+                if len(self.fails) > 4096:
+                    self.fails = {k: v for k, v in self.fails.items() if now - v < 1.0}
+                self.fails[addr] = now
+                return None, err
             sid = secrets.token_urlsafe(32)
-            self.sessions = {k: v for k, v in self.sessions.items() if v[1] > now}
-            self.sessions[sid] = (secrets.token_urlsafe(24), now + SESSION_TTL)
-            return sid
+            self.sessions = {k: v for k, v in self.sessions.items() if v.expires > now}
+            self.sessions[sid] = Session(who[0], who[1], now)
+            return sid, None
 
     def check(self, sid):
-        """세션이면 그 CSRF 값, 아니면 None."""
+        """로그인한 세션이면 Session, 아니면 None."""
         with self.lock:
             s = self.sessions.get(sid)
-            if s is None or s[1] < time.time():
+            if s is None or s.expires < time.time():
                 self.sessions.pop(sid, None)
                 return None
-            return s[0]
+            return s
 
     def logout(self, sid):
         with self.lock:
@@ -304,7 +419,7 @@ def card_table(head, rows):
                "".join(rows)))
 
 
-def page(path, body, csrf=None, msg=None):
+def page(path, body, csrf=None, msg=None, who=""):
     note = ""
     if msg:
         note = '<div class="msg %s">%s</div>' % ("err" if msg[0] == "err" else "ok", e(msg[1]))
@@ -320,10 +435,11 @@ def page(path, body, csrf=None, msg=None):
         '<body><div class="app"><aside class="side"><div class="brand">%s<div><b>ztgate</b><small>Zero Trust Gateway</small>'
         '</div></div><nav class="nav">%s</nav><div class="side-foot">관리 콘솔 · 터널 안에서만</div></aside>'
         '<div class="main"><header class="top"><h1>%s</h1><span class="sub">%s</span><div class="right">'
+        '<span class="muted" style="font-size:13px;margin-right:4px">%s</span>'
         '<button class="btn icon" type="button" onclick="ztTheme()" title="밝게 / 어둡게">%s</button>'
         '<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="%s">'
         '<button class="btn">%s로그아웃</button></form></div></header><main class="content">%s%s</main></div></div>'
-        '</body></html>') % (LOGO % (34, 34), nav, e(title), e(SUBTITLE.get(path, "")), ICONS["theme"], e(csrf),
+        '</body></html>') % (LOGO % (34, 34), nav, e(title), e(SUBTITLE.get(path, "")), e(who), ICONS["theme"], e(csrf),
                              ICONS["logout"], note, body)
 
 
@@ -385,19 +501,44 @@ def view_devices(c, csrf):
     for d in r.get("devices", []):
         on = d.get("id") in online
         key = "P-256" if d.get("key_type") == "p256" else "공유 키" if d.get("key_type") else ""
+        actions = ('<a class="btn sm" href="/devices/edit?id=%s">편집</a> '
+                   '<form class="inline" method="post" action="/devices/remove" onsubmit="return confirm(\'이 기기를 지울까요? 다음 keepalive 에서 끊깁니다.\')">'
+                   '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
+                   '<button class="btn sm danger">지우기</button></form>') % (e(d.get("id")), e(csrf), e(d.get("id"))) if csrf else ""
         rows.append('<tr><td style="white-space:nowrap"><span class="dot%s"></span><b>%s</b></td><td><span class="id" title="%s">%s…</span></td>'
-                    '<td class="mono">%s</td><td>%s</td><td style="white-space:nowrap">%s</td><td>%s</td><td>%s</td><td class="num">'
-                    '<form class="inline" method="post" action="/devices/remove" onsubmit="return confirm(\'이 기기를 지울까요? 다음 keepalive 에서 끊깁니다.\')">'
-                    '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
-                    '<button class="btn sm danger">지우기</button></form></td></tr>' % (
+                    '<td class="mono">%s</td><td>%s</td><td style="white-space:nowrap">%s</td><td>%s</td><td>%s</td>'
+                    '<td class="num" style="white-space:nowrap">%s</td></tr>' % (
                         " on" if on else "", e(d.get("label") or "(이름 없음)"), e(d.get("id")), e((d.get("id") or "")[:16]),
                         e(d.get("tunnel_ip")), badge("ok", "연결됨") if on else badge("idle", "끊김"),
-                        e(key), req_chips(d.get("requirements")), tag_chips(d.get("tags")), e(csrf), e(d.get("id"))))
+                        e(key), req_chips(d.get("requirements")), tag_chips(d.get("tags")), actions))
+    add = ('<a class="btn primary" style="margin-left:auto" href="/enroll">%s새 기기 등록</a>' % ICONS["plus"]) if csrf else ""
     head = ('<div class="row" style="margin-bottom:14px"><h2 style="margin:0">기기 <span class="muted">%d</span></h2>'
-            '<a class="btn primary" style="margin-left:auto" href="/enroll">%s새 기기 등록</a></div>') % (len(rows), ICONS["plus"])
+            '%s</div>') % (len(rows), add)
     table = card_table(["이름", "ID", "터널 주소", "상태", "키", "접속 조건", "태그", ""], rows) if rows else \
         empty("등록된 기기가 없습니다. [등록 코드]에서 코드를 만들어 기기에 넣으세요.")
     return head + table
+
+
+def view_device_edit(c, csrf, dev_id):
+    r = c.call("device_list")
+    d = next((x for x in r.get("devices", []) if x.get("id") == dev_id), None) if r.get("ok") else None
+    if d is None:
+        return empty("이 ID 의 기기가 없습니다.")
+    req = d.get("requirements") or {}
+    checks = "".join('<label><input type="checkbox" name="%s"%s> %s</label>' % (k, " checked" if req.get(k) else "", n)
+                     for k, n in (("firewall", "방화벽"), ("antivirus", "백신"), ("disk", "디스크 암호화")))
+    return ('<div class="card pad" style="max-width:560px"><h2>%s</h2><p class="id">%s</p>'
+            '<form method="post" action="/devices/update"><input type="hidden" name="csrf" value="%s">'
+            '<input type="hidden" name="id" value="%s">'
+            '<label class="field"><span>이름</span><input name="label" value="%s"></label>'
+            '<label class="field"><span>터널 주소</span><input name="tunnel_ip" value="%s"></label>'
+            '<label class="field"><span>태그 (빈칸으로 나눔)</span><input name="tags" value="%s"></label>'
+            '<div class="field"><span>접속 조건</span><div class="checks">%s</div></div>'
+            '<label class="field"><span>최소 OS 빌드 (0 이면 보지 않음)</span><input type="number" name="min_build" value="%s" min="0"></label>'
+            '<div class="row"><button class="btn primary">저장</button><a class="btn" href="/devices">취소</a></div>'
+            '</form></div>') % (
+        e(d.get("label") or "(이름 없음)"), e(dev_id), e(csrf), e(dev_id), e(d.get("label") or ""), e(d.get("tunnel_ip")),
+        e(" ".join(d.get("tags") or [])), checks, e(req.get("min_build") or 0))
 
 
 def view_enroll(c, csrf, made=None):
@@ -405,13 +546,13 @@ def view_enroll(c, csrf, made=None):
     rows = []
     for p in r.get("pending", []) if r.get("ok") else []:
         left = max(0, p.get("expires_in_sec", 0))
-        rows.append('<tr><td><b>%s</b></td><td class="mono">%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">'
-                    '<form class="inline" method="post" action="/enroll/revoke">'
-                    '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
-                    '<button class="btn sm danger">거두기</button></form></td></tr>' % (
+        revoke = ('<form class="inline" method="post" action="/enroll/revoke">'
+                  '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
+                  '<button class="btn sm danger">거두기</button></form>') % (e(csrf), e(p.get("id"))) if csrf else ""
+        rows.append('<tr><td><b>%s</b></td><td class="mono">%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">%s</td></tr>' % (
                         e(p.get("label") or "(이름 없음)"), e(p.get("tunnel_ip")), req_chips(p.get("requirements")),
                         tag_chips(p.get("tags")), badge("warn" if left < 180 else "idle", "%d분 남음" % (left // 60)),
-                        e(csrf), e(p.get("id"))))
+                        revoke))
     code = ""
     if made:
         code = ('<div class="callout"><div style="flex:1"><div class="muted" style="font-size:12.5px">등록 코드 · %s 에 배정</div>'
@@ -429,7 +570,8 @@ def view_enroll(c, csrf, made=None):
             '<label><input type="checkbox" name="antivirus"> 백신</label>'
             '<label><input type="checkbox" name="disk"> 디스크 암호화</label></div></div>'
             '<label class="field"><span>유효 시간 (분)</span><input type="number" name="ttl" value="15" min="1" max="1440"></label>'
-            '<button class="btn primary">%s코드 만들기</button></form></div>') % (e(csrf), ICONS["plus"])
+            '<button class="btn primary">%s코드 만들기</button></form></div>') % (e(csrf), ICONS["plus"]) if csrf else \
+        '<div class="card pad"><h2>새 등록 코드</h2><p class="muted">조회 전용 계정은 코드를 만들 수 없습니다.</p></div>'
     pending = card_table(["이름", "터널 주소", "접속 조건", "태그", "남은 시간", ""], rows) if rows else \
         empty("기다리는 등록 코드가 없습니다.")
     return '%s<div class="grid2">%s<div><h2>기다리는 등록 <span class="muted">%d</span></h2>%s</div></div>' % (
@@ -520,9 +662,10 @@ def view_acl(c, csrf=None, draft=None):
 
 
 EVENTS = [("", "전체"), ("session_open", "세션 시작"), ("session_close", "세션 끝"), ("auth_denied", "인증 거절"),
-          ("enrolled", "기기 등록"), ("access", "ACL 판정"), ("login", "사용자 로그인"), ("reload", "정책 다시 읽기")]
+          ("enrolled", "기기 등록"), ("access", "ACL 판정"), ("login", "사용자 로그인"), ("reload", "정책 다시 읽기"),
+          ("admin", "관리 작업")]
 EVENT_KIND = {"session_open": "ok", "session_close": "idle", "auth_denied": "bad", "enrolled": "info",
-              "access": "warn", "login": "info", "reload": "info"}
+              "access": "warn", "login": "info", "reload": "info", "admin": "info"}
 
 
 def view_audit(c, q):
@@ -549,13 +692,21 @@ def view_audit(c, q):
     return '<div class="filters">%s</div>%s' % (filters, table)
 
 
-def login_view(err=None):
+def login_view(err=None, accounts=False):
+    if accounts:
+        fields = ('<label class="field"><span>이름</span><input name="name" autocomplete="username" autofocus></label>'
+                  '<label class="field"><span>비밀번호</span><input type="password" name="password" autocomplete="current-password"></label>'
+                  '<label class="field"><span>인증 코드 (설정한 계정만)</span><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6"></label>')
+        foot = '계정은 서버에서 <code>ztgate_console.py user add</code> 로 만듭니다.'
+    else:
+        fields = ('<label class="field"><span>관리 토큰</span>'
+                  '<input type="password" name="token" autocomplete="current-password" autofocus></label>')
+        foot = ('서버에서 <code>sudo cat /etc/ztgate/console.token</code> 으로 읽습니다. 관리자 계정을 만들면 '
+                '(<code>ztgate_console.py user add</code>) 토큰 로그인은 닫힙니다.')
     return ('<div class="card">%s<h1>ztgate 콘솔</h1><p class="lead">Zero Trust Gateway 관리</p>%s'
-            '<form method="post" action="/login"><label class="field"><span>관리 토큰</span>'
-            '<input type="password" name="token" autocomplete="current-password" autofocus></label>'
-            '<button class="btn primary">들어가기</button></form>'
-            '<p class="foot">서버에서 <code>sudo cat /etc/ztgate/console.token</code> 으로 읽습니다.</p></div>') % (
-        LOGO % (48, 48), '<div class="msg err">%s</div>' % e(err) if err else "")
+            '<form method="post" action="/login">%s<button class="btn primary">들어가기</button></form>'
+            '<p class="foot">%s</p></div>') % (LOGO % (48, 48), '<div class="msg err">%s</div>' % e(err) if err else "",
+                                              fields, foot)
 
 
 def bare(text):
@@ -615,21 +766,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         c = self.console
         url = urllib.parse.urlsplit(self.path)
         q = dict(urllib.parse.parse_qsl(url.query))
-        csrf = c.check(self.cookie())
-        if csrf is None:
-            self.send(200 if url.path in ("/", "/login") else 401, page("/login", login_view()))
+        s = c.check(self.cookie())
+        if s is None:
+            self.send(200 if url.path in ("/", "/login") else 401,
+                      page("/login", login_view(accounts=bool(c.users()))))
             return
-        views = {"/": lambda: view_overview(c), "/devices": lambda: view_devices(c, csrf),
-                 "/enroll": lambda: view_enroll(c, csrf), "/acl": lambda: view_acl(c, csrf), "/audit": lambda: view_audit(c, q)}
+        edit = s.csrf if s.admin else None      # 조회 전용이면 바꾸는 단추와 양식을 그리지 않는다
+        views = {"/": lambda: view_overview(c), "/devices": lambda: view_devices(c, edit),
+                 "/enroll": lambda: view_enroll(c, edit), "/acl": lambda: view_acl(c, edit), "/audit": lambda: view_audit(c, q)}
+        if url.path == "/devices/edit" and s.admin:
+            self.send(200, page("/devices", view_device_edit(c, s.csrf, q.get("id", "")), s.csrf, who=s.who))
+            return
         if url.path not in views:
-            self.send(404, page(url.path, empty("없는 페이지입니다."), csrf))
+            self.send(404, page(url.path, empty("없는 페이지입니다."), s.csrf, who=s.who))
             return
         msg = None
         if q.get("ok"):
             msg = ("ok", q["ok"])
         elif q.get("err"):
             msg = ("err", q["err"])
-        self.send(200, page(url.path, views[url.path](), csrf, msg))
+        self.send(200, page(url.path, views[url.path](), s.csrf, msg, who=s.who))
 
     def do_POST(self):
         c = self.console
@@ -648,42 +804,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
 
         if path == "/login":
-            sid = c.login(form.get("token", ""))
+            sid, err = c.login(self.client_address[0], form)
             if sid is None:
-                self.send(403, page("/login", login_view("토큰이 맞지 않습니다.")))
+                self.send(403, page("/login", login_view(err, accounts=bool(c.users()))))
                 return
             flags = "HttpOnly; SameSite=Strict; Path=/; Max-Age=%d%s" % (SESSION_TTL, "; Secure" if c.secure else "")
             self.redirect("/", {"Set-Cookie": "ztgate_session=%s; %s" % (sid, flags)})
             return
 
         sid = self.cookie()
-        csrf = c.check(sid)
-        if csrf is None or not hmac.compare_digest(form.get("csrf", ""), csrf):
-            self.send(403, page("/login", login_view("세션이 끝났거나 요청이 이 콘솔에서 온 것이 아닙니다.")))
+        s = c.check(sid)
+        if s is None or not hmac.compare_digest(form.get("csrf", ""), s.csrf):
+            self.send(403, page("/login", login_view("세션이 끝났거나 요청이 이 콘솔에서 온 것이 아닙니다.",
+                                                     accounts=bool(c.users()))))
             return
+        csrf, who = s.csrf, s.who
 
         if path == "/logout":
             c.logout(sid)
             self.redirect("/", {"Set-Cookie": "ztgate_session=; Max-Age=0; Path=/"})
             return
+        if not s.admin:
+            self.send(403, page("/", empty("조회 전용 계정은 바꿀 수 없습니다."), csrf, who=who))
+            return
         if path == "/devices/remove":
-            r = c.call("device_remove", id=form.get("id", ""))
+            r = c.call("device_remove", actor=s.user, id=form.get("id", ""))
             self.done("/devices", r, "기기를 지웠습니다")
             return
+        if path == "/devices/update":
+            args = {"id": form.get("id", ""), "label": form.get("label", "").strip(), "tags": form.get("tags", "").split(),
+                    "requirements": {k: True for k in ("firewall", "antivirus", "disk") if form.get(k)}}
+            try:
+                if int(form.get("min_build") or 0) > 0:
+                    args["requirements"]["min_build"] = int(form["min_build"])
+            except ValueError:
+                pass
+            if form.get("tunnel_ip", "").strip():
+                args["tunnel_ip"] = form["tunnel_ip"].strip()
+            r = c.call("device_update", actor=s.user, **args)
+            self.done("/devices", r, "기기를 고쳤습니다")
+            return
         if path == "/enroll/revoke":
-            r = c.call("enroll_revoke", id=form.get("id", ""))
+            r = c.call("enroll_revoke", actor=s.user, id=form.get("id", ""))
             self.done("/enroll", r, "등록 코드를 거뒀습니다")
             return
         if path == "/acl/set":
             rules, err = parse_rules(form.get("rules", ""))
             if err is None:
-                r = c.call("acl_set", rules=rules)
+                r = c.call("acl_set", actor=s.user, rules=rules)
                 if r.get("ok"):
                     self.redirect("/acl?" + urllib.parse.urlencode({"ok": "ACL 을 저장했습니다 (%d 규칙)" % len(rules)}))
                     return
                 err = r.get("error") or "실패"
             # 고친 글을 잃지 않게 그대로 다시 보여 준다.
-            self.send(400, page("/acl", view_acl(c, csrf, draft=form.get("rules", "")), csrf, ("err", err)))
+            self.send(400, page("/acl", view_acl(c, csrf, draft=form.get("rules", "")), csrf, ("err", err), who=who))
             return
         if path == "/enroll/create":
             args = {"requirements": {k: True for k in ("firewall", "antivirus", "disk") if form.get(k)}}
@@ -697,13 +871,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 args["ttl_minutes"] = int(form.get("ttl") or 15)
             except ValueError:
                 args["ttl_minutes"] = 15
-            r = c.call("enroll_create", **args)
+            r = c.call("enroll_create", actor=s.user, **args)
             if not r.get("ok"):
                 self.done("/enroll", r, "")
                 return
-            self.send(200, page("/enroll", view_enroll(c, csrf, made=r), csrf))
+            self.send(200, page("/enroll", view_enroll(c, csrf, made=r), csrf, who=who))
             return
-        self.send(404, page(path, empty("없는 동작입니다."), csrf))
+        self.send(404, page(path, empty("없는 동작입니다."), csrf, who=who))
 
     def done(self, where, r, ok_text):
         key, text = ("ok", ok_text) if r.get("ok") else ("err", r.get("error") or "실패")
@@ -731,17 +905,59 @@ def load_token(path):
     return t
 
 
+def user_command(argv):
+    """ztgate_console.py user add|del|list. 비밀번호는 터미널에서 두 번 묻는다 (--password-stdin 이면 표준 입력의 첫 줄)."""
+    ap = argparse.ArgumentParser(prog="ztgate_console.py user")
+    ap.add_argument("action", choices=("add", "del", "list"))
+    ap.add_argument("name", nargs="?")
+    ap.add_argument("--role", choices=tuple(ROLES), default="admin")
+    ap.add_argument("--totp", action="store_true", help="인증 앱의 6자리 코드도 받는다")
+    ap.add_argument("--password-stdin", action="store_true")
+    ap.add_argument("--users-file", default="/etc/ztgate/console.users")
+    a = ap.parse_args(argv)
+    users = load_users(a.users_file)
+    if a.action == "list":
+        for name, (role, _, secret) in sorted(users.items()):
+            print("%-20s %-7s%s" % (name, role, "  totp" if secret else ""))
+        return 0
+    if not a.name or not NAME_RE.match(a.name):
+        sys.exit("name: 1-32 of a-z 0-9 _ . -")
+    if a.action == "del":
+        if users.pop(a.name, None) is None:
+            sys.exit("no such user: %s" % a.name)
+        save_users(a.users_file, users)
+        return 0
+    if a.password_stdin:
+        pw = sys.stdin.readline().rstrip("\n")
+    else:
+        pw = getpass.getpass("password: ")
+        if pw != getpass.getpass("again: "):
+            sys.exit("the passwords differ")
+    if len(pw) < 10:
+        sys.exit("password: at least 10 characters")
+    secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=") if a.totp else ""
+    users[a.name] = (a.role, hash_password(pw), secret)
+    save_users(a.users_file, users)
+    if secret:
+        print("add this to an authenticator app:")
+        print("otpauth://totp/ztgate:%s?secret=%s&issuer=ztgate" % (a.name, secret))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "user":
+        sys.exit(user_command(sys.argv[2:]))
     ap = argparse.ArgumentParser(description="ztgate web console")
     ap.add_argument("-l", "--listen", default="127.0.0.1:9470")
     ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl") else "/usr/local/sbin/ztgate_ctl")
     ap.add_argument("--token-file", default="/etc/ztgate/console.token")
+    ap.add_argument("--users-file", default="/etc/ztgate/console.users")
     ap.add_argument("--tls-cert")
     ap.add_argument("--tls-key")
     a = ap.parse_args()
 
     host, _, port = a.listen.rpartition(":")
-    Handler.console = Console(a.ctl, load_token(a.token_file), bool(a.tls_cert))
+    Handler.console = Console(a.ctl, load_token(a.token_file), bool(a.tls_cert), a.users_file)
     srv = Server((host, int(port)), Handler)
     if a.tls_cert:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

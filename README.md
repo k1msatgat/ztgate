@@ -33,7 +33,7 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 | 어디까지 가는가 | 내부망 전체 | **적어서 연 곳만.** 규칙이 없으면 터널 대역 밖으로 나가지 못한다 |
 | 설정은 누가 갖는가 | 클라이언트의 설정 파일 | **서버.** 터널 주소와 경로를 서버가 내려 주고, 정책을 고치면 붙어 있는 기기가 따라온다 |
 
-> **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 30개, 운영 CLI 시험 16개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
+> **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 47개, 운영 CLI 시험 16개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
 
 ## 한눈에 보기
 
@@ -434,15 +434,18 @@ claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라�
 
 ### 웹 관리 콘솔
 
-브라우저로 ([화면](#화면)) 지금 붙어 있는 세션(기기, 사용자, 출발지, 포스처, 주고받은 양), 기기 목록과 지우기, 등록 코드 만들기 / 거두기, ACL 보기와 고치기(파일과 같은 한 줄 문법), 감사 로그를 봅니다 (`tools/console/ztgate_console.py`, 표준 라이브러리만). 일은 모두 `ztgate_ctl` 이 하므로 검증, 파일 잠금, 서버 다시 읽기가 MCP 와 같습니다.
+브라우저로 ([화면](#화면)) 지금 붙어 있는 세션(기기, 사용자, 출발지, 포스처, 주고받은 양), 기기 목록과 편집 / 지우기, 등록 코드 만들기 / 거두기, ACL 보기와 고치기(파일과 같은 한 줄 문법), 감사 로그를 봅니다 (`tools/console/ztgate_console.py`, 표준 라이브러리만). 일은 모두 `ztgate_ctl` 이 하므로 검증, 파일 잠금, 서버 다시 읽기가 MCP 와 같습니다.
 
 ```bash
 sudo systemctl enable --now ztgate-console          # 패키지에 들어 있다. 127.0.0.1:9470
-sudo cat /etc/ztgate/console.token                   # 로그인 토큰 (처음 뜰 때 만든다, 600)
+sudo /opt/ztgate/tools/ztgate_console.py user add alice --role admin --totp   # 관리자 계정 (비밀번호를 묻는다)
+sudo /opt/ztgate/tools/ztgate_console.py user add bob --role viewer           # 보기만 하는 계정
 ssh -L 9470:127.0.0.1:9470 <서버>                    # 관리자 PC 에서. 브라우저로 http://127.0.0.1:9470/
 ```
 
-기본은 127.0.0.1 에서만 듣습니다. 밖에 열려면 `--tls-cert` / `--tls-key` 로 TLS 를 켜고 `-l 0.0.0.0:9470` 입니다. 쿠키는 HttpOnly / SameSite=Strict (TLS 면 Secure), 바꾸는 요청은 세션마다의 CSRF 값이 맞아야 받고, 로그인 실패는 1초에 한 번까지입니다. 화면은 다른 사이트의 프레임에 들어가지 않습니다. ACL 을 켜고 끄는 것(서버 재시작)은 하지 않습니다. `test/console_check.py` 가 가짜 `ztgate_ctl` 앞에서 27가지를 봅니다 (CI).
+관리자마다 계정을 둡니다 (`/etc/ztgate/console.users`, 600). 비밀번호는 scrypt 로만 남고, `--totp` 로 만든 계정은 인증 앱의 6자리 코드도 맞아야 들어옵니다. 역할은 `admin`(바꾸기)과 `viewer`(보기만)이고, 조회 전용 계정에는 바꾸는 단추가 보이지 않으며 요청도 `ztgate_ctl` 에 닿기 전에 거절됩니다. 바꾼 일은 감사 로그에 `{"event":"admin","actor":"console:alice",...}` 로 남습니다 (MCP 는 `mcp`, sudo 계정은 `via`). 계정이 하나도 없을 때만 처음 뜰 때 만든 토큰(`sudo cat /etc/ztgate/console.token`)으로 들어오고, 계정을 만들면 토큰 로그인은 닫힙니다.
+
+기본은 127.0.0.1 에서만 듣습니다. 밖에 열려면 `--tls-cert` / `--tls-key` 로 TLS 를 켜고 `-l 0.0.0.0:9470` 입니다. 쿠키는 HttpOnly / SameSite=Strict (TLS 면 Secure), 바꾸는 요청은 세션마다의 CSRF 값이 맞아야 받고, 로그인 실패는 출발지 주소마다 1초에 한 번까지입니다. 화면은 다른 사이트의 프레임에 들어가지 않습니다. ACL 을 켜고 끄는 것(서버 재시작)은 하지 않습니다. `test/console_check.py` 가 가짜 `ztgate_ctl` 앞에서 47가지를 봅니다 (계정, 역할, TOTP, 행위자, 기기 편집 포함, CI).
 
 ### 서버 여러 대 (장애 조치)
 

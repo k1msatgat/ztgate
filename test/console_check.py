@@ -7,12 +7,16 @@ ztgate_ctl 자리에 가짜(정해진 답을 하고 받은 명령을 파일에 �
     python3 test/console_check.py
 """
 
+import base64
+import hashlib
+import hmac
 import http.client
 import json
 import os
 import re
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -39,6 +43,7 @@ answers = {
     "enroll_list": {"ok": True, "pending": []},
     "enroll_create": {"ok": True, "code": "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE", "enrollment": {"tunnel_ip": "10.0.0.9"}},
     "device_remove": {"ok": True, "removed": req.get("id")},
+    "device_update": {"ok": True, "device": {"id": req.get("id")}},
     "acl_get": {"ok": True, "enabled": True, "rules": [{"src": "10.0.0.0/24", "dst": "10.0.0.1", "proto": "icmp",
                                                         "dport": "any", "action": "allow",
                                                         "require": {"firewall": True}, "tags": ["eng"]}]},
@@ -76,8 +81,9 @@ def main():
     token_file = os.path.join(work, "console.token")
     port = free_port()
     env = dict(os.environ, FAKE_LOG=log)
+    users_file = os.path.join(work, "console.users")
     proc = subprocess.Popen([sys.executable, CONSOLE, "-l", "127.0.0.1:%d" % port, "--ctl", fake,
-                             "--token-file", token_file], env=env, stderr=subprocess.PIPE)
+                             "--token-file", token_file, "--users-file", users_file], env=env, stderr=subprocess.PIPE)
     try:
         for _ in range(50):
             try:
@@ -144,14 +150,15 @@ def main():
         expect("...and neither reached ztgate_ctl", len(ctl_cmds()), n)
 
         st, h, _ = req("POST", "/devices/remove", {"id": "ab" * 16, "csrf": csrf}, cookie=sid)
-        expect("remove a device", (st, ctl_cmds()[-1]), (303, {"id": "ab" * 16, "cmd": "device_remove"}))
+        expect("remove a device, as the token login", (st, ctl_cmds()[-1]),
+               (303, {"id": "ab" * 16, "cmd": "device_remove", "actor": "console:token"}))
 
         st, _, body = req("POST", "/enroll/create", {"csrf": csrf, "label": "kim", "tags": "eng laptop",
                                                     "firewall": "on", "disk": "on", "ttl": "30"}, cookie=sid)
         expect("make an enrollment code: shown", (st, "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE" in body), (200, True))
         expect("...with what was filled in", ctl_cmds()[-2] if ctl_cmds()[-1]["cmd"] == "enroll_list" else ctl_cmds()[-1],
                {"requirements": {"firewall": True, "disk": True}, "label": "kim", "tags": ["eng", "laptop"],
-                "ttl_minutes": 30, "cmd": "enroll_create"})
+                "ttl_minutes": 30, "cmd": "enroll_create", "actor": "console:token"})
 
         st, _, body = req("GET", "/acl", cookie=sid)
         expect("acl: the editor shows the rules as file lines",
@@ -169,10 +176,77 @@ def main():
         expect("acl: a misspelled condition is refused before ztgate_ctl", (st, len(ctl_cmds()) - n), (400, 1))
         expect("...and the text is kept", "firewal=on" in body, True)
 
+        st, _, body = req("GET", "/devices/edit?id=" + "ab" * 16, cookie=sid)
+        expect("device edit: the form is filled in", (st, 'value="laptop"' in body, "checked" in body), (200, True, True))
+        st, _, _ = req("POST", "/devices/update", {"csrf": csrf, "id": "ab" * 16, "label": "laptop-2", "tags": "eng ops",
+                                                  "firewall": "on", "min_build": "22000", "tunnel_ip": "10.0.0.4"}, cookie=sid)
+        expect("device edit: what goes to ztgate_ctl", (st, ctl_cmds()[-1]), (303, {
+            "id": "ab" * 16, "label": "laptop-2", "tags": ["eng", "ops"], "tunnel_ip": "10.0.0.4",
+            "requirements": {"firewall": True, "min_build": 22000}, "cmd": "device_update", "actor": "console:token"}))
+
         st, _, _ = req("POST", "/logout", {"csrf": csrf}, cookie=sid)
         expect("log out", st, 303)
         st, _, _ = req("GET", "/devices", cookie=sid)
         expect("the old cookie no longer works", st, 401)
+
+        # 관리자 계정. 계정이 생기면 토큰으로는 들어오지 못한다.
+        def add_user(name, role, *extra):
+            r = subprocess.run([sys.executable, CONSOLE, "user", "add", name, "--role", role, "--password-stdin",
+                                "--users-file", users_file] + list(extra),
+                               input="correct horse battery\n", capture_output=True, text=True)
+            return r.returncode, r.stdout
+        expect("user add: admin", add_user("alice", "admin")[0], 0)
+        expect("user add: viewer", add_user("bob", "viewer")[0], 0)
+        rc, out = add_user("carol", "admin", "--totp")
+        secret = out.split("secret=")[1].split("&")[0] if "secret=" in out else ""
+        expect("user add --totp prints an otpauth uri", (rc, len(secret) >= 16), (0, True))
+        expect("users file: mode 600, no password in clear",
+               (oct(os.stat(users_file).st_mode & 0o777), "battery" in open(users_file).read()), ("0o600", False))
+
+        st, _, body = req("GET", "/")
+        expect("with accounts: the login asks for a name", (st, 'name="name"' in body, 'name="token"' in body),
+               (200, True, False))
+        time.sleep(1.1)
+        st, _, _ = req("POST", "/login", {"token": token})
+        expect("with accounts: the token no longer logs in", st, 403)
+        time.sleep(1.1)
+        st, _, _ = req("POST", "/login", {"name": "alice", "password": "wrong password"})
+        expect("wrong password", st, 403)
+        st, _, _ = req("POST", "/login", {"name": "alice", "password": "correct horse battery"})
+        expect("a second try within a second from the same address is refused", st, 403)
+        time.sleep(1.1)
+
+        def login(name, **extra):
+            st, h, _ = req("POST", "/login", dict({"name": name, "password": "correct horse battery"}, **extra))
+            m = re.search(r"ztgate_session=([^;]+)", h.get("Set-Cookie", ""))
+            return st, m.group(1) if m else None
+
+        st, alice = login("alice")
+        expect("alice logs in", (st, bool(alice)), (303, True))
+        _, _, body = req("GET", "/devices", cookie=alice)
+        acsrf = re.search(r'name="csrf" value="([^"]+)"', body).group(1)
+        expect("the top bar shows who is logged in", "alice · 관리자" in body, True)
+        req("POST", "/devices/remove", {"id": "ab" * 16, "csrf": acsrf}, cookie=alice)
+        expect("alice's change carries her name to ztgate_ctl", ctl_cmds()[-1].get("actor"), "console:alice")
+
+        st, bob = login("bob")
+        _, _, body = req("GET", "/devices", cookie=bob)
+        bcsrf = re.search(r'name="csrf" value="([^"]+)"', body).group(1)
+        expect("viewer: no remove or edit buttons", ("지우기" in body, "/devices/edit" in body), (False, False))
+        n = len(ctl_cmds())
+        st, _, _ = req("POST", "/devices/remove", {"id": "ab" * 16, "csrf": bcsrf}, cookie=bob)
+        expect("viewer: a change is refused before ztgate_ctl", (st, len(ctl_cmds()) - n), (403, 0))
+
+        time.sleep(1.1)
+        st, _ = login("carol")
+        expect("totp: without the code, refused", st, 403)
+        time.sleep(1.1)
+        key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+        mac = hmac.new(key, struct.pack(">Q", int(time.time() // 30)), hashlib.sha1).digest()
+        o = mac[-1] & 15
+        code = "%06d" % ((struct.unpack(">I", mac[o:o + 4])[0] & 0x7fffffff) % 1000000)
+        st, carol = login("carol", code=code)
+        expect("totp: with the current code, in", (st, bool(carol)), (303, True))
 
         def raw(text):
             s = socket.create_connection(("127.0.0.1", port), 5)
