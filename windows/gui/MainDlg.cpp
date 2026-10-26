@@ -1921,6 +1921,16 @@ void CMainDlg::PaintBackground(HDC dc)
 
 		ui::RoundRect(dc, m_rc_hero, ui::Scale(10), c.card, c.border);
 
+		/* 판 위쪽의 상태색 띠. 창을 흘깃 봐도 연결됐는지(청록) 아닌지 알 수 있다. */
+		if (!c.highContrast) {
+			CRect band(m_rc_hero.left + ui::Scale(10), m_rc_hero.top, m_rc_hero.right - ui::Scale(10),
+					m_rc_hero.top + ui::Scale(3));
+			HBRUSH bb = CreateSolidBrush(m_status_color);
+
+			FillRect(dc, &band, bb);
+			DeleteObject(bb);
+		}
+
 		/* 원 둘레의 옅은 띠. 고대비에서는 섞은 색이 시스템 색 조합을 깨므로 그리지 않는다. */
 		if (!c.highContrast) {
 			ui::Dot(dc, cx, cy, r + ui::Scale(8), Blend(m_status_color, c.card, 18));

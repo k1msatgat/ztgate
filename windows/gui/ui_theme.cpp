@@ -57,31 +57,32 @@ void RefreshPalette()
 		return;
 	}
 
-	c.bg = RGB(243, 243, 243);
+	/* docs/design/tokens.md 의 밝은 화면 색. 웹 콘솔과 같다. */
+	c.bg = RGB(245, 247, 250);		/* bg #F5F7FA */
 	c.card = RGB(255, 255, 255);
-	c.border = RGB(229, 229, 229);
-	c.text = RGB(27, 27, 27);
-	c.muted = RGB(97, 97, 97);
+	c.border = RGB(220, 227, 236);		/* border #DCE3EC */
+	c.text = RGB(26, 35, 51);		/* text #1A2333 */
+	c.muted = RGB(91, 102, 120);		/* text-muted #5B6678 */
 
-	c.accent = RGB(15, 108, 189);
-	c.accentHover = RGB(17, 94, 163);
-	c.accentPressed = RGB(15, 84, 140);
+	c.accent = RGB(30, 78, 140);		/* accent #1E4E8C (네이비 블루) */
+	c.accentHover = RGB(23, 63, 115);
+	c.accentPressed = RGB(18, 51, 94);
 	c.onAccent = RGB(255, 255, 255);
 
 	c.button = RGB(255, 255, 255);
-	c.buttonHover = RGB(245, 245, 245);
-	c.buttonPressed = RGB(235, 235, 235);
-	c.buttonBorder = RGB(209, 209, 209);
-	c.disabledText = RGB(160, 160, 160);
-	c.disabledFill = RGB(240, 240, 240);
+	c.buttonHover = RGB(238, 242, 247);	/* surface-2 */
+	c.buttonPressed = RGB(226, 232, 240);
+	c.buttonBorder = RGB(201, 211, 224);
+	c.disabledText = RGB(160, 170, 186);
+	c.disabledFill = RGB(238, 242, 247);
 
-	c.ok = RGB(16, 124, 16);
-	c.warn = RGB(188, 108, 0);
-	c.danger = RGB(196, 43, 28);
-	c.dangerBg = RGB(253, 243, 242);
-	c.idle = RGB(160, 160, 160);
-	c.tx = RGB(15, 108, 189);
-	c.rx = RGB(16, 124, 16);
+	c.ok = RGB(42, 157, 143);		/* teal #2A9D8F */
+	c.warn = RGB(194, 124, 14);		/* warn #C27C0E */
+	c.danger = RGB(180, 35, 47);		/* danger #B4232F */
+	c.dangerBg = RGB(251, 233, 234);
+	c.idle = RGB(138, 149, 168);		/* idle #8A95A8 */
+	c.tx = RGB(30, 78, 140);
+	c.rx = RGB(42, 157, 143);
 }
 
 const Palette &Colors()
