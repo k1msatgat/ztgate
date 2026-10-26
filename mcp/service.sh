@@ -80,6 +80,10 @@ run)
 	if [ -n "${TCP_PORT:-}" ]; then
 		args+=(-t "$TCP_PORT")
 	fi
+	# AUTH_RATE=N: 한 주소에서 받는 AUTH 를 초당 N 개로 (-r). 기본 20, 0 이면 끈다.
+	if [ -n "${AUTH_RATE:-}" ]; then
+		args+=(-r "$AUTH_RATE")
+	fi
 	# WORKERS=N: 워커 N 개 (-w). 기본 1.
 	if [ -n "${WORKERS:-}" ]; then
 		args+=(-w "$WORKERS")

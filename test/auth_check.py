@@ -783,8 +783,10 @@ class Server:
         self.server_pub = bytes.fromhex(out.stdout.strip())
         global SERVER_PUB
         SERVER_PUB = self.server_pub
+        # 시험은 한 주소(127.0.0.1)에서 핸드셰이크를 몰아 하므로 AUTH 속도 제한은 끈다 (rate_limit_tests 만 켠다).
+        rate = [] if "-r" in opts else ["-r", "0"]
         self.proc = subprocess.Popen(["stdbuf", "-oL", SERVER, "-v", "-s", self.status_path, "-a", self.audit_path,
-                                      "-e", self.enroll_path, "-k", self.key_path] + WORKERS + list(opts) + [
+                                      "-e", self.enroll_path, "-k", self.key_path] + WORKERS + rate + list(opts) + [
                                       str(PORT)] + list(args),
                                      stdout=self.log, stderr=subprocess.STDOUT)
         time.sleep(0.7)
@@ -1756,6 +1758,41 @@ def log_limit_tests(srv):
     expect("log limit: the suppressed count is reported", "drop lines suppressed" in srv.text(), True)
 
 
+def rate_limit_tests(path):
+    """한 주소에서 쏟아지는 AUTH 를 열어 보지 않고 버리는가 (-r). REQ 는 그동안에도 답하고, 다른
+    주소와 잠시 뒤의 정상 핸드셰이크는 막지 않는가. 버린 수는 상태 소켓이 센다."""
+    srv = Server(path, opts=["-r", "5"])
+    try:
+        c = Client()
+        challenges = [c.request()[2] for _ in range(40)]
+        # 40 개를 기다리지 않고 몰아 보낸 뒤 답을 센다. 기다리며 보내면 그동안 토큰이 다시 찬다.
+        c.sock.settimeout(0.001)
+        replies = [c.auth(ch, key=bytes(32)) for ch in challenges]
+        c.sock.settimeout(0.3)
+        while True:
+            r = c.recv()
+            if r is None:
+                break
+            replies.append(r)
+        denied = sum(1 for r in replies if r and r[0] == DENY)
+        expect("auth rate: wrong-key AUTHs answered up to the burst (5/s x 3)", 14 <= denied <= 18, True)
+        expect("auth rate: the rest dropped unanswered", 40 - denied >= 20, True)
+        expect("auth rate: dropped AUTHs counted", srv.status()["counters"]["auth_rate_limited"] >= 20, True)
+        expect("auth rate: REQ still answered while AUTH is limited", describe(c.request()), "CHALLENGE")
+
+        other = Client(bind="127.0.0.2")
+        other.sock.settimeout(0.3)
+        r = other.request()
+        expect("auth rate: another address is not limited", describe(other.auth(r[2], key=bytes(32))).startswith("DENY"), True)
+
+        time.sleep(1.1)
+        c.sock.settimeout(1.0)
+        expect("auth rate: a second later the device connects", describe(c.handshake()), "RES_HANDSHAKE")
+    finally:
+        srv.stop()
+    return srv
+
+
 def disconnect_tests(srv):
     """DISCONNECT 로 세션이 바로 닫히는가. 세션 키로 열리지 않는 것으로는 닫히지 않는가."""
     c = Client()
@@ -2229,6 +2266,7 @@ def main():
         logs.append(tag_tests(path).text())
         logs.append(flow_tests(path).text())
         logs.append(tcp_tests(path).text())
+        logs.append(rate_limit_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.
         write_devices(path, *("%s %s %s" % (d.hex(), k.hex(), ip)

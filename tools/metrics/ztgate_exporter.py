@@ -32,6 +32,7 @@ COUNTERS = {
     "bad_tag": "session packets whose tag did not verify (forged, corrupt, another session)",
     "replayed": "session packets with a counter already seen",
     "unknown_session": "packets for a session number the server does not have",
+    "auth_rate_limited": "AUTH packets dropped unopened: over the per-address rate (-r)",
     "spoofed_src": "tunnel packets whose inner source was not the session's address",
     "acl_denied": "tunnel packets denied by the ACL",
     "acl_denied_posture": "tunnel packets denied because a rule's posture was not met",

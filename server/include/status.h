@@ -23,6 +23,7 @@ typedef struct server_stats {
 	uint64_t bad_tag;			/* 세션 키로 열리지 않은 패킷 (위조 / 손상 / 다른 세션의 것) */
 	uint64_t replayed;			/* 이미 받은 counter 로 다시 온 패킷 */
 	uint64_t unknown_session;
+	uint64_t auth_rate_limited;		/* 한 주소에서 초당 -r 개를 넘게 온 AUTH 를 열어 보지 않고 버렸다 */
 	uint64_t spoofed_src;
 	uint64_t acl_denied;
 	uint64_t acl_denied_posture;

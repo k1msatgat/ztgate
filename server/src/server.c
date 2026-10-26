@@ -129,6 +129,22 @@ static pthread_rwlock_t table_lock;
 #define TABLE_RDLOCK()	do { if (nworkers > 1) pthread_rwlock_rdlock(&table_lock); } while (0)
 #define TABLE_WRLOCK()	do { if (nworkers > 1) pthread_rwlock_wrlock(&table_lock); } while (0)
 #define TABLE_UNLOCK()	do { if (nworkers > 1) pthread_rwlock_unlock(&table_lock); } while (0)
+
+/* AUTH 를 받는 빠르기를 출발지 주소마다 제한한다 (토큰 버킷, 초당 auth_rate 개, 한꺼번에 세 배까지).
+ * AUTH 는 ECDH 를 하고 표의 쓰기 잠금을 잡는다. nonce 가 출발지에 묶여 있어 AUTH 를 보내려면 실제
+ * 주소가 있어야 하므로, 그 주소 하나가 서버의 CPU 와 모든 워커의 데이터 처리를 붙잡지 못하게 한다.
+ * 칸은 주소의 해시로 고르고, 다른 주소가 같은 칸에 오면 덮는다 (잊는 쪽으로 틀린다). 0 이면 끈다. */
+#define RATE_SLOTS	4096
+
+typedef struct rate_slot {
+	struct in6_addr addr;
+	uint64_t at_us;
+	uint64_t tokens_milli;
+} rate_slot_t;
+
+static rate_slot_t rate_slots[RATE_SLOTS];
+static pthread_mutex_t rate_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t auth_rate = 20;
 #define PEER_LOCK(p)	do { if (nworkers > 1) pthread_mutex_lock(&(p)->lock); } while (0)
 #define PEER_UNLOCK(p)	do { if (nworkers > 1) pthread_mutex_unlock(&(p)->lock); } while (0)
 #define STAT_INC(f)	__atomic_fetch_add(&stats.f, 1, __ATOMIC_RELAXED)
@@ -541,6 +557,43 @@ static uint64_t mono_us(void)
 
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
+static int auth_rate_ok(const net_ep_t *src)
+{
+	const uint64_t burst = (uint64_t)auth_rate * 3 * 1000;
+	uint64_t now = mono_us();
+	uint32_t hash = 2166136261u;
+	rate_slot_t *slot;
+	size_t i;
+	int ok;
+
+	if (auth_rate == 0) {
+		return 1;
+	}
+	for (i = 0; i < sizeof(src->sin6_addr); i++) {
+		hash = (hash ^ ((const uint8_t *)&src->sin6_addr)[i]) * 16777619u;
+	}
+	slot = &rate_slots[hash % RATE_SLOTS];
+
+	pthread_mutex_lock(&rate_lock);
+	if (slot->at_us == 0 || memcmp(&slot->addr, &src->sin6_addr, sizeof(slot->addr)) != 0) {
+		slot->addr = src->sin6_addr;
+		slot->tokens_milli = burst;
+	}
+	else {
+		slot->tokens_milli += (now - slot->at_us) * auth_rate / 1000;
+		if (slot->tokens_milli > burst) {
+			slot->tokens_milli = burst;
+		}
+	}
+	slot->at_us = now;
+	ok = slot->tokens_milli >= 1000;
+	if (ok) {
+		slot->tokens_milli -= 1000;
+	}
+	pthread_mutex_unlock(&rate_lock);
+	return ok;
 }
 
 /* nonce = 발급 시각(8, 빅엔디언) | HMAC(cookie_key, 발급 시각 | 출발지 IP) 의 앞 8B */
@@ -1346,10 +1399,6 @@ static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t
 	peer_t *peer;
 	uint8_t *ip;
 
-	if (h->type == MSG_TYPE_REQ_HANDSHAKE) {
-		handle_request(sock, packet, n, src, srclen);
-		return;
-	}
 	peer = peer_find_idx(h->session_idx);
 	if (peer == NULL) {
 		LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", h->session_idx);
@@ -1402,7 +1451,11 @@ static void udp_control(int32_t sock, uint8_t *packet, int n, const msg_header_t
 }
 
 /* 받은 UDP 패킷 하나. packet 에 n 바이트, cap 은 packet 의 크기다. 헤더의 종류를 보고 데이터면 표의
- * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. AUTH 는 표를 보지 않는 비싼 앞부분을 잠금 밖에서 먼저 한다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다. */
+ * 읽기 잠금, 아니면 쓰기 잠금으로 넘긴다. 종류는 tag 가 덮는 칸이라, 바꿔 보내면 열리지 않는다.
+ *
+ * 인증 전에 누구나 보낼 수 있는 것은 쓰기 잠금을 잡기 전에 거른다 — 쓰기 잠금 동안 모든 워커의 데이터가
+ * 멈추기 때문이다. REQ 는 표를 보지 않으므로 잠금 없이 답하고, AUTH 는 주소마다 빠르기를 제한한 뒤
+ * 비싼 앞부분을 잠금 밖에서 하고, 없는 세션 번호로 온 것은 읽기 잠금 안에서 버린다. */
 static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 		const net_ep_t *src, socklen_t srclen)
 {
@@ -1418,15 +1471,33 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 		udp_data(sock, tun_fd, packet, cap, n, &h, src, srclen);
 		TABLE_UNLOCK();
 	}
+	else if (h.type == MSG_TYPE_REQ_HANDSHAKE) {
+		handle_request(sock, packet, n, src, srclen);
+	}
 	else if (h.type == MSG_TYPE_AUTH) {
 		auth_pre_t pre;
 
+		if (!auth_rate_ok(src)) {
+			LOG_LIMITED(LOG_HS, "[HS] too many AUTH from one address, dropped\n");
+			STAT_INC(auth_rate_limited);
+			return;
+		}
 		auth_precheck(packet, n, src, &pre);
 		TABLE_WRLOCK();
 		handle_auth(sock, packet, n, src, srclen, &pre);
 		TABLE_UNLOCK();
 	}
 	else {
+		int known;
+
+		TABLE_RDLOCK();
+		known = peer_find_idx(h.session_idx) != NULL;
+		TABLE_UNLOCK();
+		if (!known) {
+			LOG_LIMITED(LOG_DROP, "[drop] unknown session_idx[%08x]\n", h.session_idx);
+			STAT_INC(unknown_session);
+			return;
+		}
 		TABLE_WRLOCK();
 		udp_control(sock, packet, n, &h, src, srclen);
 		TABLE_UNLOCK();
@@ -1623,7 +1694,7 @@ int main(int argc, char *argv[])
 		return serverkey_generate(argv[2]) == 0 ? 0 : 1;
 	}
 
-	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:t:Fv")) != -1) {
+	while ((opt = getopt(argc, argv, "s:n:m:a:e:u:d:k:L:w:t:r:Fv")) != -1) {
 		if (opt == 's') {
 			status_path = optarg;
 		}
@@ -1681,6 +1752,14 @@ int main(int argc, char *argv[])
 			}
 			nworkers = (int)v;
 		}
+		else if (opt == 'r') {
+			long v = strtol(optarg, &end, 10);
+			if (*end != '\0' || v < 0 || v > 100000) {
+				fprintf(stderr, "invalid AUTH rate per address per second (0 = no limit, ..100000) : %s\n", optarg);
+				return 1;
+			}
+			auth_rate = (uint32_t)v;
+		}
 		else if (opt == 'L') {
 			/* 짧게 두면 키를 자주 바꾸는 만큼 왕복 두 번의 끊김이 잦아진다. 시험에서는
 			 * 몇 초로 줄여 바뀌는 것을 본다. */
@@ -1705,7 +1784,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 3 && argc != 4) {
-		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-F] [-t tcp-port] [-v] <port> <device-file> [acl-file]\n", argv[0]);
+		fprintf(stderr, "usage: %s [-s status-socket] [-a audit-log] [-e enroll-file] [-u idp-file] [-d dns-file] [-k server-key] [-n tunnel-prefix-len] [-m tunnel-mtu] [-L session-lifetime-sec] [-w workers] [-r auth-per-sec] [-F] [-t tcp-port] [-v] <port> <device-file> [acl-file]\n", argv[0]);
 		fprintf(stderr, "       -L: re-key every session after this many seconds (default %d)\n", SESSION_LIFETIME_SEC);
 		fprintf(stderr, "       -w: worker threads, each with its own UDP socket and tun queue (default 1)\n");
 		fprintf(stderr, "       -F: stateful: toward a client, pass only replies to flows the client opened\n");
