@@ -69,6 +69,50 @@ jobs:
   # Dockerfile 과 docker-compose.yml 이 실제로 도는지. 개발 장비에는 docker 가 없다.
   # 다른 시험의 토큰은 시험용 도구(tools/idp/mint.py)가 만든다. 실제 IdP 의 토큰이 그 모양과
   # 같은지(aud 배열, 서명용이 아닌 키가 섞인 JWKS, 그룹 클레임)는 실제 IdP 로만 확인된다.
+  # 같은 시험을 AddressSanitizer + UndefinedBehaviorSanitizer 로 빌드한 서버와 클라이언트로 돌린다.
+  # 메모리를 넘겨 읽거나 정수가 넘치면 그 자리에서 멈추고, 보고서가 남으면 실패로 친다.
+  sanitize:
+    runs-on: ubuntu-24.04
+    env:
+      ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:log_path=/tmp/san/asan
+      UBSAN_OPTIONS: print_stacktrace=1:log_path=/tmp/san/ubsan
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with ASan + UBSan
+        run: make CFLAGS="-Wall -Wextra -Werror -g -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all"
+
+      - name: Protocol checks and end-to-end under sanitizers
+        run: |
+          sudo apt-get install -y -qq nftables > /dev/null
+          sudo mkdir -p /tmp/san && sudo chmod 1777 /tmp/san
+          ./server/bin/vpn_server selftest
+          ./client/bin/vpn_client selftest
+          sudo --preserve-env=ASAN_OPTIONS,UBSAN_OPTIONS python3 test/auth_check.py
+          sudo --preserve-env=ASAN_OPTIONS,UBSAN_OPTIONS test/linux_e2e.sh
+          sudo --preserve-env=ASAN_OPTIONS,UBSAN_OPTIONS ZTGATE_WORKERS=3 python3 test/auth_check.py
+
+      - name: No sanitizer reports
+        if: always()
+        run: |
+          if ls /tmp/san/* > /dev/null 2>&1; then cat /tmp/san/*; exit 1; fi
+
+  # 패킷 디코더, JSON 파서, devices.conf / acl.conf 한 줄을 libFuzzer 로 2분 흔든다 (test/fuzz).
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the fuzzer
+        run: |
+          sudo apt-get install -y -qq clang > /dev/null
+          make fuzz
+
+      - name: Fuzz the parsers
+        run: |
+          mkdir -p corpus && cp test/fuzz/corpus/* corpus/
+          ./test/fuzz/bin/fuzz_parsers -max_total_time=120 -timeout=10 -close_fd_mask=3 corpus
+
   idp:
     runs-on: ubuntu-24.04
     steps:

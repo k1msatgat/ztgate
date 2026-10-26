@@ -1,0 +1,38 @@
+# GitHub CodeQL 정적 분석. C (서버, 클라이언트), Python (콘솔, 도구, 시험), JavaScript (ztgate_ctl, MCP).
+# 결과는 저장소의 Security > Code scanning 에 쌓인다.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [c-cpp, python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'c-cpp' && 'manual' || 'none' }}
+          queries: security-and-quality
+
+      - name: Build (C only)
+        if: matrix.language == 'c-cpp'
+        run: make
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
