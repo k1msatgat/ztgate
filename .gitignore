@@ -31,3 +31,6 @@ packaging/out/
 .agents/
 .claude/skills/
 skills-lock.json
+
+# Python
+__pycache__/
