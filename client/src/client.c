@@ -121,6 +121,20 @@ static uint64_t get_current_time_ms(void){
 	return ((uint64_t)ts.tv_sec * 1000) + ((uint64_t)(ts.tv_nsec / 1000000));
 }
 
+/* 터미널에서 볼 때만 중요한 줄에 색을 넣는다 (docs/design/tokens.md 의 터미널 표: 연결됨 청록, 거절 빨강,
+ * 다시 연결 노랑). 파일이나 파이프로 보내면 글자만 — 시험과 로그 수집기가 읽는 모양은 그대로다. */
+static int g_color;
+
+#define HUE_OK	"\033[36m"
+#define HUE_BAD	"\033[31m"
+#define HUE_WARN	"\033[33m"
+#define HUE_END	"\033[0m"
+
+static const char *hue(const char *code)
+{
+	return g_color ? code : "";
+}
+
 static const char *state_name(uint8_t state)
 {
 	return state == POSTURE_STATE_ON ? "on" : state == POSTURE_STATE_OFF ? "off" : "unknown";
@@ -297,7 +311,7 @@ static void login_tick(client_t *c, uint64_t now)
 
 	/* 서버가 받아 준 토큰이 끝났다. 서버도 같은 순간에 사용자를 뗀다. */
 	if (c->user_expires != 0 && (int64_t)time(NULL) >= c->user_expires) {
-		printf("[login] token expired — waiting for a new one in %s\n", c->token_path);
+		printf("[login] %stoken expired%s — waiting for a new one in %s\n", hue(HUE_WARN), hue(HUE_END), c->token_path);
 		c->user_expires = 0;
 	}
 
@@ -355,12 +369,12 @@ static void login_response(client_t *c, const uint8_t *body, int n)
 	c->login_due = 0;
 	/* 거절돼도 서버는 그 전에 로그인한 사용자를 그대로 둔다. 그 만료 시각도 그대로 둔다. */
 	if (body[0] != LOGIN_OK) {
-		printf("[login] rejected: %s\n", session_login_name(body[0]));
+		printf("[login] %srejected: %s%s\n", hue(HUE_BAD), session_login_name(body[0]), hue(HUE_END));
 		return;
 	}
 
 	if ((int64_t)expires != c->user_expires) {
-		printf("[login] logged in as %s (token valid for %llds)\n", name,
+		printf("[login] %slogged in as %s%s (token valid for %llds)\n", hue(HUE_OK), name, hue(HUE_END),
 				(long long)((int64_t)expires - (int64_t)time(NULL)));
 	}
 	c->user_expires = (int64_t)expires;
@@ -463,7 +477,7 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 			if (n < 1) {
 				return 0;
 			}
-			printf("[deny] %s\n", session_deny_name(ip[0]));
+			printf("[deny] %s%s%s\n", hue(HUE_BAD), session_deny_name(ip[0]), hue(HUE_END));
 			c->denied = 1;
 			return 0;
 		case MSG_TYPE_LOGIN:
@@ -472,9 +486,9 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 		case MSG_TYPE_DISCONNECT:
 			/* 서버가 끝나거나(다시 시작하는 중일 수 있다) 세션 키의 수명이 다했다. 30초를
 			 * 기다리지 않고 다음 틱에 다시 핸드셰이크한다. 거절과 달리 포스처를 바꿀 일이 없다. */
-			printf("[HS] server closed the session (%s), reconnecting\n",
+			printf("[HS] %sserver closed the session (%s), reconnecting%s\n", hue(HUE_WARN),
 					n < 1 ? "closed" : ip[0] == DISCONNECT_SERVER_SHUTDOWN ? "shutting down" :
-					ip[0] == DISCONNECT_REKEY ? "new session key" : "closed");
+					ip[0] == DISCONNECT_REKEY ? "new session key" : "closed", hue(HUE_END));
 			c->server_closed = 1;
 			return 0;
 		case MSG_TYPE_DATA:
@@ -719,7 +733,7 @@ static int run(client_t *c, const char *ifname)
 
 	c->last_rx_ms = get_current_time_ms();
 	c->last_ka_ms = c->last_rx_ms;
-	printf("[%s] connected\n", c->net.ifname);
+	printf("[%s] %sconnected%s\n", c->net.ifname, hue(HUE_OK), hue(HUE_END));
 	c->login_due = c->token_path != NULL;
 
 	while (running){
@@ -775,7 +789,7 @@ static int run(client_t *c, const char *ifname)
 						goto out;
 					}
 					c->denied = 0;
-					printf("[%s] connected\n", c->net.ifname);
+					printf("[%s] %sconnected%s\n", c->net.ifname, hue(HUE_OK), hue(HUE_END));
 					/* 새 세션에는 사용자가 없다. 지금 가진 토큰을 다시 보낸다. */
 					c->login_due = c->token_path != NULL;
 					c->last_login_ms = 0;
@@ -909,7 +923,7 @@ static int enroll(client_t *c, const server_addr_t *server, const char *code,
 				fprintf(stderr, "enrolled, but could not save %s — ask for a new code\n", path);
 				break;
 			}
-			printf("enrolled. identity saved to %s\n", path);
+			printf("%senrolled.%s identity saved to %s\n", hue(HUE_OK), hue(HUE_END), path);
 			ret = 0;
 			break;
 		case ENROLL_GONE:
@@ -1053,6 +1067,7 @@ int main(int argc, char *argv[])
 
 	/* 로그를 파일로 돌려도 줄 단위로 바로 보이게 한다 (test/linux_e2e.sh 가 읽는다). */
 	setvbuf(stdout, NULL, _IOLBF, 0);
+	g_color = isatty(STDOUT_FILENO) && getenv("NO_COLOR") == NULL;
 	memset(&client, 0, sizeof(client));
 
 	while ((opt = getopt(argc, argv, "+k:i:t:T:D:vf")) != -1) {
