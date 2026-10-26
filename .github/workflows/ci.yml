@@ -357,6 +357,15 @@ jobs:
         shell: pwsh
         run: Copy-Item windows\third_party\wintun\LICENSE.txt windows\build\Release\wintun-LICENSE.txt
 
+      # 코드 서명. 저장소 Secrets 에 인증서가 있을 때만 (없으면 경고 하나 남기고 지나간다).
+      # wintun.dll 은 WireGuard LLC 가 이미 서명했다.
+      - name: Sign executables (windows/installer/sign.ps1)
+        shell: pwsh
+        env:
+          ZTGATE_SIGN_PFX_BASE64: ${{ secrets.ZTGATE_SIGN_PFX_BASE64 }}
+          ZTGATE_SIGN_PFX_PASSWORD: ${{ secrets.ZTGATE_SIGN_PFX_PASSWORD }}
+        run: windows/installer/sign.ps1 windows/build/Release/vpn_service.exe windows/build/Release/vpn_client.exe windows/build/Release/vpn_gui.exe
+
       # 설치 파일. WiX 3 은 러너 이미지에 기대지 않고 Wintun 처럼 받아 해시를 확인한다.
       - name: Installer (windows/installer/build.ps1)
         shell: pwsh
@@ -368,6 +377,13 @@ jobs:
           if ($got -ne $want) { throw "wix.zip sha256 mismatch: $got" }
           Expand-Archive wix.zip -DestinationPath wix
           windows\installer\build.ps1 -Wix "$env:GITHUB_WORKSPACE\wix"
+
+      - name: Sign the installer
+        shell: pwsh
+        env:
+          ZTGATE_SIGN_PFX_BASE64: ${{ secrets.ZTGATE_SIGN_PFX_BASE64 }}
+          ZTGATE_SIGN_PFX_PASSWORD: ${{ secrets.ZTGATE_SIGN_PFX_PASSWORD }}
+        run: windows/installer/sign.ps1 windows/build/Release/ztgate.msi
 
       - uses: actions/upload-artifact@v4
         with:
