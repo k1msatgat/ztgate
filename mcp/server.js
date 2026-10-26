@@ -41,7 +41,7 @@ function ctl(request) {
 }
 
 async function call(cmd, args = {}) {
-	const { ok, error, ...result } = await ctl({ cmd, ...args });
+	const { ok, error, ...result } = await ctl({ cmd, ...args, actor: 'mcp' });
 
 	if (!ok) {
 		return { isError: true, content: [{ type: 'text', text: error }] };

@@ -29,7 +29,7 @@ const STATUS_SOCK = '/run/ztgate/status.sock';
 const SERVER_BIN = '/opt/ztgate/server/bin/vpn_server';
 const AUTH_CHECK = '/opt/ztgate/test/auth_check.py';
 const AUDIT_FILE = '/var/log/ztgate/audit.log';
-const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled'];
+const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled', 'admin'];
 
 /* 감사 로그는 계속 자란다. 통째로 읽지 않고 끝에서 이만큼만 본다. */
 const AUDIT_TAIL_BYTES = 4 * 1024 * 1024;
@@ -1249,6 +1249,43 @@ const COMMANDS = {
 	},
 };
 
+/* 바꾸는 명령은 성공하든 실패하든 감사 로그에 admin 사건 한 줄을 남긴다. actor 는 부른 도구가
+ * 알려 준 사람(웹 콘솔에 로그인한 이름, mcp)이고, sudo 로 부른 계정은 via 로 함께 남긴다. 서버가 같은
+ * 파일에 O_APPEND 로 쓰므로 한 줄씩 덧붙이는 것끼리 섞이지 않는다. */
+const MUTATING = new Set(['start', 'stop', 'restart', 'reload', 'device_add', 'device_update', 'device_remove',
+	'enroll_create', 'enroll_revoke', 'acl_set', 'acl_clear']);
+
+function auditAdmin(req, out) {
+	const e = {
+		time: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+		event: 'admin',
+		actor: typeof req.actor === 'string' && /^[A-Za-z0-9_.:@-]{1,64}$/.test(req.actor) ? req.actor : 'unknown',
+		cmd: req.cmd,
+		ok: out.ok,
+	};
+
+	if (process.env.SUDO_USER && /^[A-Za-z0-9_.-]{1,32}$/.test(process.env.SUDO_USER)) {
+		e.via = process.env.SUDO_USER;
+	}
+	if (typeof req.id === 'string' && /^[0-9a-fA-F]{1,32}$/.test(req.id)) {
+		e.target = req.id.toLowerCase();
+	}
+	if (out.device && out.device.id) {
+		e.target = out.device.id;
+	}
+	if (Array.isArray(req.rules)) {
+		e.rules = req.rules.length;
+	}
+	if (!out.ok) {
+		e.error = String(out.error).slice(0, 200);
+	}
+	try {
+		fs.appendFileSync(AUDIT_FILE, JSON.stringify(e) + '\n', { mode: 0o600 });
+	} catch (err) {
+		process.stderr.write(`ztgate_ctl: cannot write the audit log: ${err.code || err.name}\n`);
+	}
+}
+
 async function main() {
 	let req, out;
 
@@ -1283,6 +1320,9 @@ async function main() {
 		}
 	}
 
+	if (req && MUTATING.has(req.cmd)) {
+		auditAdmin(req, out);
+	}
 	process.stdout.write(JSON.stringify(out) + '\n');
 
 	return out.ok ? 0 : 1;
