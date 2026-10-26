@@ -26,7 +26,8 @@ S=${1:?usage: stage.sh <stage-dir>}
 
 install -d "$S/opt/ztgate/server/bin" "$S/opt/ztgate/libexec" "$S/opt/ztgate/tools" "$S/opt/ztgate/test" \
 	"$S/usr/sbin" "$S/usr/bin" "$S/usr/lib/systemd/system"
-install -m 755 "$ROOT/server/bin/vpn_server" "$S/opt/ztgate/server/bin/vpn_server"
+# 디버그 정보는 떼고 넣는다 (-s). 빌드 트리의 실행 파일에는 남아 있다.
+install -m 755 -s "$ROOT/server/bin/vpn_server" "$S/opt/ztgate/server/bin/vpn_server"
 install -m 755 "$ROOT/mcp/service.sh" "$S/opt/ztgate/libexec/service.sh"
 install -m 755 "$ROOT/packaging/postinst.sh" "$S/opt/ztgate/libexec/postinst.sh"
 install -m 755 "$ROOT/tools/metrics/ztgate_exporter.py" "$S/opt/ztgate/tools/ztgate_exporter.py"

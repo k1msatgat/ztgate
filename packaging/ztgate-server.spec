@@ -7,7 +7,7 @@ License:        Proprietary
 URL:            https://github.com/k1msatgat/ztgate
 Requires:       openssl-libs >= 3.0, iproute, python3
 Recommends:     nftables, nodejs
-# 미리 빌드한 실행 파일을 담는다. 디버그 정보를 따로 떼지 않는다.
+# 미리 빌드한 실행 파일을 담는다. 하드닝 플래그는 Makefile 이 넣고 디버그 정보는 stage.sh 가 뗀다.
 %global debug_package %{nil}
 %global __strip /bin/true
 %global _build_id_links none

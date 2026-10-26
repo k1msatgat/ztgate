@@ -205,6 +205,9 @@ jobs:
       - name: Build
         run: make server CFLAGS="-Wall -Wextra -Werror -O2 -g"
 
+      - name: Hardening flags (tools/check_hardening.sh)
+        run: tools/check_hardening.sh server/bin/vpn_server
+
       - name: Package (packaging/build.sh deb)
         run: packaging/build.sh deb out
 
@@ -243,6 +246,7 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src rockylinux:9 bash -euxc '
             dnf -y -q install gcc make openssl-devel rpm-build > /dev/null
             make server CFLAGS="-Wall -Wextra -Werror -O2 -g"
+            bash tools/check_hardening.sh server/bin/vpn_server
             packaging/build.sh rpm out
             dnf -y -q install ./out/ztgate-server-*.rpm > /dev/null
             test -s /etc/ztgate/server.key

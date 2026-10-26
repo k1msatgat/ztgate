@@ -1,5 +1,24 @@
 CC	= gcc
-CFLAGS	= -Wall -Wextra -g -O0
+CFLAGS	= -Wall -Wextra -g -O2
+
+# Hardening for a root, network-facing daemon: stack canaries, stack-clash probes, CET,
+# PIE, full RELRO, non-executable stack, and _FORTIFY_SOURCE when optimising. Added with
+# `override` so `make CFLAGS=...` (CI, Docker, packages) keeps it. Off under sanitizers,
+# and `make HARDEN=0` turns it off. tools/check_hardening.sh checks the result.
+HARDEN	?= 1
+ifeq ($(HARDEN),1)
+ifeq ($(filter -fsanitize=%,$(CFLAGS)),)
+HARDEN_CFLAGS	= -fstack-protector-strong -fstack-clash-protection -fPIE
+ifeq ($(filter -O0,$(CFLAGS)),)
+HARDEN_CFLAGS	+= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
+endif
+ifneq ($(shell $(CC) -fcf-protection -x c -c -o /dev/null /dev/null 2>/dev/null && echo y),)
+HARDEN_CFLAGS	+= -fcf-protection
+endif
+override CFLAGS	+= $(HARDEN_CFLAGS)
+override LDFLAGS += -pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack
+endif
+endif
 
 # ---- layout ---------------------------------------------------------------
 # Each component builds into its own bin/: objects, deps and the final
