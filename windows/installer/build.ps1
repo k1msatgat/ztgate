@@ -5,10 +5,14 @@
 # WiX 3 은 GitHub 의 windows-2022 러너에 깔려 있고 그 자리를 WIX 환경 변수가 가리킨다. 다른
 # 곳에서는 wix314-binaries.zip 을 풀어 그 폴더를 -Wix 로 준다 (설치하지 않아도 된다).
 param(
-	[string]$Version = '0.9.3',
+	[string]$Version = '',
 	[string]$Wix = ''
 )
 $ErrorActionPreference = 'Stop'
+
+if (-not $Version) {
+	$Version = (Get-Content (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) '..\..\VERSION') -Raw).Trim()
+}
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $bin = Join-Path $here '..\build\Release' | Resolve-Path

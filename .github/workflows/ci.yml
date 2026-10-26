@@ -29,6 +29,9 @@ jobs:
       - name: Build (warnings are errors)
         run: make CFLAGS="-Wall -Wextra -Werror -g -O0"
 
+      - name: One version everywhere (tools/check_version.sh)
+        run: tools/check_version.sh
+
       - name: Crypto self test (server, client)
         run: |
           ./server/bin/vpn_server selftest

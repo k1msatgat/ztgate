@@ -12,7 +12,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KIND=${1:?usage: build.sh deb|rpm [out-dir]}
 OUT=${2:-$ROOT/packaging/out}
-VERSION=${VERSION:-0.9.2}
+VERSION=${VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$OUT"
