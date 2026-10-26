@@ -31,3 +31,6 @@ packaging/out/
 .agents/
 .claude/skills/
 skills-lock.json
+
+# pstack 서브에이전트 (cursor/plugins 에서 복사, 스킬은 위 .claude/skills/ 로 이미 제외)
+.claude/agents/
