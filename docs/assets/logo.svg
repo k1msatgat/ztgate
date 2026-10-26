@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="ztgate">
+  <path d="M32 4 56 12v18c0 15-10 25-24 30C18 55 8 45 8 30V12z" fill="#0F1E36"/>
+  <path d="M32 7.5 53 14.5V30c0 13-8.6 21.8-21 26.4C19.6 51.8 11 43 11 30V14.5z" fill="none" stroke="#1E4E8C" stroke-width="1.5"/>
+  <rect x="20" y="19" width="3.5" height="26" rx="1.5" fill="#5B8FD6"/>
+  <rect x="34" y="19" width="3.5" height="26" rx="1.5" fill="#5B8FD6"/>
+  <path d="M14 32h32" stroke="#2A9D8F" stroke-width="4" stroke-linecap="round"/>
+  <path d="M43 26.5l6 5.5-6 5.5" fill="none" stroke="#2A9D8F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
