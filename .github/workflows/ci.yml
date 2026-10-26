@@ -322,9 +322,10 @@ jobs:
       - name: No runtime DLLs to ship (static CRT and MFC)
         shell: pwsh
         run: |
-          $dumpbin = (Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio2\*\VC\Tools\MSVC\*in\Hostx64d\dumpbin.exe" | Select-Object -First 1).FullName
+          $vs = & "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property installationPath
+          $dumpbin = (Get-ChildItem "$vs/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Select-Object -First 1).FullName
           $bad = foreach ($f in 'vpn_service.exe', 'vpn_client.exe', 'vpn_gui.exe') {
-              & $dumpbin /dependents "windowsuild\Release\$f" | Select-String -Pattern 'VCRUNTIME|MSVCP|mfc1|api-ms-win-crt' | ForEach-Object { "$f -> $($_.Line.Trim())" }
+              & $dumpbin /dependents "windows/build/Release/$f" | Select-String -Pattern 'VCRUNTIME|MSVCP|mfc1|api-ms-win-crt' | ForEach-Object { "$f -> $($_.Line.Trim())" }
           }
           if ($bad) { $bad; exit 1 }
           'no VC++ / MFC runtime DLLs'
