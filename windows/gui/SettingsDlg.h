@@ -24,6 +24,11 @@ public:
 	CString m_client_id;
 	CString m_scope;	/* 비어 있으면 openid */
 
+	/* 관리 정책이 정한 칸. 보이기만 하고 고칠 수 없다. */
+	bool m_lock_servers;	/* 서버와 포트 */
+	bool m_lock_issuer;
+	bool m_lock_client_id;
+
 	/* 값이 맞는지. 아니면 틀린 칸의 ID 와 이유를 돌려준다. 주 창이 연결 전에도 쓴다. */
 	static bool Check(const CString &server, const CString &port, const CString &adapter,
 			int *bad_id, CString *why);

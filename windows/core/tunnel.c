@@ -23,6 +23,7 @@
 #define HS_OK		0
 #define HS_FAIL		(-1)	/* 응답 없음 / 오류 / 중지 요청 */
 #define HS_DENIED	(-2)	/* 서버가 거절했다. 다시 보내도 같은 답이 온다 */
+#define HS_VERSION	(-3)	/* 이 서버는 다른 프로토콜 버전만 받는다. 다른 서버는 받을 수 있다 */
 
 #define LOOP_TICK_MSEC 1000
 #define POSTURE_POLL_MSEC 2000
@@ -90,6 +91,12 @@ typedef struct tunnel {
 	uint64_t net_probe_ms;		/* 바뀐 뒤 확인하려고 keepalive 를 보낸 때. 0 이면 기다리지 않는다 */
 	int net_lost;			/* 그 keepalive 에 답이 없다. 다시 핸드셰이크한다 */
 	int hs_failed;			/* 마지막 재핸드셰이크가 실패해 30초 뒤를 기다리는 중 */
+
+	/* 마지막으로 받은 VERSION. 서버를 하나씩 올리는 동안에는 서버마다 버전이 다를 수 있어,
+	 * 어느 서버도 제대로 답하지 않았을 때에만 알린다 (version_report). */
+	uint8_t version_pkt[VERSION_MSG_LEN];
+	int has_version;
+	int missed;			/* 재핸드셰이크에서 이번 바퀴에 제대로 답하지 않은 서버의 수 */
 
 	/* TCP 로 붙었다 (server/include/tcp.h). UDP 핸드셰이크에 답이 없으면 같은 번호의 TCP 포트로
 	 * 바꿔 본다 — UDP 를 막는 네트워크(호텔, 카페, 일부 회사망). 서버는 vpn_server -t <같은 번호>.
@@ -1292,7 +1299,8 @@ static int deny_verified(const tunnel_t *t, const handshake_t *hs, const uint8_t
  *   C -> S  AUTH              내 일회용 공개키 + nonce + 감싼 기기 ID + 포스처 + mac
  *   S -> C  RES_HANDSHAKE     세션 idx + 서버의 일회용 공개키 + tag   (또는 DENY 와 사유)
  *
- * HS_OK / HS_FAIL / HS_DENIED 를 돌려준다. */
+ * HS_OK / HS_FAIL / HS_DENIED / HS_VERSION 을 돌려준다. VERSION 은 t->version_pkt 에 남기고 알리지는
+ * 않는다 — 다른 서버가 받아 줄 수 있다. */
 static int do_handshake(tunnel_t *t)
 {
 	uint8_t res[BUF_SIZE];
@@ -1301,7 +1309,7 @@ static int do_handshake(tunnel_t *t)
 	msg_header_t h;
 	uint64_t deadline;
 	uint8_t loose_deny;
-	uint8_t version_seen[2];	/* 이번 시도에 받은 VERSION 의 min, max */
+	int version_seen;		/* 이번 시도에 VERSION 을 받았다 */
 	int body_len;
 	int ret = HS_FAIL;
 	int tries;
@@ -1313,7 +1321,7 @@ static int do_handshake(tunnel_t *t)
 		tlog(t, "[HS] request %d/%d", tries, HS_RETRY);
 		hs_reset(&hs);
 		loose_deny = 0;
-		version_seen[0] = 0;
+		version_seen = 0;
 		send_hs_request(t);
 
 		deadline = GetTickCount64() + HS_TIMEOUT_MSEC;
@@ -1375,12 +1383,16 @@ static int do_handshake(tunnel_t *t)
 				continue;
 
 			case MSG_TYPE_VERSION:
-				/* 서명이 없는 답이다. 확인할 수 없는 DENY 처럼 기억만 하고 진짜 답을 끝까지 기다린다. */
-				if (h.version == PROTOCOL_VERSION || body[0] > body[1]) {
+				/* 서명이 없는 답이다. 확인할 수 없는 DENY 처럼 기억만 하고 진짜 답을 끝까지 기다린다.
+				 * 우리 버전을 받는다는 VERSION 은 거절이 아니므로 위조로 본다. res 는 뒤에 온 패킷이
+				 * 덮으므로 따로 복사해 둔다. */
+				if (h.version == PROTOCOL_VERSION || body[0] > body[1] ||
+						(body[0] <= PROTOCOL_VERSION && PROTOCOL_VERSION <= body[1])) {
 					continue;
 				}
-				version_seen[0] = body[0];
-				version_seen[1] = body[1];
+				memcpy(t->version_pkt, res, VERSION_MSG_LEN);
+				t->has_version = 1;
+				version_seen = 1;
 				continue;
 
 			case MSG_TYPE_RES_HANDSHAKE:
@@ -1409,17 +1421,8 @@ static int do_handshake(tunnel_t *t)
 			ret = HS_DENIED;
 			goto out;
 		}
-		if (version_seen[0] != 0) {
-			const int client_old = version_seen[0] > PROTOCOL_VERSION;
-
-			h.version = version_seen[1];
-			h.type = MSG_TYPE_VERSION;
-			h.session_idx = 0;
-			hs_emit(t, TUNNEL_DIR_RX, &h, res, (int)VERSION_MSG_LEN, NULL,
-					client_old ? TUNNEL_DENY_CLIENT_OLD : TUNNEL_DENY_SERVER_OLD);
-			tlog(t, "[HS] the server takes protocol v%u..v%u, this client speaks v%u: %s", version_seen[0],
-					version_seen[1], PROTOCOL_VERSION, client_old ? "update this PC" : "the server is older");
-			ret = HS_DENIED;
+		if (version_seen) {
+			ret = HS_VERSION;
 			goto out;
 		}
 	}
@@ -1430,6 +1433,28 @@ out:
 	hs_reset(&hs);
 
 	return ret;
+}
+
+/* 받아 둔 VERSION 을 거절처럼 알린다. 어느 서버도 제대로 답하지 않았을 때 부른다. */
+static void version_report(tunnel_t *t)
+{
+	const uint8_t lo = t->version_pkt[sizeof(msg_header_t)];
+	const uint8_t hi = t->version_pkt[sizeof(msg_header_t) + 1];
+	const int client_old = lo > PROTOCOL_VERSION;
+	msg_header_t h;
+
+	if (!t->has_version) {
+		return;
+	}
+	t->has_version = 0;
+
+	memset(&h, 0, sizeof(h));
+	h.version = hi;
+	h.type = MSG_TYPE_VERSION;
+	hs_emit(t, TUNNEL_DIR_RX, &h, t->version_pkt, (int)VERSION_MSG_LEN, NULL,
+			client_old ? TUNNEL_DENY_CLIENT_OLD : TUNNEL_DENY_SERVER_OLD);
+	tlog(t, "[HS] the server takes protocol v%u..v%u, this client speaks v%u: %s", lo, hi,
+			PROTOCOL_VERSION, client_old ? "update this PC" : "the server is older");
 }
 
 /* KEEPALIVE: counter(8) | 암호화된 posture(8) | tag(16)
@@ -2153,6 +2178,85 @@ static int pump_udp(tunnel_t *t)
 #define ENROLL_TRIES 3
 #define ENROLL_TIMEOUT_MSEC 1500
 
+/* 지금 서버(t->session.server)에 한 번 올려 본다. tunnel_enroll_result_t. */
+static int enroll_at(tunnel_t *t, const uint8_t id[DEVICE_ID_LEN], const uint8_t pub[VPN_PUB_LEN],
+		crypt_ecdh_t *mine, uint8_t key[AUTH_KEY_LEN], uint8_t server_pub[VPN_PUB_LEN_WIRE],
+		uint8_t packet[BUF_SIZE])
+{
+	msg_header_t h;
+	uint64_t deadline;
+	int ret;
+	int tries;
+	int n;
+
+	switch (do_handshake(t)) {
+	case HS_OK:
+		break;
+	case HS_DENIED:
+		/* 서버가 그 코드를 모른다: 잘못 적었거나, 만료됐거나, 이미 쓰였다. */
+		return TUNNEL_ENROLL_REJECTED;
+	default:
+		return TUNNEL_ENROLL_NO_RESPONSE;
+	}
+
+	ret = TUNNEL_ENROLL_NO_RESPONSE;
+
+	for (tries = 1; tries <= ENROLL_TRIES; tries++) {
+		/* 다시 보낼 때마다 새로 감싼다. counter 가 달라져야 서버가 재전송으로 버리지
+		 * 않는다. 내용이 같으므로 서버는 같은 답을 한다. */
+		memcpy(packet + PKT_HDR_LEN, id, DEVICE_ID_LEN);
+		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, pub, VPN_PUB_LEN);
+		n = secure_seal(&t->session.secure, MSG_TYPE_ENROLL, t->session.idx,
+				packet, BUF_SIZE, ENROLL_PAYLOAD_LEN);
+		if (n < 0) {
+			return TUNNEL_ENROLL_ERROR;
+		}
+		udp_send(t, packet, n);
+		tlog(t, "[enroll] sent %d/%d", tries, ENROLL_TRIES);
+
+		deadline = GetTickCount64() + ENROLL_TIMEOUT_MSEC;
+		for (;;) {
+			n = hs_recv(t, deadline, packet, BUF_SIZE, &h);
+			if (n == HS_FAIL) {
+				return TUNNEL_ENROLL_ERROR;
+			}
+			if (n == 0) {
+				break;
+			}
+			if (h.type != MSG_TYPE_ENROLL || h.session_idx != t->session.idx) {
+				continue;
+			}
+
+			/* 세션 키로 열려야 서버의 답이다. */
+			n = secure_open(&t->session.secure, packet, (size_t)n, NULL);
+			if (n < (int)ENROLL_REPLY_LEN) {
+				continue;
+			}
+
+			switch (packet[PKT_HDR_LEN]) {
+			case ENROLL_OK:		ret = TUNNEL_ENROLL_OK; break;
+			case ENROLL_GONE:	ret = TUNNEL_ENROLL_REJECTED; break;
+			case ENROLL_CONFLICT:	ret = TUNNEL_ENROLL_CONFLICT; break;
+			default:		ret = TUNNEL_ENROLL_SERVER_FAILED; break;
+			}
+			tlog(t, "[enroll] server answered %u", packet[PKT_HDR_LEN]);
+
+			/* 서버의 공개키는 코드를 아는 서버만 열 수 있는 이 세션으로 왔다. 그것과 이 기기의
+			 * 비밀키로 기기 키를 뽑는다. 서버는 자기 비밀키와 이 기기의 공개키로 같은 값을 뽑는다. */
+			if (ret == TUNNEL_ENROLL_OK && mine != NULL &&
+					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
+				ret = TUNNEL_ENROLL_ERROR;
+			}
+			if (ret == TUNNEL_ENROLL_OK) {
+				memcpy(server_pub, packet + PKT_HDR_LEN + 1, VPN_PUB_LEN_WIRE);
+			}
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
 /* 등록 코드로 서버에 이 기기를 올린다 (proto.h 의 "기기 등록").
  *
  * 코드에서 뽑은 임시 신원으로 평소의 핸드셰이크를 그대로 돈다. 그러면 코드를 아는
@@ -2169,12 +2273,9 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 	uint8_t packet[BUF_SIZE];
 	uint8_t pub[VPN_PUB_LEN];
 	crypt_ecdh_t *mine = NULL;
-	msg_header_t h;
 	WSADATA wsa;
-	uint64_t deadline;
 	int ret = TUNNEL_ENROLL_ERROR;
-	int tries;
-	int n;
+	int rejected = 0;
 
 	/* 패킷 이벤트는 올리지 않는다. 화면의 패킷 목록은 터널의 것이다. */
 	cfg.on_packet = NULL;
@@ -2208,84 +2309,40 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 		return TUNNEL_ENROLL_ERROR;
 	}
 
-	/* 서버를 여럿 적었으면 첫 주소에 올린다. 서버들은 같은 기기 목록을 쓴다. */
 	if (!resolve(t)) {
 		ret = TUNNEL_ENROLL_NO_RESPONSE;
 		goto out;
 	}
-	server_set(t, &t->addrs[0]);
 
-	if (socket_open(t) < 0) {
-		goto out;
-	}
-
-	switch (do_handshake(t)) {
-	case HS_OK:
-		break;
-	case HS_DENIED:
-		/* 서버가 그 코드를 모른다: 잘못 적었거나, 만료됐거나, 이미 쓰였다. */
-		ret = TUNNEL_ENROLL_REJECTED;
-		goto out;
-	default:
-		ret = TUNNEL_ENROLL_NO_RESPONSE;
-		goto out;
-	}
-
-	ret = TUNNEL_ENROLL_NO_RESPONSE;
-
-	for (tries = 1; tries <= ENROLL_TRIES; tries++) {
-		/* 다시 보낼 때마다 새로 감싼다. counter 가 달라져야 서버가 재전송으로 버리지
-		 * 않는다. 내용이 같으므로 서버는 같은 답을 한다. */
-		memcpy(packet + PKT_HDR_LEN, id, DEVICE_ID_LEN);
-		memcpy(packet + PKT_HDR_LEN + DEVICE_ID_LEN, pub, VPN_PUB_LEN);
-		n = secure_seal(&t->session.secure, MSG_TYPE_ENROLL, t->session.idx,
-				packet, sizeof(packet), ENROLL_PAYLOAD_LEN);
-		if (n < 0) {
+	/* 서버들은 같은 기기 목록을 쓰지만, 코드는 만든 서버에서 부 서버로 옮겨지기까지 틈이 있다.
+	 * 이름이 여러 주소로 풀리면 부 서버가 먼저 올 수도 있다. 그래서 답이 없거나 코드를 모르면
+	 * 다음 주소에 다시 올려 본다. */
+	for (int i = 0; i < t->n_addrs; i++) {
+		server_set(t, &t->addrs[i]);
+		secure_session_close(&t->session.secure);
+		if (transport_switch(t, 0) < 0) {
 			ret = TUNNEL_ENROLL_ERROR;
 			goto out;
 		}
-		udp_send(t, packet, n);
-		tlog(t, "[enroll] sent %d/%d", tries, ENROLL_TRIES);
 
-		deadline = GetTickCount64() + ENROLL_TIMEOUT_MSEC;
-		for (;;) {
-			n = hs_recv(t, deadline, packet, (int)sizeof(packet), &h);
-			if (n == HS_FAIL) {
-				ret = TUNNEL_ENROLL_ERROR;
-				goto out;
-			}
-			if (n == 0) {
-				break;
-			}
-			if (h.type != MSG_TYPE_ENROLL || h.session_idx != t->session.idx) {
-				continue;
-			}
-
-			/* 세션 키로 열려야 서버의 답이다. */
-			n = secure_open(&t->session.secure, packet, (size_t)n, NULL);
-			if (n < (int)ENROLL_REPLY_LEN) {
-				continue;
-			}
-
-			switch (packet[PKT_HDR_LEN]) {
-			case ENROLL_OK:		ret = TUNNEL_ENROLL_OK; break;
-			case ENROLL_GONE:	ret = TUNNEL_ENROLL_REJECTED; break;
-			case ENROLL_CONFLICT:	ret = TUNNEL_ENROLL_CONFLICT; break;
-			default:		ret = TUNNEL_ENROLL_SERVER_FAILED; break;
-			}
-			tlog(t, "[enroll] server answered %u", packet[PKT_HDR_LEN]);
-
-			/* 서버의 공개키는 코드를 아는 서버만 열 수 있는 이 세션으로 왔다. 그것과 이 기기의
-			 * 비밀키로 기기 키를 뽑는다. 서버는 자기 비밀키와 이 기기의 공개키로 같은 값을 뽑는다. */
-			if (ret == TUNNEL_ENROLL_OK && mine != NULL &&
-					secure_static_key(mine, packet + PKT_HDR_LEN + 1, pub, packet + PKT_HDR_LEN + 1, key) < 0) {
-				ret = TUNNEL_ENROLL_ERROR;
-			}
-			if (ret == TUNNEL_ENROLL_OK) {
-				memcpy(server_pub, packet + PKT_HDR_LEN + 1, VPN_PUB_LEN_WIRE);
-			}
+		ret = enroll_at(t, id, pub, mine, key, server_pub, packet);
+		if (ret != TUNNEL_ENROLL_NO_RESPONSE && ret != TUNNEL_ENROLL_REJECTED) {
 			goto out;
 		}
+		rejected |= ret == TUNNEL_ENROLL_REJECTED;
+		if (WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0) {
+			ret = TUNNEL_ENROLL_ERROR;
+			goto out;
+		}
+		if (i + 1 < t->n_addrs) {
+			tlog(t, "[enroll] trying the next server address");
+		}
+	}
+	if (rejected) {
+		ret = TUNNEL_ENROLL_REJECTED;
+	}
+	else {
+		version_report(t);	/* 답한 서버가 VERSION 뿐이었으면 그 까닭을 로그에 남긴다 */
 	}
 
 out:
@@ -2359,7 +2416,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 			cfg->adapter_name, cfg->servers, server_str, cfg->server_port);
 
 	/* 서버마다 UDP, 그다음 같은 번호의 TCP. 답하는 서버를 찾을 때까지 차례로. 거절은 답이다 —
-	 * 다른 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. */
+	 * 다른 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. VERSION 은 그 서버만의 답이다 —
+	 * 서버를 하나씩 올리는 중이면 다음 서버는 받아 줄 수 있다. */
 	for (int tries = 0; ; tries++) {
 		hs = do_handshake(t);
 		if (hs == HS_FAIL && WaitForSingleObject(t->stop_event, 0) != WAIT_OBJECT_0) {
@@ -2368,12 +2426,15 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				hs = do_handshake(t);
 			}
 		}
-		if (hs != HS_FAIL || tries >= t->n_addrs - 1 ||
+		if (hs == HS_OK || hs == HS_DENIED || tries >= t->n_addrs - 1 ||
 				WaitForSingleObject(t->stop_event, 0) == WAIT_OBJECT_0 || !next_server(t, server_str)) {
 			break;
 		}
 	}
 	if (hs != HS_OK) {
+		if (hs != HS_DENIED) {
+			version_report(t);
+		}
 		goto out;
 	}
 
@@ -2488,7 +2549,23 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				transport_switch(t, 0);
 			}
 
-			switch (do_handshake(t)) {
+			hs = do_handshake(t);
+			if (hs == HS_OK || hs == HS_DENIED) {
+				t->missed = 0;
+				t->has_version = 0;
+			}
+			/* 이 서버에서는 끝났다 (VERSION 으로 답했거나 TCP 로도 답이 없다). 한 바퀴를 다 돌도록
+			 * 제대로 답한 서버가 없는데 그중에 VERSION 이 있었으면 그때 알리고, 거절처럼 30초마다
+			 * 다시 묻는다. */
+			else if ((hs == HS_VERSION || t->tcp) && ++t->missed >= t->n_addrs) {
+				t->missed = 0;
+				if (t->has_version) {
+					version_report(t);
+					hs = HS_DENIED;
+				}
+			}
+
+			switch (hs) {
 			case HS_OK:
 				/* 다시 받은 설정을 어댑터에 맞춘다. 주소가 바뀌었으면 여기서 바뀐다. */
 				if (netcfg_apply(t) < 0) {
@@ -2503,6 +2580,11 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				session->denied = 1;
 				t->hs_failed = 0;
 				set_state(t, TUNNEL_STATE_DENIED);
+				break;
+			case HS_VERSION:
+				t->hs_failed = 1;
+				tlog(t, "[HS] %s takes another protocol version, trying the next server", server_str);
+				next_server(t, server_str);
 				break;
 			default:
 				t->hs_failed = 1;

@@ -6,6 +6,9 @@
 
 CSettingsDlg::CSettingsDlg(CWnd *parent)
 	: CDialogEx(IDD_SETTINGS, parent)
+	, m_lock_servers(false)
+	, m_lock_issuer(false)
+	, m_lock_client_id(false)
 	, m_point_id(0)
 {
 }
@@ -35,9 +38,14 @@ bool CSettingsDlg::Check(const CString &server, const CString &port, const CStri
 		*why = _T("1 부터 65535 사이의 숫자여야 합니다.");
 		return false;
 	}
-	if (adapter.IsEmpty() || adapter.GetLength() >= TUNNEL_ADAPTER_NAME_LEN) {
+	if (adapter.IsEmpty()) {
 		*bad_id = IDC_ADAPTER;
 		*why = _T("터널 어댑터의 이름입니다. 비워 둘 수 없습니다.");
+		return false;
+	}
+	if (adapter.GetLength() >= TUNNEL_ADAPTER_NAME_LEN) {
+		*bad_id = IDC_ADAPTER;
+		why->Format(_T("어댑터 이름이 너무 깁니다. %d자 이하로 적어 주세요."), TUNNEL_ADAPTER_NAME_LEN - 1);
 		return false;
 	}
 
@@ -80,6 +88,23 @@ BOOL CSettingsDlg::OnInitDialog()
 	GetDlgItem(IDC_ISSUER)->SendMessage(EM_SETCUEBANNER, FALSE, (LPARAM)L"https://idp.example.com/realms/corp");
 	GetDlgItem(IDC_CLIENT_ID)->SendMessage(EM_SETCUEBANNER, FALSE, (LPARAM)L"ztgate");
 	GetDlgItem(IDC_SCOPE)->SendMessage(EM_SETCUEBANNER, FALSE, (LPARAM)L"openid  (IdP 에 따라 offline_access 등을 더함)");
+
+	/* 정책이 정한 칸은 읽기만 한다. 회색으로 죽이지 않는다 — 값은 읽고 복사할 수 있어야 한다. */
+	const int locked[] = {
+		m_lock_servers ? IDC_SERVER : 0, m_lock_servers ? IDC_PORT : 0,
+		m_lock_issuer ? IDC_ISSUER : 0, m_lock_client_id ? IDC_CLIENT_ID : 0,
+	};
+	bool any = false;
+
+	for (int id : locked) {
+		if (id != 0) {
+			GetDlgItem(id)->SendMessage(EM_SETREADONLY, TRUE, 0);
+			any = true;
+		}
+	}
+	if (any) {
+		SetWindowText(_T("연결 설정 (읽기만 하는 칸은 회사 정책이 정함)"));
+	}
 
 	if (m_point_id != 0) {
 		FieldError(m_point_id, m_point_msg);

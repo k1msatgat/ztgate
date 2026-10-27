@@ -198,7 +198,8 @@ int tunnel_resolve_servers(const wchar_t *servers, tunnel_addr_t *out, int max);
  * 키 쌍의 공개키를 보내고, 서버가 받아 주면 답에 실린 서버 공개키로 기기 키를 뽑아 key 에 적는다
  * (TUNNEL_ENROLL_OK 일 때만). tunnel_enroll_result_t 를 돌려준다.
  *
- * cfg 에서는 servers 의 첫 주소 / 포트와 on_log 만 쓴다. 어댑터를 만들지 않으므로 관리자 권한이
+ * cfg 에서는 servers / 포트와 on_log 만 쓴다. servers 가 여러 주소로 풀리면 답이 없거나 코드를 모르는
+ * 주소를 건너 차례로 올려 본다. 어댑터를 만들지 않으므로 관리자 권한이
  * 필요 없다. 응답을 기다리는 동안 블로킹한다 (길어야 십여 초). stop_event 는
  * manual-reset 이벤트여야 하고, signaled 되면 기다리던 것을 그만둔다.
  *

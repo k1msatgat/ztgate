@@ -85,6 +85,8 @@ static tunnel_addr_t server_addrs[TUNNEL_SERVERS_MAX];	/* 터널이 마지막으
 static int n_server_addrs;
 static net_route_t blocked[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
 static int n_blocked;
+static struct in_addr blocked_allow[TUNNEL_SERVERS_MAX];	/* 지금 걸린 필터가 열어 둔 서버 */
+static int n_blocked_allow;
 
 /* 자동 업데이트 (update.h). 서비스가 뜬 지 2분 뒤, 그다음은 6시간마다. 네트워크를 기다리므로 따로
  * 스레드에서 하고, 끝나면 그 스레드가 notify 로 알린다. */
@@ -224,6 +226,26 @@ static void on_servers(void *ctx, const tunnel_addr_t *addrs, int n)
 	memcpy(server_addrs, addrs, n * sizeof(addrs[0]));
 	n_server_addrs = n;
 	LeaveCriticalSection(&lock);
+	SetEvent(notify);	/* 차단 중이면 새 주소를 열어 줘야 한다 (block_sync) */
+}
+
+/* 새 서버 목록으로 붙기 전에: 지난 목록의 주소는 버리고, 주소로 적힌 서버는 풀기 전부터 안다. 차단이
+ * 먼저 걸리면 그 주소들은 처음부터 열려 있어야 한다 — 이름 풀이를 기다리면 첫 핸드셰이크가 막힌다. */
+static void servers_seed(void)
+{
+	wchar_t buf[TUNNEL_SERVERS_LEN];
+	wchar_t *tok, *ctx = NULL;
+
+	wcscpy_s(buf, TUNNEL_SERVERS_LEN, run_cfg.servers);
+	EnterCriticalSection(&lock);
+	n_server_addrs = 0;
+	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL && n_server_addrs < TUNNEL_SERVERS_MAX;
+			tok = wcstok_s(NULL, L", ", &ctx)) {
+		if (tunnel_parse_addr(tok, &server_addrs[n_server_addrs]) == 0) {
+			n_server_addrs++;
+		}
+	}
+	LeaveCriticalSection(&lock);
 }
 
 static void on_packet(void *ctx, const tunnel_packet_t *p)
@@ -284,6 +306,7 @@ static int recall(void)
 	tunnel_addr_t old[1 + TUNNEL_ALT_SERVERS];
 	DWORD ip = 0, port = 0, want = 0;
 	DWORD len;
+	LSTATUS err;
 
 	len = sizeof(run_cfg.adapter_name);
 	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"adapter", RRF_RT_REG_SZ, NULL,
@@ -299,8 +322,14 @@ static int recall(void)
 
 	run_cfg.server_port = (uint16_t)port;
 	len = sizeof(run_cfg.servers);
-	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"servers", RRF_RT_REG_SZ, NULL,
-				run_cfg.servers, &len) != ERROR_SUCCESS) {
+	err = RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"servers", RRF_RT_REG_SZ, NULL, run_cfg.servers, &len);
+	if (err != ERROR_SUCCESS && err != ERROR_FILE_NOT_FOUND) {
+		/* 너무 길거나(ERROR_MORE_DATA) 모양이 다르다. 손으로 고친 값이다 — 예전 값으로 읽지 않는다. */
+		slog("the remembered servers cannot be read (%ld), not resuming the tunnel", err);
+		run_cfg.servers[0] = L'\0';
+		return 0;
+	}
+	if (err == ERROR_FILE_NOT_FOUND) {
 		run_cfg.servers[0] = L'\0';
 		len = sizeof(old[0]);
 		if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"server_addr", RRF_RT_REG_BINARY, NULL,
@@ -554,6 +583,8 @@ static int send_state(void)
 	state_dirty = 0;
 	LeaveCriticalSection(&lock);
 	s.wanted = (uint32_t)wanted;
+	s.running = worker != NULL;
+	s.reserved = 0;
 
 	return send_msg(IPC_EVT_STATE, &s, sizeof(s));
 }
@@ -752,6 +783,7 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 	wcscpy(run_cfg.servers, c.servers);
 	run_cfg.server_port = c.server_port;
 	policy_servers();
+	servers_seed();
 
 	err = tunnel_start();
 	if (err != 0) {
@@ -829,7 +861,9 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 		return send_error(IPC_ERR_BAD_REQUEST);
 	}
 
-	if (worker || wanted) {
+	/* 터널이 돌고 있을 때만 받지 않는다. 원하기만 하는 것(AlwaysOn, 다시 올리기를 기다리는 중)은
+	 * 막을 까닭이 없다 — AlwaysOn 인 PC 는 바로 등록되기를 기다리고 있다. */
+	if (worker) {
 		SecureZeroMemory(&e, sizeof(e));
 		return send_error(IPC_ERR_BUSY);
 	}
@@ -878,7 +912,7 @@ static int cmd_enroll_manual(void)
 	device_t dev;
 	int ret;
 
-	if (worker || wanted) {
+	if (worker) {
 		return send_error(IPC_ERR_BUSY);
 	}
 
@@ -887,6 +921,9 @@ static int cmd_enroll_manual(void)
 	}
 
 	slog("a new identity was created for manual registration");
+	if (wanted) {
+		retry_at = GetTickCount64();
+	}
 	ret = send_enroll_result(TUNNEL_ENROLL_OK, &dev, 1);
 	SecureZeroMemory(&dev, sizeof(dev));
 
@@ -1043,6 +1080,9 @@ static void policy_apply(int startup)
 			memset(&run_cfg, 0, sizeof(run_cfg));
 		}
 		policy_servers();
+		if (!worker) {
+			servers_seed();
+		}
 		wanted = 1;
 		remember();
 		if (!worker && tunnel_start() != 0) {
@@ -1088,12 +1128,10 @@ static void block_sync(void)
 		}
 		return;
 	}
-	if (blocking && n == n_blocked && memcmp(want, blocked, n * sizeof(want[0])) == 0) {
-		return;
-	}
 
-	/* 막는 대역은 IPv4 라 IPv4 서버만 열어 두면 된다. 주소는 터널이 마지막으로 푼 것이다 — 서버를 이름으로
-	 * 적었으면 부팅 직후 한 번도 풀기 전에는 열어 둘 주소를 모른다. 서버가 내부 대역 안에 있을 때만 문제다. */
+	/* 막는 대역은 IPv4 라 IPv4 서버만 열어 두면 된다. 주소는 적힌 그대로이거나 터널이 마지막으로 푼 것이다 —
+	 * 서버를 이름으로 적었으면 부팅 직후 한 번도 풀기 전에는 열어 둘 주소를 모른다. 서버가 내부 대역 안에
+	 * 있을 때만 문제다. 풀고 나면(on_servers) 필터를 다시 건다. */
 	EnterCriticalSection(&lock);
 	for (int i = 0; i < n_server_addrs; i++) {
 		if (server_addrs[i].si_family == AF_INET) {
@@ -1101,11 +1139,18 @@ static void block_sync(void)
 		}
 	}
 	LeaveCriticalSection(&lock);
+	if (blocking && n == n_blocked && memcmp(want, blocked, n * sizeof(want[0])) == 0 &&
+			n_allow == n_blocked_allow && memcmp(allow, blocked_allow, n_allow * sizeof(allow[0])) == 0) {
+		return;
+	}
+
 	if (wfp_block(want, n, allow, n_allow) == 0) {
 		blocking = 1;
 		memcpy(blocked, want, n * sizeof(want[0]));
 		n_blocked = n;
-		slog("policy: %d internal networks blocked while the tunnel is down", n);
+		memcpy(blocked_allow, allow, n_allow * sizeof(allow[0]));
+		n_blocked_allow = n_allow;
+		slog("policy: %d internal networks blocked while the tunnel is down (%d servers let through)", n, n_allow);
 	}
 	else {
 		blocking = 0;
@@ -1178,6 +1223,7 @@ static void service_run(void)
 	/* 지난번에 연결해 둔 채였으면 이어서 연결한다. */
 	if (recall()) {
 		wanted = 1;
+		servers_seed();
 		err = tunnel_start();
 		if (err != 0) {
 			slog("cannot resume the tunnel (%d)", err);

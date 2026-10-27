@@ -46,11 +46,22 @@ int vpn_remote_link(const vpn_session_t *s);
  * 붙어 있지 않으면 0. 이 프로그램을 나중에 켜도 터널이 연결된 때부터 셀 수 있다. */
 ULONGLONG vpn_remote_connected_since(vpn_session_t *s);
 
+/* 서비스 안에서 터널이 돌고 있는가 (연결 중, 연결됨, 다시 맺는 중, 거부된 채 기다리는 중). 서비스가
+ * 다시 올리기를 기다리기만 하는 동안(vpn_remote_wanted)은 0 이다. */
+int vpn_remote_running(const vpn_session_t *s);
+
+/* 서비스가 터널을 원한다: 끊기면 스스로 다시 올린다 (사용자가 연결했거나 AlwaysOn). */
+int vpn_remote_wanted(const vpn_session_t *s);
+
+/* 마지막 등록 명령을 서비스가 받지 않았으면 그 까닭 (ipc_error_code_t). 받았으면 0. 등록이
+ * TUNNEL_ENROLL_ERROR / DEVICE_ERROR 로 끝난 뒤에 본다. */
+uint32_t vpn_remote_enroll_error(vpn_session_t *s);
+
 /* 등록된 기기면 1 을 돌려주고 id 를 채운다. 아니면 (또는 서비스에 붙지 못했으면) 0. */
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN]);
 
 /* 등록 코드로 서버에 이 PC 를 올리라고 서비스에 시킨다. tunnel_enroll_result_t 를 돌려준다.
- * 답이 올 때까지 블로킹한다 (길어야 수십 초). servers 는 tunnel_config_t.servers 와 같은 글자이고 첫 주소에 올린다. */
+ * 답이 올 때까지 블로킹한다 (길어야 수십 초). servers 는 tunnel_config_t.servers 와 같은 글자다. */
 int vpn_remote_enroll(vpn_session_t *s, const wchar_t *servers, uint16_t server_port, const char *code);
 
 /* 코드 없이: 서비스가 새 신원을 만들어 저장하고 ID 와 키를 돌려준다. 관리자가 서버에

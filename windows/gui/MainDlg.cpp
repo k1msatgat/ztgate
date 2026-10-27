@@ -165,6 +165,9 @@ BOOL CMainDlg::OnInitDialog()
 	FitWindow();
 
 	SetPropW(GetSafeHwnd(), kWindowProp, reinterpret_cast<HANDLE>(1));
+	/* 링크를 눌러 뜬 둘째 GUI 는 무결성 수준이 이 창보다 낮을 수 있다 (브라우저가 띄운다). 그러면
+	 * UIPI 가 WM_COPYDATA 를 버린다. */
+	ChangeWindowMessageFilterEx(GetSafeHwnd(), WM_COPYDATA, MSGFLT_ALLOW, nullptr);
 	if (!m_invite.IsEmpty()) {
 		PostMessage(WM_INVITE);
 	}
@@ -192,10 +195,29 @@ BOOL CMainDlg::OnCopyData(CWnd *, COPYDATASTRUCT *cd)
 
 LRESULT CMainDlg::OnInvite(WPARAM, LPARAM)
 {
+	ShowFromTray();
+	if (m_invite.IsEmpty()) {
+		return 0;
+	}
+
+	/* 링크로 막 뜬 참이면 아직 서비스에 붙지 않았고, 이 PC 가 등록됐는지도 모른다. 알게 되면
+	 * OnVpnDevice 가 다시 부른다. 붙지 못한 채 오래 걸리면 OnTimer 가 까닭을 알린다. */
+	if (m_link != VPN_REMOTE_UP || !m_device_known) {
+		if (m_invite_at == 0) {
+			m_invite_at = GetTickCount64();
+		}
+		return 0;
+	}
+
 	const CString link = m_invite;
 
 	m_invite.Empty();
-	ShowFromTray();
+	m_invite_at = 0;
+
+	/* 같은 링크를 또 눌렀다. 등록 창은 하나만 둔다. */
+	if (m_enrolling) {
+		return 0;
+	}
 	Enroll(link);
 	return 0;
 }
@@ -206,7 +228,7 @@ void CMainDlg::LoadSettings()
 	CWinApp *app = AfxGetApp();
 
 	m_adapter = app->GetProfileString(_T("conn"), _T("adapter"), _T("ztgate"));
-	m_server = app->GetProfileString(_T("conn"), _T("server"), _T("49.247.139.39"));
+	m_server = app->GetProfileString(_T("conn"), _T("server"), _T(""));
 	m_port = app->GetProfileString(_T("conn"), _T("port"), _T("9000"));
 	m_issuer = app->GetProfileString(_T("login"), _T("issuer"), _T(""));
 	m_client_id = app->GetProfileString(_T("login"), _T("client_id"), _T("ztgate"));
@@ -226,27 +248,69 @@ void CMainDlg::LoadSettings()
 	}
 }
 
-/* 정책이 연결 설정을 정했다. */
-static bool PolicyManaged(const ztgate_policy_t &p)
-{
-	return p.has_servers || p.issuer[0] != L'\0';
-}
-
 void CMainDlg::SaveSettings()
 {
 	CWinApp *app = AfxGetApp();
 
-	/* 정책 값을 사용자 설정으로 남기지 않는다. */
-	if (PolicyManaged(m_policy)) {
+	/* 정책이 정한 값은 사용자 설정으로 남기지 않는다. 정한 것만 건너뛴다 — 나머지는 사용자 것이다. */
+	app->WriteProfileString(_T("conn"), _T("adapter"), m_adapter);
+	if (!m_policy.has_servers) {
+		app->WriteProfileString(_T("conn"), _T("server"), m_server);
+		app->WriteProfileString(_T("conn"), _T("port"), m_port);
+	}
+	if (m_policy.issuer[0] == L'\0') {
+		app->WriteProfileString(_T("login"), _T("issuer"), m_issuer);
+	}
+	if (m_policy.issuer[0] == L'\0' || m_policy.client_id[0] == L'\0') {
+		app->WriteProfileString(_T("login"), _T("client_id"), m_client_id);
+	}
+	app->WriteProfileString(_T("login"), _T("scope"), m_scope);
+}
+
+/* 토큰은 그것을 준 IdP 와 클라이언트의 것이다. 바뀌었으면 들고 있던 로그인을 버린다. */
+void CMainDlg::ChangeLogin(const CString &issuer, const CString &client_id, const CString &scope)
+{
+	if (issuer == m_issuer && client_id == m_client_id && scope == m_scope) {
 		return;
 	}
 
-	app->WriteProfileString(_T("conn"), _T("adapter"), m_adapter);
-	app->WriteProfileString(_T("conn"), _T("server"), m_server);
-	app->WriteProfileString(_T("conn"), _T("port"), m_port);
-	app->WriteProfileString(_T("login"), _T("issuer"), m_issuer);
-	app->WriteProfileString(_T("login"), _T("client_id"), m_client_id);
-	app->WriteProfileString(_T("login"), _T("scope"), m_scope);
+	/* 옛 설정으로 로그아웃한다 — refresh token 폐기는 그것을 준 IdP 에 해야 한다. */
+	Logout(_T("로그인 설정이 바뀌어 로그아웃했습니다"));
+	m_issuer = issuer;
+	m_client_id = client_id;
+	m_scope = scope;
+	m_login_error.Empty();
+
+	CRect rc;
+	GetClientRect(&rc);
+	LayoutChildren(rc.Width(), rc.Height());	/* 로그인 버튼이 생기거나 사라진다 */
+}
+
+/* 그룹 정책이 새로 내려오면(gpupdate) 껐다 켜지 않아도 따른다. */
+void CMainDlg::ReloadPolicy()
+{
+	ztgate_policy_t now;
+
+	policy_load(&now);
+	if (memcmp(&now, &m_policy, sizeof(now)) == 0) {
+		return;
+	}
+
+	const CString issuer = m_issuer, client_id = m_client_id, scope = m_scope;
+
+	AppendLog(_T("[gui] 관리 정책이 바뀌어 다시 읽었습니다"));
+	LoadSettings();
+
+	const CString new_issuer = m_issuer, new_client_id = m_client_id, new_scope = m_scope;
+
+	m_issuer = issuer;
+	m_client_id = client_id;
+	m_scope = scope;
+	ChangeLogin(new_issuer, new_client_id, new_scope);
+
+	UpdateInfo();
+	UpdateLoginButton();
+	SetUiState(m_state);
 }
 
 /* 설정 창을 연다. bad_id 가 있으면 그 칸을 가리키며 연다. 저장했으면 true. */
@@ -260,6 +324,9 @@ bool CMainDlg::EditSettings(int bad_id, const CString &why)
 	dlg.m_issuer = m_issuer;
 	dlg.m_client_id = m_client_id;
 	dlg.m_scope = m_scope;
+	dlg.m_lock_servers = m_policy.has_servers != 0;
+	dlg.m_lock_issuer = m_policy.issuer[0] != L'\0';
+	dlg.m_lock_client_id = dlg.m_lock_issuer && m_policy.client_id[0] != L'\0';
 	if (bad_id != 0) {
 		dlg.PointAt(bad_id, why);
 	}
@@ -270,20 +337,7 @@ bool CMainDlg::EditSettings(int bad_id, const CString &why)
 	m_server = dlg.m_server;
 	m_port = dlg.m_port;
 	m_adapter = dlg.m_adapter;
-
-	/* 토큰은 그것을 준 IdP 와 클라이언트의 것이다. 바뀌었으면 들고 있던 로그인을 버린다. */
-	if (dlg.m_issuer != m_issuer || dlg.m_client_id != m_client_id || dlg.m_scope != m_scope) {
-		/* 옛 설정으로 로그아웃한다 — refresh token 폐기는 그것을 준 IdP 에 해야 한다. */
-		Logout(_T("로그인 설정이 바뀌어 로그아웃했습니다"));
-		m_issuer = dlg.m_issuer;
-		m_client_id = dlg.m_client_id;
-		m_scope = dlg.m_scope;
-		m_login_error.Empty();
-
-		CRect rc;
-		GetClientRect(&rc);
-		LayoutChildren(rc.Width(), rc.Height());	/* 로그인 버튼이 생기거나 사라진다 */
-	}
+	ChangeLogin(dlg.m_issuer, dlg.m_client_id, dlg.m_scope);
 
 	SaveSettings();
 	UpdateInfo();
@@ -298,12 +352,6 @@ void CMainDlg::OnSettings()
 {
 	if (m_state != TUNNEL_STATE_STOPPED) {
 		AfxMessageBox(_T("연결 중에는 설정을 바꿀 수 없습니다.\n먼저 [연결 해제] 를 누른 뒤 다시 열어 주세요."),
-				MB_ICONINFORMATION);
-		return;
-	}
-
-	if (PolicyManaged(m_policy)) {
-		AfxMessageBox(_T("이 PC 의 연결 설정은 회사 정책으로 관리됩니다.\n바꿔야 하면 관리자에게 문의하세요."),
 				MB_ICONINFORMATION);
 		return;
 	}
@@ -367,12 +415,18 @@ void CMainDlg::OnConnect()
 	tunnel_config_t cfg;
 
 	if (vpn_session_active(m_session)) {
-		if (m_policy.always_on) {
-			AfxMessageBox(_T("회사 정책으로 이 PC 는 늘 연결되어 있어야 합니다.\n연결을 끊을 수 없습니다."),
-					MB_ICONINFORMATION);
-			return;
+		/* AlwaysOn 이면 버튼과 메뉴가 이미 막혀 있다 (SetUiState, TrayMenu). 서비스도 받지 않는다. */
+		if (!m_policy.always_on) {
+			RequestDisconnect();
 		}
-		RequestDisconnect();
+		return;
+	}
+
+	if (m_server.IsEmpty()) {
+		AfxMessageBox(_T("연결할 서버가 아직 정해지지 않았습니다.\n\n")
+				_T("관리자에게 받은 초대 링크가 있으면 [기기 등록] 에 붙여 넣으세요. 서버와 포트도 함께 정해집니다.\n")
+				_T("서버 주소를 알고 있으면 [설정] 에 적어 주세요."), MB_ICONINFORMATION);
+		GotoDlgCtrl(GetDlgItem(m_device_id.IsEmpty() ? IDC_ENROLL : IDC_SETTINGS));
 		return;
 	}
 
@@ -421,6 +475,12 @@ void CMainDlg::OnEnroll()
 /* prefill 은 등록 창의 칸에 미리 넣을 것 (초대 링크). 칸에는 코드나 링크를 적는다. */
 void CMainDlg::Enroll(const CString &prefill)
 {
+	/* 등록 창과 메시지 상자는 메시지를 돌리므로 그사이에 또 온 링크가 창을 하나 더 열 수 있다 (OnInvite). */
+	struct Busy {
+		bool *flag;
+		explicit Busy(bool *f) : flag(f) { *flag = true; }
+		~Busy() { *flag = false; }
+	} busy(&m_enrolling);
 	device_t dev;
 	invite_t inv;
 	const bool invited = invite_parse(prefill, &inv) == 0;
@@ -429,10 +489,13 @@ void CMainDlg::Enroll(const CString &prefill)
 		return;
 	}
 
-	/* 열려 있는 터널은 예전 키로 인증한 세션이다. 지금 키를 바꾸면 화면의 기기 ID 와
-	 * 실제로 쓰이는 키가 어긋난다. 서비스도 터널이 열려 있는 동안에는 받지 않는다. */
-	if (vpn_session_active(m_session)) {
-		AfxMessageBox(_T("연결을 해제한 뒤에 등록하세요."), MB_ICONINFORMATION);
+	/* 돌고 있는 터널은 예전 키로 인증한 세션이다. 지금 키를 바꾸면 화면의 기기 ID 와
+	 * 실제로 쓰이는 키가 어긋난다. 서비스도 터널이 돌고 있는 동안에는 받지 않는다. 연결을
+	 * 원하기만 하는 중(AlwaysOn 인데 아직 등록되지 않았다)이면 받는다. */
+	if (vpn_remote_running(m_session)) {
+		AfxMessageBox(m_policy.always_on ?
+				_T("회사 정책으로 늘 연결되는 PC 라 터널이 열려 있는 동안에는 다시 등록할 수 없습니다.\n\n관리자에게 문의하세요.") :
+				_T("연결을 해제한 뒤에 등록하세요."), MB_ICONINFORMATION);
 		return;
 	}
 
@@ -449,20 +512,24 @@ void CMainDlg::Enroll(const CString &prefill)
 		return;
 	}
 
-	/* 보통은 관리자가 준 등록 코드로 올린다. 어느 서버에 올리는지는 연결 설정을
-	 * 그대로 쓴다 — 등록한 서버와 연결할 서버가 다를 이유가 없다. 초대 링크로 왔으면
-	 * 링크의 서버를 보여 준다 (정책이 서버를 정했으면 정책의 것). */
-	if (!invited && !SettingsUsable()) {
+	/* 보통은 관리자가 준 초대 링크나 등록 코드로 올린다. 코드만 적으면 연결 설정의 서버에 올린다 —
+	 * 등록한 서버와 연결할 서버가 다를 이유가 없다. 초대 링크로 왔으면 링크의 서버를 보여 준다
+	 * (정책이 서버를 정했으면 정책의 것). 서버가 아직 없으면 링크를 붙여 넣으라고 한다. */
+	if (!invited && !m_server.IsEmpty() && !SettingsUsable()) {
 		return;
 	}
 
-	CString where = m_server + _T(" : ") + m_port;
+	CString where = _T("올릴 서버  ") + m_server + _T(" : ") + m_port;
 
 	if (invited && !m_policy.has_servers) {
-		where.Format(_T("%s : %u"), inv.servers, (unsigned)inv.port);
+		where.Format(_T("올릴 서버  %s : %u"), inv.servers, (unsigned)inv.port);
 	}
+	else if (m_server.IsEmpty()) {
+		where = _T("서버가 아직 정해지지 않았습니다. 초대 링크를 붙여 넣어 주세요.");
+	}
+	SecureZeroMemory(&inv, sizeof(inv));
 
-	CEnrollCodeDlg ask(_T("올릴 서버  ") + where, this);
+	CEnrollCodeDlg ask(where, this);
 	ask.m_code = prefill;
 	INT_PTR choice = ask.DoModal();
 
@@ -473,7 +540,7 @@ void CMainDlg::Enroll(const CString &prefill)
 			CWaitCursor wait;
 
 			if (vpn_remote_enroll_manual(m_session, &dev) != DEVICE_OK) {
-				AfxMessageBox(_T("기기 등록에 실패했습니다."), MB_ICONERROR);
+				ShowEnrollError();
 				return;
 			}
 		}
@@ -494,38 +561,42 @@ void CMainDlg::Enroll(const CString &prefill)
 		return;
 	}
 
-	/* 칸에 링크를 붙여 넣었으면 링크의 서버와 포트를 연결 설정으로 삼는다. 정책이 서버를
-	 * 정했으면 그대로 두고 코드만 쓴다 — 링크가 관리자의 정책을 넘어서면 안 된다. */
+	/* 칸에 링크를 붙여 넣었으면 링크의 서버와 포트로 올린다. 연결 설정으로 삼는 것은 서버가
+	 * 받아 준 뒤다 — 틀린 링크 하나로 쓰던 설정을 잃지 않게. 정책이 서버를 정했으면 그대로 두고
+	 * 코드만 쓴다 — 링크가 관리자의 정책을 넘어서면 안 된다. */
 	CStringA code(ask.m_code);
+	CString servers = m_server;
+	CString port_text = m_port;
 
 	if (invite_like(ask.m_code)) {
 		if (invite_parse(ask.m_code, &inv) < 0) {
 			AfxMessageBox(_T("초대 링크를 읽을 수 없습니다. 관리자에게 링크를 다시 받아 주세요."), MB_ICONWARNING);
 			return;
 		}
-		if (!m_policy.has_servers && (m_server != inv.servers || (unsigned)_ttoi(m_port) != inv.port)) {
-			m_server = inv.servers;
-			m_port.Format(_T("%u"), (unsigned)inv.port);
-			SaveSettings();
-			UpdateInfo();
-			AppendLog(_T("[gui] 초대 링크의 서버로 설정: ") + m_server + _T(" : ") + m_port);
+		if (!m_policy.has_servers) {
+			servers = inv.servers;
+			port_text.Format(_T("%u"), (unsigned)inv.port);
 		}
 		code = inv.code;
 		SecureZeroMemory(&inv, sizeof(inv));
 	}
+	else if (servers.IsEmpty()) {
+		AfxMessageBox(_T("어느 서버에 올릴지 아직 정해지지 않았습니다.\n\n")
+				_T("관리자에게 받은 초대 링크를 붙여 넣거나, [설정] 에서 서버를 먼저 적어 주세요."), MB_ICONINFORMATION);
+		return;
+	}
 
-	/* 서버를 여럿 적었으면 첫 서버에 올린다. 서버들은 같은 기기 목록을 쓴다. */
-	const uint16_t port = static_cast<uint16_t>(_ttoi(m_port));
+	const uint16_t port = static_cast<uint16_t>(_ttoi(port_text));
 
 	int result;
 
 	{
-		/* 서비스가 서버와 주고받는 동안 창이 멈춘다. 길어야 십여 초이고, 그동안 할 수
+		/* 서비스가 서버와 주고받는 동안 창이 멈춘다. 길어야 수십 초이고, 그동안 할 수
 		 * 있는 일도 없다. 신원을 만들고 저장하는 것은 서비스다 — 키는 이 프로그램을
 		 * 지나가지 않는다. */
 		CWaitCursor wait;
 
-		result = vpn_remote_enroll(m_session, m_server, port, code);
+		result = vpn_remote_enroll(m_session, servers, port, code);
 	}
 
 	const bool saved = true;	/* 저장은 서비스가 했다. 못 했으면 result 가 OK 가 아니다 */
@@ -556,14 +627,53 @@ void CMainDlg::Enroll(const CString &prefill)
 		AfxMessageBox(_T("서버가 기기를 저장하지 못했습니다. 관리자에게 알려 주세요."), MB_ICONERROR);
 		return;
 	default:
-		AfxMessageBox(_T("기기 등록에 실패했습니다."), MB_ICONERROR);
+		ShowEnrollError();
 		return;
+	}
+
+	if (servers != m_server || port_text != m_port) {
+		m_server = servers;
+		m_port = port_text;
+		SaveSettings();
+		UpdateInfo();
+		AppendLog(_T("[gui] 초대 링크의 서버로 설정: ") + m_server + _T(" : ") + m_port);
 	}
 
 	LoadDeviceId();
 	RefreshPosture(false);
 	AppendLog(_T("[gui] 기기 등록: ") + m_device_id);
-	AfxMessageBox(_T("등록됐습니다. 이제 [연결]을 누르면 됩니다."), MB_ICONINFORMATION);
+	AfxMessageBox(_T("등록됐습니다 (") + servers + _T(").\n\n") + (vpn_remote_wanted(m_session) ?
+			CString(_T("곧 자동으로 연결됩니다.")) : CString(_T("이제 [연결]을 누르면 됩니다."))), MB_ICONINFORMATION);
+}
+
+/* 서비스가 등록을 끝내지 못했다 (TUNNEL_ENROLL_ERROR, DEVICE_ERROR). 무엇을 하면 되는지 말한다. */
+void CMainDlg::ShowEnrollError()
+{
+	LPCTSTR text;
+
+	switch (vpn_remote_enroll_error(m_session)) {
+	case IPC_ERR_BUSY:
+		text = _T("터널이 열려 있는 동안에는 등록할 수 없습니다.\n\n")
+			_T("[연결 해제] 를 누른 뒤 다시 해 주세요. 회사 정책으로 늘 연결되는 PC 면 관리자에게 문의하세요.");
+		break;
+	case IPC_ERR_BAD_REQUEST:
+		text = _T("서비스가 등록 요청을 받지 않았습니다. 서버 주소나 등록 코드의 모양이 맞지 않습니다.\n\n")
+			_T("관리자에게 초대 링크를 다시 받거나 [설정] 의 서버 주소를 확인하세요.");
+		break;
+	case IPC_ERR_NOT_ENROLLED:
+		text = _T("이 PC 는 아직 등록되지 않았습니다.\n\n")
+			_T("관리자에게 받은 초대 링크나 등록 코드로 다시 해 주세요.");
+		break;
+	default:
+		/* 등록하는 동안에는 메시지를 돌리지 않아 m_link 가 늦다. 지금 것을 묻는다. */
+		text = vpn_remote_link(m_session) != VPN_REMOTE_UP ?
+			_T("등록하는 동안 ztgate 서비스와의 연결이 끊겼습니다.\n\n")
+			_T("잠시 뒤 다시 해 주세요. 계속되면 IT 담당자에게 알려 주세요.") :
+			_T("기기 등록에 실패했습니다.\n\n")
+			_T("[진단] 의 로그를 확인하고, 계속되면 IT 담당자에게 알려 주세요.");
+		break;
+	}
+	AfxMessageBox(text, MB_ICONWARNING);
 }
 
 /* ---- 워커 -> UI -------------------------------------------------------- */
@@ -741,12 +851,15 @@ bool CMainDlg::ServiceReady()
 		return true;
 	case VPN_REMOTE_MISMATCH:
 		AfxMessageBox(_T("ztgate 서비스와 이 프로그램의 버전이 다릅니다.\n\n")
-				_T("업데이트가 아직 끝나지 않았을 수 있습니다. 잠시 뒤 다시 열어 보고, 그래도 같으면 ")
-				_T("ztgate 를 다시 설치하세요. 계속되면 IT 담당자에게 알려 주세요."), MB_ICONWARNING);
+				_T("업데이트로 서비스만 바뀌었을 수 있습니다. 알림 영역의 ztgate 아이콘을 오른쪽 클릭해 [종료] 를 ")
+				_T("누른 뒤 ztgate 를 다시 시작하세요. 그래도 같으면 ztgate 를 다시 설치하고, 계속되면 IT 담당자에게 ")
+				_T("알려 주세요."), MB_ICONWARNING);
 		return false;
 	case VPN_REMOTE_BUSY:
 		AfxMessageBox(_T("다른 프로그램이 이미 서비스에 붙어 있습니다.\n\n")
-				_T("이 창이 하나 더 떠 있는지 확인하세요."), MB_ICONWARNING);
+				_T("이 PC 에 로그온한 다른 Windows 사용자의 ztgate 가 서비스를 쓰고 있을 수 있습니다 (사용자 전환, ")
+				_T("원격 데스크톱). 그 사용자가 ztgate 를 끝내면 붙습니다. 이 창이 하나 더 떠 있는지도 확인하세요."),
+				MB_ICONWARNING);
 		return false;
 	default:
 		AfxMessageBox(_T("터널을 맡는 ztgate 서비스가 돌고 있지 않습니다.\n\n")
@@ -779,6 +892,7 @@ LRESULT CMainDlg::OnVpnService(WPARAM wParam, LPARAM)
 	/* 서비스에서 떨어지면 터널이 어떤 상태인지 이 프로그램은 모른다. 열려 있을 수도
 	 * 있다. 모르는 것을 "연결됨"으로 보여 주지 않는다. */
 	if (m_link != VPN_REMOTE_UP) {
+		m_device_known = false;
 		m_stopping = false;
 		SetUiState(TUNNEL_STATE_STOPPED);
 	}
@@ -797,8 +911,15 @@ LRESULT CMainDlg::OnVpnService(WPARAM wParam, LPARAM)
 
 LRESULT CMainDlg::OnVpnDevice(WPARAM, LPARAM)
 {
+	m_device_known = m_link == VPN_REMOTE_UP;
 	LoadDeviceId();
 	RefreshPosture(false);
+	UpdateStatus();
+
+	/* 서비스에 붙기를 기다리던 초대 링크. 이제 이 PC 가 등록됐는지 알고 물을 수 있다. */
+	if (m_device_known && !m_invite.IsEmpty()) {
+		PostMessage(WM_INVITE);
+	}
 
 	return 0;
 }
@@ -1570,8 +1691,12 @@ void CMainDlg::SetUiState(tunnel_state_t state)
 
 	/* 강조색 버튼은 "지금 할 일"에만 쓴다. 연결된 뒤의 해제는 흔한 동작이 아니므로
 	 * 보조 버튼으로 물러난다. */
-	connect->SetWindowText(stopped ? _T("연결") : m_stopping ? _T("해제 중…") : _T("연결 해제"));
-	connect->EnableWindow(!m_stopping);
+	/* AlwaysOn 이면 서비스가 해제를 받지 않는다. 눌러서 거절당하게 두지 않고 처음부터 막는다. */
+	const bool locked = !stopped && m_policy.always_on;
+
+	connect->SetWindowText(stopped ? _T("연결") : m_stopping ? _T("해제 중…") :
+			locked ? _T("회사 정책으로 늘 연결") : _T("연결 해제"));
+	connect->EnableWindow(!m_stopping && !locked);
 	ui::SetButtonKind(connect->GetSafeHwnd(), stopped ? ui::BUTTON_PRIMARY : ui::BUTTON_SECONDARY);
 	connect->Invalidate(FALSE);
 
@@ -1618,7 +1743,7 @@ void CMainDlg::UpdateInfo()
 	}
 
 	rows[INFO_USER] = LoginRow();
-	rows[INFO_SERVER].value = m_server + _T(" : ") + m_port;
+	rows[INFO_SERVER].value = m_server.IsEmpty() ? CString(_T("정해지지 않음")) : m_server + _T(" : ") + m_port;
 	rows[INFO_TUNNEL].value = m_tun_text.IsEmpty() ? CString(_T("연결하면 서버가 배정")) : m_tun_text;
 	/* 화살표(U+2191 / 2193)는 글꼴 대체로 컬러 이모지가 되어 혼자 튄다. 글자로 적는다. */
 	rows[INFO_TRAFFIC].value = _T("보냄 ") + BytesText(st.tx_bytes) + _T("   \x00b7   받음 ") + BytesText(st.rx_bytes);
@@ -1679,7 +1804,11 @@ CString CMainDlg::DenyHint() const
 	case DENY_TUN_IP:
 		return _T("서버의 기기 설정이 맞지 않습니다. 관리자에게 문의하세요.");
 	case TUNNEL_DENY_CLIENT_OLD:
-		return _T("서버가 이 프로그램보다 새 버전입니다. 업데이트를 확인하는 중입니다. 계속되면 관리자에게 새 버전을 받아 주세요.");
+		/* 자동 업데이트는 정책에 매니페스트 주소가 있을 때만 돈다 (svc update_tick). */
+		if (m_policy.update_url[0] != L'\0') {
+			return _T("서버가 이 프로그램보다 새 버전입니다. 업데이트를 확인하는 중입니다. 계속되면 관리자에게 새 버전을 받아 주세요.");
+		}
+		return _T("서버가 이 프로그램보다 새 버전입니다. 관리자에게 새 버전을 받아 설치해 주세요.");
 	case TUNNEL_DENY_SERVER_OLD:
 		return _T("서버가 이 프로그램보다 오래된 버전입니다. 관리자에게 서버 업데이트를 요청하세요.");
 	default:
@@ -1736,6 +1865,10 @@ void CMainDlg::UpdateStatus()
 		if (m_portal == portal::CAPTIVE) {
 			sub = _T("이 네트워크는 로그인해야 인터넷을 쓸 수 있습니다");
 			hint = _T("호텔·카페 와이파이처럼 로그인 페이지가 있는 망입니다. 여기를 누르면 로그인 페이지가 열리고, 로그인하면 자동으로 연결됩니다.");
+			/* 차단을 풀지는 않는다. 끊긴 동안 내부망을 막는 것이 그 정책의 뜻이다. */
+			if (m_policy.block_when_down) {
+				hint = _T("로그인 페이지가 있는 망입니다. 여기를 누르면 로그인 페이지가 열립니다. 회사 정책이 연결 전의 내부망 접속을 막고 있어 페이지가 열리지 않으면 IT 담당자에게 문의하세요.");
+			}
 			hintColor = c.warn;
 		}
 		else if (m_portal == portal::OFFLINE) {
@@ -1743,6 +1876,17 @@ void CMainDlg::UpdateStatus()
 			hint = _T("와이파이나 랜선 연결을 확인하세요. 네트워크가 돌아오면 자동으로 연결됩니다.");
 			hintColor = c.muted;
 		}
+	}
+	/* 서비스는 연결을 원하지만(AlwaysOn) 이 PC 에 신원이 없어 터널을 올리지 못하고 기다린다.
+	 * "다시 연결 중"으로 두면 서버를 탓하게 된다. */
+	if ((m_state == TUNNEL_STATE_CONNECTING || m_state == TUNNEL_STATE_RECONNECTING) &&
+			m_link == VPN_REMOTE_UP && m_device_known && m_device_id.IsEmpty() && !vpn_remote_running(m_session)) {
+		title = _T("등록 필요");
+		sub = _T("이 PC 는 아직 등록되지 않았습니다");
+		hint = _T("아래 [기기 등록] 에 관리자에게 받은 초대 링크나 코드를 넣어 주세요. 등록되면 자동으로 연결됩니다.");
+		hintColor = c.warn;
+		icon = ICON_WARNING;
+		color = c.warn;
 	}
 	switch (m_state) {
 	case TUNNEL_STATE_CONNECTING:
@@ -1765,13 +1909,17 @@ void CMainDlg::UpdateStatus()
 		/* 서비스에 붙지 못했으면 연결을 눌러도 아무 일도 일어나지 않는다. 그 이유가
 		 * 가장 먼저 보여야 한다. */
 		if (m_link == VPN_REMOTE_MISMATCH) {
-			hint = _T("서비스와 이 프로그램의 버전이 다릅니다. 업데이트 중일 수 있으니 잠시 뒤 다시 열고, 계속되면 ztgate 를 다시 설치하세요.");
+			hint = _T("서비스와 이 프로그램의 버전이 다릅니다. 알림 영역의 ztgate 아이콘을 오른쪽 클릭해 [종료] 한 뒤 ztgate 를 다시 시작하세요. 계속되면 다시 설치하세요.");
 		}
 		else if (m_link == VPN_REMOTE_BUSY) {
-			hint = _T("다른 프로그램이 이미 서비스에 붙어 있습니다. 이 창이 하나 더 떠 있는지 확인하세요.");
+			hint = _T("다른 프로그램이 서비스에 붙어 있습니다. 다른 Windows 사용자의 ztgate 일 수 있습니다 (사용자 전환, 원격 데스크톱). 이 창이 하나 더 떠 있는지도 확인하세요.");
 		}
 		else if (m_link != VPN_REMOTE_UP) {
 			hint = _T("터널을 맡는 ztgate 서비스가 돌고 있지 않습니다. PC 를 다시 시작하거나 ztgate 를 다시 설치해 보세요.");
+		}
+		else if (m_server.IsEmpty()) {
+			hint = _T("연결할 서버가 아직 정해지지 않았습니다. 아래 [기기 등록] 에 관리자에게 받은 초대 링크를 붙여 넣거나 [설정] 에서 서버를 적어 주세요.");
+			hintColor = c.muted;
 		}
 		else if (m_device_id.IsEmpty()) {
 			hint = _T("이 PC 는 아직 등록되지 않았습니다. 아래 [기기 등록] 에 관리자에게 받은 코드를 넣어 주세요.");
@@ -1832,6 +1980,19 @@ void CMainDlg::OnTimer(UINT_PTR id)
 
 		CheckLoginExpiry();
 		CheckPortal();
+
+		if (++m_policy_ticks >= POLICY_REFRESH_TICKS) {
+			m_policy_ticks = 0;
+			ReloadPolicy();
+		}
+
+		/* 초대 링크로 떴는데 서비스에 붙지 못한다. 기다리게만 두지 않고 까닭을 알린다. */
+		if (!m_invite.IsEmpty() && m_invite_at != 0 && m_link != VPN_REMOTE_UP && !m_enrolling &&
+				GetTickCount64() - m_invite_at > INVITE_WAIT_MS) {
+			m_invite.Empty();
+			m_invite_at = 0;
+			ServiceReady();
+		}
 
 		/* 토큰이 끝나기 전에 refresh token 으로 새 것을 받아 온다. */
 		if (m_refresh_at != 0 && GetTickCount64() >= m_refresh_at && !m_login_thread) {
@@ -2254,8 +2415,10 @@ void CMainDlg::NotifyTransition(tunnel_state_t prev, tunnel_state_t now, bool us
 		TrayNotify(_T("연결됨"), prev == TUNNEL_STATE_RECONNECTING ?
 				CString(_T("사내망에 다시 연결됐습니다.")) : CString(_T("사내망에 연결됐습니다.")), false);
 	}
+	/* 서비스에서 떨어진 것(업데이트로 다시 뜬다)이나 서비스가 스스로 다시 올리는 중은 끊긴 것이 아니다. */
 	else if (now == TUNNEL_STATE_STOPPED && !userStop && m_deny_reason == 0 &&
-			(prev == TUNNEL_STATE_CONNECTED || prev == TUNNEL_STATE_RECONNECTING)) {
+			(prev == TUNNEL_STATE_CONNECTED || prev == TUNNEL_STATE_RECONNECTING) &&
+			m_link == VPN_REMOTE_UP && !vpn_remote_wanted(m_session)) {
 		TrayNotify(_T("연결이 끊겼습니다"),
 				CString(_T("다시 연결하려면 ztgate 를 열어 [연결] 을 누르세요.")), true);
 	}
@@ -2304,8 +2467,10 @@ void CMainDlg::TrayMenu(int x, int y)
 	AppendMenuW(menu, MF_STRING, CMD_OPEN, L"ztgate 열기");
 	SetMenuDefaultItem(menu, CMD_OPEN, FALSE);
 	AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-	AppendMenuW(menu, MF_STRING | (m_stopping ? MF_GRAYED : 0), CMD_CONNECT,
-			active ? L"연결 해제" : L"연결");
+	const bool locked = active && m_policy.always_on;
+
+	AppendMenuW(menu, MF_STRING | ((m_stopping || locked) ? MF_GRAYED : 0), CMD_CONNECT,
+			locked ? L"회사 정책으로 늘 연결" : active ? L"연결 해제" : L"연결");
 	if (!m_issuer.IsEmpty()) {
 		CString item;
 

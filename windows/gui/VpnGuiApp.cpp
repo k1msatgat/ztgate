@@ -55,14 +55,21 @@ BOOL CVpnGuiApp::InitInstance()
 	m_instance = CreateMutexW(nullptr, FALSE, L"Local\\ztgate-gui");
 	if (m_instance && GetLastError() == ERROR_ALREADY_EXISTS) {
 		HWND other = nullptr;
+		DWORD_PTR taken = 0;
 
-		EnumWindows([](HWND w, LPARAM p) -> BOOL {
-			if (GetPropW(w, CMainDlg::kWindowProp)) {
-				*reinterpret_cast<HWND *>(p) = w;
-				return FALSE;
+		/* 먼저 뜬 쪽이 아직 창을 만들고 있을 수 있다 (링크를 연달아 눌러 둘이 거의 함께 떴다). */
+		for (int i = 0; i < 20 && !other; i++) {
+			if (i > 0) {
+				Sleep(100);
 			}
-			return TRUE;
-		}, reinterpret_cast<LPARAM>(&other));
+			EnumWindows([](HWND w, LPARAM p) -> BOOL {
+				if (GetPropW(w, CMainDlg::kWindowProp)) {
+					*reinterpret_cast<HWND *>(p) = w;
+					return FALSE;
+				}
+				return TRUE;
+			}, reinterpret_cast<LPARAM>(&other));
+		}
 		if (other) {
 			COPYDATASTRUCT cd;
 
@@ -70,9 +77,18 @@ BOOL CVpnGuiApp::InitInstance()
 			cd.cbData = static_cast<DWORD>((link.GetLength() + 1) * sizeof(wchar_t));
 			cd.lpData = const_cast<LPWSTR>(static_cast<LPCWSTR>(link));
 			AllowSetForegroundWindow(ASFW_ANY);
-			SendMessageTimeoutW(other, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cd), SMTO_ABORTIFHUNG, 3000, nullptr);
-			return FALSE;
+			if (!SendMessageTimeoutW(other, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cd), SMTO_ABORTIFHUNG,
+						3000, &taken)) {
+				taken = 0;
+			}
 		}
+
+		/* 넘기지 못했어도 둘째 창은 띄우지 않는다. 서비스에는 GUI 하나만 붙는다. */
+		if (!taken && invite_like(link)) {
+			AfxMessageBox(_T("ztgate 가 이미 실행 중이지만 초대 링크를 넘기지 못했습니다.\n\n")
+					_T("알림 영역의 ztgate 아이콘으로 창을 열고 [기기 등록] 에 링크를 붙여 넣어 주세요."), MB_ICONWARNING);
+		}
+		return FALSE;
 	}
 
 	CMainDlg dlg;

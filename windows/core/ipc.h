@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	7	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로 */
+#define IPC_VERSION	8	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로, 8: 상태에 터널이 도는지 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -88,7 +88,7 @@ typedef struct ipc_dpop {
 } ipc_dpop_t;
 
 typedef struct ipc_enroll {
-	wchar_t servers[TUNNEL_SERVERS_LEN];	/* 첫 주소에 올린다 */
+	wchar_t servers[TUNNEL_SERVERS_LEN];	/* 받아 주는 주소에 차례로 올린다 (tunnel_enroll) */
 	uint16_t server_port;
 	char code[IPC_CODE_LEN];
 } ipc_enroll_t;
@@ -100,6 +100,9 @@ typedef struct ipc_enroll {
 typedef struct ipc_state {
 	uint32_t state;		/* tunnel_state_t */
 	uint32_t wanted;	/* 사용자가 연결을 원한 상태인가. 끊겨도 서비스가 다시 시도한다 */
+	uint32_t running;	/* 서비스 안에서 터널이 돌고 있다. wanted 여도 다시 올리기를 기다리는 동안
+				 * (등록되지 않았다, 지난번이 끝났다)은 0 이다 — 그때는 등록을 받는다 */
+	uint32_t reserved;
 	uint64_t connected_ms;	/* 연결된 뒤 지난 ms. 재연결 동안은 이어서 세고, 끊기거나 거부되면 0 */
 } ipc_state_t;
 

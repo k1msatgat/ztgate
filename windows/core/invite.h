@@ -39,21 +39,28 @@ static __inline int invite_value(const wchar_t *s, size_t n, wchar_t *out, size_
 
 	for (size_t i = 0; i < n; i++) {
 		int hi, lo;
+		unsigned char b;
 
 		if (m + 1 >= sizeof(bytes)) {
 			return -1;
 		}
 		if (s[i] == L'%' && i + 2 < n &&
 				(hi = invite_hex(s[i + 1])) >= 0 && (lo = invite_hex(s[i + 2])) >= 0) {
-			bytes[m++] = (char)(hi * 16 + lo);
+			b = (unsigned char)(hi * 16 + lo);
 			i += 2;
 		}
 		else if (s[i] < 0x80) {
-			bytes[m++] = s[i] == L'+' ? ' ' : (char)s[i];
+			b = s[i] == L'+' ? ' ' : (unsigned char)s[i];
 		}
 		else {
 			return -1;	/* 링크는 ASCII 다. 국제 도메인은 %XX 로 온다 */
 		}
+		/* 공백과 제어 문자는 어느 값에도 없다. 받아 주면 공백이 서버 목록을 쪼개고(구분자다)
+		 * %00 이 서버나 코드를 그 자리에서 자른다. */
+		if (b < 0x21) {
+			return -1;
+		}
+		bytes[m++] = (char)b;
 	}
 	bytes[m] = '\0';
 	return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, -1, out, (int)cap) > 0 ? 0 : -1;

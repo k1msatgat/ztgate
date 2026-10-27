@@ -9,8 +9,9 @@
 #define RETRY_MSEC		1000
 #define SEND_TIMEOUT_MSEC	3000
 
-/* 등록의 답을 기다리는 한도. 서비스 쪽의 핸드셰이크와 재시도를 다 합쳐도 이보다 짧다. */
-#define ENROLL_WAIT_MSEC	30000
+/* 등록의 답을 기다리는 한도. 서비스는 주소마다 핸드셰이크와 재시도로 10초 남짓을 쓰고, 주소는
+ * TUNNEL_SERVERS_MAX 개까지 차례로 해 본다. */
+#define ENROLL_WAIT_MSEC	60000
 
 struct vpn_session {
 	HWND notify;
@@ -22,6 +23,8 @@ struct vpn_session {
 	HANDLE pipe;		/* 붙어 있지 않으면 INVALID_HANDLE_VALUE */
 	int link;		/* vpn_remote_link_t */
 	int active;		/* 터널이 열려 있거나 서비스가 열려고 하는 중이다 */
+	int running;		/* 서비스 안에서 터널이 돌고 있다 (ipc_state.running) */
+	int wanted;		/* 서비스가 터널을 스스로 다시 올린다 (ipc_state.wanted) */
 	ULONGLONG connected_since;	/* 터널이 연결된 때 (이 PC 의 GetTickCount64). 0 이면 연결되지 않았다 */
 	int enrolled;
 	uint8_t device_id[DEVICE_ID_LEN];
@@ -37,6 +40,7 @@ struct vpn_session {
 	/* 등록의 답을 기다리는 자리. */
 	HANDLE enroll_done;	/* manual-reset */
 	ipc_enroll_result_t enroll_result;
+	uint32_t enroll_error;	/* 등록 명령을 서비스가 받지 않았다 (ipc_error_code_t), 0 이면 아니다 */
 	HANDLE dpop_done;	/* manual-reset */
 	ipc_dpop_t dpop;
 	CRITICAL_SECTION dpop_lock;	/* 증명 요청은 한 번에 하나 */
@@ -150,6 +154,8 @@ static void on_state(vpn_session_t *s, const uint8_t *body, uint32_t len)
 	EnterCriticalSection(&s->lock);
 	was_active = s->active;
 	s->active = active;
+	s->running = st.running != 0;
+	s->wanted = st.wanted != 0;
 	/* 받은 지금에서 지난 양을 빼 연결된 때로 바꿔 둔다. 화면이 이것을 읽는 것은 아래의
 	 * WM_VPN_STATE 를 받은 뒤다. */
 	s->connected_since = st.connected_ms ? GetTickCount64() - st.connected_ms : 0;
@@ -177,6 +183,7 @@ static void on_error(vpn_session_t *s, const uint8_t *body, uint32_t len)
 	EnterCriticalSection(&s->lock);
 	memset(&s->enroll_result, 0, sizeof(s->enroll_result));
 	s->enroll_result.result = TUNNEL_ENROLL_ERROR;
+	s->enroll_error = e.code;
 	LeaveCriticalSection(&s->lock);
 	SetEvent(s->enroll_done);
 
@@ -363,6 +370,8 @@ out:
 	EnterCriticalSection(&s->lock);
 	s->enroll_result.result = TUNNEL_ENROLL_ERROR;
 	s->active = 0;
+	s->running = 0;
+	s->wanted = 0;
 	memset(&s->login, 0, sizeof(s->login));	/* 서비스는 떨어진 GUI 의 토큰을 버린다 */
 	LeaveCriticalSection(&s->lock);
 	SetEvent(s->enroll_done);
@@ -575,6 +584,30 @@ ULONGLONG vpn_remote_connected_since(vpn_session_t *s)
 	return since;
 }
 
+int vpn_remote_running(const vpn_session_t *s)
+{
+	return s != NULL && s->link == VPN_REMOTE_UP && s->running;
+}
+
+int vpn_remote_wanted(const vpn_session_t *s)
+{
+	return s != NULL && s->link == VPN_REMOTE_UP && s->wanted;
+}
+
+uint32_t vpn_remote_enroll_error(vpn_session_t *s)
+{
+	uint32_t code;
+
+	if (!s) {
+		return 0;
+	}
+	EnterCriticalSection(&s->lock);
+	code = s->enroll_error;
+	LeaveCriticalSection(&s->lock);
+
+	return code;
+}
+
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN])
 {
 	int enrolled;
@@ -597,6 +630,9 @@ static int enroll_wait(vpn_session_t *s, uint32_t type, const void *body, uint32
 		ipc_enroll_result_t *out)
 {
 	ResetEvent(s->enroll_done);
+	EnterCriticalSection(&s->lock);
+	s->enroll_error = 0;
+	LeaveCriticalSection(&s->lock);
 
 	if (command(s, type, body, len) < 0) {
 		return -1;

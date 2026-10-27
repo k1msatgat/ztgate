@@ -93,6 +93,11 @@ static int parse_selftest(void)
 	failed |= st("invite: missing code", invite_parse(L"ztgate://enroll?server=a&port=1", &inv) == -1);
 	failed |= st("invite: bad port", invite_parse(L"ztgate://enroll?server=a&port=70000&code=x", &inv) == -1);
 	failed |= st("invite: bad server", invite_parse(L"ztgate://enroll?server=a%20b%21&port=1&code=x", &inv) == -1);
+	failed |= st("invite: plus in value", invite_parse(L"ztgate://enroll?server=a+b&port=1&code=x", &inv) == -1);
+	failed |= st("invite: %20 in server", invite_parse(L"ztgate://enroll?server=a.com%20b.com&port=1&code=x", &inv) == -1);
+	failed |= st("invite: %00 in server", invite_parse(L"ztgate://enroll?server=a.com%00evil&port=1&code=x", &inv) == -1);
+	failed |= st("invite: %00 in code", invite_parse(L"ztgate://enroll?server=a&port=1&code=AB%00CD", &inv) == -1);
+	failed |= st("invite: control char", invite_parse(L"ztgate://enroll?server=a&port=1&code=AB%0ACD", &inv) == -1);
 	failed |= st("invite: other scheme", invite_parse(L"https://enroll?server=a&port=1&code=x", &inv) == -1);
 	return failed;
 }

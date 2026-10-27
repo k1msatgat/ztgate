@@ -38,6 +38,12 @@
 /* 이 PC 의 보안 상태를 다시 읽는 주기 (틱 수). 코어의 보고 주기와 같은 2초. */
 #define POSTURE_REFRESH_TICKS 4
 
+/* 관리 정책을 다시 읽는 주기 (틱 수, 10초). 서비스는 레지스트리 알림으로 알지만 GUI 는 묻기만 한다. */
+#define POLICY_REFRESH_TICKS 20
+
+/* 초대 링크로 떴는데 서비스에 붙지 못한 채 이만큼 지나면 까닭을 알린다. */
+#define INVITE_WAIT_MS 5000
+
 /* 주 창의 치수 (96 DPI 기준 픽셀, ui::Scale 로 늘린다) */
 #define HOME_WIDTH		380
 #define HOME_PAD		16	/* 창 가장자리와 판 안쪽의 여백 */
@@ -155,6 +161,9 @@ protected:
 private:
 	bool BuildConfig(tunnel_config_t &cfg);
 	void Enroll(const CString &prefill);
+	void ShowEnrollError();
+	void ReloadPolicy();
+	void ChangeLogin(const CString &issuer, const CString &client_id, const CString &scope);
 	void AppendLog(const CString &text);
 	void RequestDisconnect();
 	bool EditSettings(int bad_id, const CString &why);
@@ -203,7 +212,11 @@ private:
 	posture_t m_local;
 	int m_deny_reason;		/* 마지막 거부 사유, 없으면 0 */
 	CString m_device_id;		/* 비어 있으면 미등록 */
+	bool m_device_known = false;	/* 서비스가 등록 상태를 알려 줬다. 그 전의 m_device_id 는 모르는 것이다 */
 	int m_posture_ticks;
+	int m_policy_ticks = 0;
+	bool m_enrolling = false;	/* 등록 창이나 그 뒤의 안내가 떠 있다 */
+	ULONGLONG m_invite_at = 0;	/* m_invite 가 서비스를 기다리기 시작한 때, 0 이면 기다리지 않는다 */
 
 	uint32_t m_session_idx;		/* 지금 세션, 없으면 0 */
 	CString m_tun_text;		/* 서버가 배정한 터널 주소. 같은 값으로 다시 그리지 않으려고 기억한다 */
