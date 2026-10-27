@@ -1,0 +1,80 @@
+#!/bin/sh
+# 이중화: 이 서버(주)의 설정을 다른 서버(부)들에 밀어 넣고 다시 읽게 한다.
+#
+#   ztgate-sync            /etc/ztgate/sync.conf 의 PEERS 모두에게
+#
+# 서버들은 같은 기기 목록, ACL, 서버 키를 써야 클라이언트가 어느 서버로 넘어가도 같은 판정을 받는다
+# (README 의 "서버 여러 대"). 설정을 고치는 곳은 주 서버 하나다. 부 서버에는 .sync-primary 표시가
+# 생기고, 그 서버의 ztgate_ctl 은 설정을 고치는 명령을 거절한다 — 고쳐 봐야 다음 동기화가 덮는다.
+# 등록 코드(enroll.conf)는 보내지 않는다. 기기는 주 서버에서 등록한다.
+#
+# ztgate-sync.path 가 기기 목록이나 ACL 이 바뀔 때마다 부르고, ztgate-sync.timer 가 5분마다 한 번 더
+# 부른다 (그때 꺼져 있던 부 서버를 따라잡게).
+#
+# sync.conf (셸 변수):
+#   PEERS="ztgate@10.0.0.11"        부 서버들. user@host 면 ssh 로, / 로 시작하면 이 PC 의 폴더로 (시험용)
+#   SSH_KEY=/etc/ztgate/sync.key     부 서버의 그 계정에 등록한 키 (기본: root 의 키)
+#   RSYNC_PATH="sudo rsync"          부 서버에서 /etc/ztgate 에 쓰는 명령. 그 계정에 이 둘만 NOPASSWD 로 연다:
+#   RELOAD="sudo systemctl reload ztgate"     rsync, systemctl reload ztgate
+set -eu
+
+ETC=${ZTGATE_ETC:-/etc/ztgate}
+CONF=${ZTGATE_SYNC_CONF:-$ETC/sync.conf}
+# 서버 키도 간다 — 같은 서버 키라야 등록 때 고정한 서버 공개키로 어느 서버에나 붙는다. server.env 는
+# 서버마다 다르다 (FORWARD_OUT 의 인터페이스 이름 등).
+FILES="devices.conf acl.conf idp.conf jwks.json dns.conf server.key"
+
+if [ ! -r "$CONF" ]; then
+	echo "ztgate-sync: $CONF not found; write PEERS=\"user@host ...\" there" >&2
+	exit 1
+fi
+PEERS=
+SSH_KEY=
+RSYNC_PATH="sudo rsync"
+RELOAD="sudo systemctl reload ztgate"
+. "$CONF"
+if [ -z "$PEERS" ]; then
+	echo "ztgate-sync: no PEERS in $CONF" >&2
+	exit 1
+fi
+if [ -e "$ETC/.sync-primary" ]; then
+	echo "ztgate-sync: this server takes its configuration from $(cat "$ETC/.sync-primary"); run it there" >&2
+	exit 1
+fi
+
+ssh_cmd="ssh -o BatchMode=yes -o ConnectTimeout=10"
+[ -n "$SSH_KEY" ] && ssh_cmd="$ssh_cmd -i $SSH_KEY"
+
+mark=$(mktemp)
+trap 'rm -f "$mark"' EXIT
+hostname > "$mark"
+
+cd "$ETC"
+failed=0
+for peer in $PEERS; do
+	# 주에 없는 파일(acl.conf 를 지웠다)은 부에서도 지운다 (--delete-missing-args). 파일마다 옆에 쓰고
+	# 이름을 바꾸므로 부 서버가 반쯤 쓰인 파일을 읽지 않는다. 다시 읽기는 다 보낸 뒤 한 번. -c: 같은 초에
+	# 같은 크기로 바뀐 파일(이름표를 같은 길이로 고쳤다)도 내용으로 가려 보낸다.
+	case $peer in
+	/*)
+		if rsync -ac --delete-missing-args $FILES "$peer/" && cp "$mark" "$peer/.sync-primary" &&
+				sh -c "$RELOAD"; then
+			echo "ztgate-sync: $peer: done"
+		else
+			echo "ztgate-sync: $peer: failed" >&2
+			failed=1
+		fi
+		;;
+	*)
+		if rsync -ac --delete-missing-args -e "$ssh_cmd" --rsync-path="$RSYNC_PATH" $FILES "$peer:$ETC/" &&
+				rsync -a -e "$ssh_cmd" --rsync-path="$RSYNC_PATH" "$mark" "$peer:$ETC/.sync-primary" &&
+				$ssh_cmd "$peer" "$RELOAD"; then
+			echo "ztgate-sync: $peer: done"
+		else
+			echo "ztgate-sync: $peer: failed" >&2
+			failed=1
+		fi
+		;;
+	esac
+done
+exit $failed

@@ -1,0 +1,15 @@
+# 기기 목록, ACL, 로그인 설정, DNS, 서버 키가 바뀌면 곧바로 부 서버들에 보낸다.
+[Unit]
+Description=Sync ztgate configuration when it changes
+
+[Path]
+PathChanged=/etc/ztgate/devices.conf
+PathChanged=/etc/ztgate/acl.conf
+PathChanged=/etc/ztgate/idp.conf
+PathChanged=/etc/ztgate/jwks.json
+PathChanged=/etc/ztgate/dns.conf
+PathChanged=/etc/ztgate/server.key
+Unit=ztgate-sync.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# 바뀌었을 때 꺼져 있던 부 서버를 따라잡게 5분마다 한 번 더.
+[Unit]
+Description=Periodic ztgate configuration sync
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

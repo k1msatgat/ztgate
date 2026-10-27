@@ -902,6 +902,12 @@ function reload() {
  * 서버는 200ms 만 기다리므로 잠금 안에서는 파일을 고치는 것만 한다 — 서버에 다시 읽게 하고
  * 그 결과를 기다리는 것(최대 3초)은 풀고 나서 한다 (명령이 [RELOAD] 를 돌려주면 main 이). */
 const LOCKED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove', 'enroll_create', 'enroll_revoke']);
+
+/* 이중화의 부 서버 (tools/sync/ztgate-sync 가 남긴 표시). 설정은 주 서버에서만 고친다 — 여기서 고치면
+ * 다음 동기화가 덮어 버리고, 그 사이에는 서버마다 판정이 다르다. */
+const SYNC_MARK = `${ETC}/.sync-primary`;
+const SYNCED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove', 'enroll_create', 'enroll_revoke',
+	'acl_set', 'acl_clear']);
 const RELOAD = Symbol('reload');
 
 function withConfigLock(fn) {
@@ -1339,6 +1345,9 @@ async function main() {
 		req = JSON.parse(fs.readFileSync(0, 'utf8'));
 		if (req === null || typeof req !== 'object' || !Object.hasOwn(COMMANDS, req.cmd)) {
 			fail(`unknown command (${Object.keys(COMMANDS).join(', ')})`);
+		}
+		if (SYNCED_COMMANDS.has(req.cmd) && fs.existsSync(SYNC_MARK)) {
+			fail(`this server takes its configuration from ${fs.readFileSync(SYNC_MARK, 'utf8').trim()}; change it there`);
 		}
 		let r = LOCKED_COMMANDS.has(req.cmd)
 			? await withConfigLock(() => COMMANDS[req.cmd](req))

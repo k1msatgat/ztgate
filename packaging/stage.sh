@@ -15,6 +15,7 @@
 #   /usr/sbin/ztgate_ctl                         관리 헬퍼 (node 가 있어야 돈다)
 #   /usr/bin/ztgate                              운영자가 터미널에서 읽는 상태 (ztgate status 등)
 #   /usr/sbin/ztgate-backup                      설정과 서버 키의 백업 / 되살리기 (+ ztgate-backup.timer, 하루 한 번)
+#   /usr/sbin/ztgate-sync                        이중화: 주 서버의 설정을 부 서버들에 (+ .path, .timer. 켜지 않는다)
 #   /etc/logrotate.d/ztgate                      감사 로그 돌리기
 #   /usr/share/doc/ztgate-server/                라이선스(copyright)와 서드파티 고지
 #   /usr/lib/systemd/system/ztgate.service, ztgate-exporter.service, ztgate-console.service, ztgate-jwks.{service,timer}
@@ -43,6 +44,8 @@ install -m 755 "$ROOT/mcp/ctl.cjs" "$S/usr/sbin/ztgate_ctl"
 install -m 755 "$ROOT/tools/cli/ztgate" "$S/usr/bin/ztgate"
 install -m 755 "$ROOT/tools/backup/ztgate-backup" "$S/usr/sbin/ztgate-backup"
 install -m 644 "$ROOT/tools/backup/ztgate-backup.service" "$ROOT/tools/backup/ztgate-backup.timer" "$S/usr/lib/systemd/system/"
+install -m 755 "$ROOT/tools/sync/ztgate-sync" "$S/usr/sbin/ztgate-sync"
+install -m 644 "$ROOT/tools/sync/ztgate-sync.service" "$ROOT/tools/sync/ztgate-sync.path" "$ROOT/tools/sync/ztgate-sync.timer" "$S/usr/lib/systemd/system/"
 install -m 644 "$ROOT/packaging/ztgate.logrotate" "$S/etc/logrotate.d/ztgate"
 install -m 644 "$ROOT/LICENSE" "$S/usr/share/doc/ztgate-server/copyright"
 install -m 644 "$ROOT/THIRD_PARTY_NOTICES.md" "$S/usr/share/doc/ztgate-server/THIRD_PARTY_NOTICES.md"

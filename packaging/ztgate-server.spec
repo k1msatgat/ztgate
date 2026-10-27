@@ -7,7 +7,7 @@ License:        Proprietary
 URL:            https://github.com/k1msatgat/ztgate
 Requires:       openssl-libs >= 3.0, iproute, python3
 Requires(post): shadow-utils
-Recommends:     nftables, nodejs
+Recommends:     nftables, nodejs, rsync
 # 미리 빌드한 실행 파일을 담는다. 하드닝 플래그는 Makefile 이 넣고 디버그 정보는 stage.sh 가 뗀다.
 %global debug_package %{nil}
 %global __strip /bin/true
@@ -28,7 +28,7 @@ cp -a @STAGE@/. %{buildroot}/
 %preun
 # 지울 때만 (업그레이드는 $1 = 1). /etc/ztgate 는 남긴다.
 if [ "$1" = 0 ] && command -v systemctl > /dev/null 2>&1; then
-	systemctl disable --now ztgate.service ztgate-exporter.service ztgate-console.service ztgate-jwks.timer ztgate-backup.timer 2>/dev/null || true
+	systemctl disable --now ztgate.service ztgate-exporter.service ztgate-console.service ztgate-jwks.timer ztgate-backup.timer ztgate-sync.path ztgate-sync.timer 2>/dev/null || true
 fi
 
 %files
@@ -36,6 +36,10 @@ fi
 /usr/sbin/ztgate_ctl
 /usr/bin/ztgate
 /usr/sbin/ztgate-backup
+/usr/sbin/ztgate-sync
+/usr/lib/systemd/system/ztgate-sync.service
+/usr/lib/systemd/system/ztgate-sync.path
+/usr/lib/systemd/system/ztgate-sync.timer
 %config(noreplace) /etc/logrotate.d/ztgate
 /usr/share/doc/ztgate-server
 /usr/lib/systemd/system/ztgate-backup.service

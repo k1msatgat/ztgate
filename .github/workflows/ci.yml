@@ -65,6 +65,9 @@ jobs:
       - name: Backup and restore (test/backup_check.sh)
         run: test/backup_check.sh
 
+      - name: Configuration sync between servers (test/sync_check.sh)
+        run: test/sync_check.sh
+
       - name: MCP server syntax
         working-directory: mcp
         run: |
@@ -239,6 +242,11 @@ jobs:
           backup=$(sudo ztgate-backup)
           sudo tar -tzf "$backup" | grep -qx ztgate/server.key
           sudo test -f /etc/logrotate.d/ztgate
+          # 이중화의 부 서버는 설정을 고치지 않는다 (ztgate-sync 의 표시).
+          echo primary.example | sudo tee /etc/ztgate/.sync-primary > /dev/null
+          echo '{"cmd":"acl_clear"}' | sudo /usr/sbin/ztgate_ctl | python3 -c 'import json,sys; r=json.load(sys.stdin); assert not r["ok"] and "primary.example" in r["error"], r'
+          sudo rm /etc/ztgate/.sync-primary
+          test -x /usr/sbin/ztgate-sync && systemctl cat ztgate-sync.path > /dev/null
           sudo apt-get install -y -qq --reinstall ./out/ztgate-server_*.deb > /dev/null
           systemctl is-active ztgate
           [ "$(sudo sha256sum /etc/ztgate/server.key)" = "$key" ]
