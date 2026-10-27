@@ -35,7 +35,7 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 
 > **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 47개, 운영 CLI 시험 16개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
 
-운영자는 [운영자 안내서](docs/guide/admin.md), Windows 사용자는 [사용자 안내서](docs/guide/user.md)부터 읽으면 됩니다. 이 README 는 구조와 프로토콜, 모든 옵션을 다룹니다.
+서버를 운영한다면 [ztgate 서버 운영하기](docs/guide/admin.md)와 [운영 참고](docs/guide/admin-reference.md)를, Windows 에서 접속한다면 [사용자 안내서](docs/guide/user.md)를 먼저 읽습니다. 이 README 는 구조, 프로토콜, 모든 옵션을 다룹니다.
 
 ## 한눈에 보기
 
