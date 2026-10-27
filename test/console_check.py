@@ -41,7 +41,8 @@ answers = {
     "device_list": {"ok": True, "devices": [{"id": "ab" * 16, "label": "laptop", "tunnel_ip": "10.0.0.3",
                                              "key_type": "p256", "requirements": {"firewall": True}}]},
     "enroll_list": {"ok": True, "pending": []},
-    "enroll_create": {"ok": True, "code": "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE", "enrollment": {"tunnel_ip": "10.0.0.9"}},
+    "enroll_create": {"ok": True, "code": "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE", "enrollment": {"tunnel_ip": "10.0.0.9"},
+                      "invite": "ztgate://enroll?server=vpn.example.com&port=9000&code=AAAAA-BBBBB-CCCCC-DDDDD-EEEEE&x=<b>"},
     "device_remove": {"ok": True, "removed": req.get("id")},
     "device_update": {"ok": True, "device": {"id": req.get("id")}},
     "acl_get": {"ok": True, "enabled": True, "rules": [{"src": "10.0.0.0/24", "dst": "10.0.0.1", "proto": "icmp",
@@ -156,6 +157,9 @@ def main():
         st, _, body = req("POST", "/enroll/create", {"csrf": csrf, "label": "kim", "tags": "eng laptop",
                                                     "firewall": "on", "disk": "on", "ttl": "30"}, cookie=sid)
         expect("make an enrollment code: shown", (st, "AAAAA-BBBBB-CCCCC-DDDDD-EEEEE" in body), (200, True))
+        expect("...with the invite link, escaped",
+               ("ztgate://enroll?server=vpn.example.com&amp;port=9000&amp;code=AAAAA-BBBBB-CCCCC-DDDDD-EEEEE&amp;x=&lt;b&gt;" in body,
+                "PUBLIC_ADDRESS=" in body), (True, False))
         expect("...with what was filled in", ctl_cmds()[-2] if ctl_cmds()[-1]["cmd"] == "enroll_list" else ctl_cmds()[-1],
                {"requirements": {"firewall": True, "disk": True}, "label": "kim", "tags": ["eng", "laptop"],
                 "ttl_minutes": 30, "cmd": "enroll_create", "actor": "console:token"})

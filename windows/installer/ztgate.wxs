@@ -83,6 +83,13 @@
           <Shortcut Id="GuiShortcut" Directory="ProgramMenuFolder" Name="ztgate"
                     Description="ztgate: connect, sign in, diagnostics" WorkingDirectory="INSTALLFOLDER" Advertise="yes" />
         </File>
+        <!-- 초대 링크 (ztgate://enroll?server=...&port=...&code=...) 를 누르면 GUI 의 등록 창이 열린다. -->
+        <RegistryKey Root="HKLM" Key="Software\Classes\ztgate">
+          <RegistryValue Type="string" Value="URL:ztgate invite" />
+          <RegistryValue Name="URL Protocol" Type="string" Value="" />
+          <RegistryValue Key="DefaultIcon" Type="string" Value="&quot;[INSTALLFOLDER]vpn_gui.exe&quot;,0" />
+          <RegistryValue Key="shell\open\command" Type="string" Value="&quot;[INSTALLFOLDER]vpn_gui.exe&quot; &quot;%1&quot;" />
+        </RegistryKey>
       </Component>
 
       <Component Id="Console" Guid="*" Win64="yes">

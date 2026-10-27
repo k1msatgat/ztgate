@@ -150,7 +150,7 @@ server.registerTool('device_add', {
 }, (a) => call('device_add', a));
 
 server.registerTool('enroll_create', {
-	description: 'Create a one-time enrollment code for a new device. This is the normal way to add a device: hand the code to the person at the device, they type it into the client ("vpn_client.exe enroll <server-ip> <port> <code>" or the GUI), and the device registers its own id and key over an encrypted session, so no key is ever copied by hand. The code works once and expires. The tunnel IP, posture requirements and label you set here are what the device gets. The code is returned only in this answer.',
+	description: 'Create a one-time enrollment code for a new device. This is the normal way to add a device: hand the code to the person at the device, they type it into the client ("vpn_client.exe enroll <server> <port> <code>" or the GUI), and the device registers its own id and key over an encrypted session, so no key is ever copied by hand. The code works once and expires. The tunnel IP, posture requirements and label you set here are what the device gets. The code is returned only in this answer. When server.env has PUBLIC_ADDRESS the answer also carries an "invite" link (ztgate://enroll?...) that does the same in one click on Windows; it contains the code, so treat it as secret.',
 	inputSchema: {
 		label: label.optional(),
 		tunnel_ip: tunnelIp.optional().describe('tunnel IPv4 address for the device; omit to take the lowest free address in the tunnel subnet'),

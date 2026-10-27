@@ -252,8 +252,8 @@ static __inline const char *tunnel_addr_str(const tunnel_addr_t *a, char *out, s
 	return out;
 }
 
-/* 서버 하나로 쓸 수 있는 글자인가: IP 이거나 DNS 이름 (글자, 숫자, '-' 로 된 63자까지의 조각을 '.' 로
- * 이은 253자까지). 한글 같은 국제 도메인은 GetAddrInfoW 가 바꿔 주므로 받는다. */
+/* 서버 하나로 쓸 수 있는 글자인가: IP 이거나 DNS 이름 (글자, 숫자, '-', '_' 로 된 63자까지의 조각을 '.' 로
+ * 이은 253자까지). '_' 는 표준 밖이지만 사내 DNS 에 흔하다. 한글 같은 국제 도메인은 GetAddrInfoW 가 바꿔 주므로 받는다. */
 static __inline int tunnel_check_host(const wchar_t *s)
 {
 	tunnel_addr_t a;
@@ -276,7 +276,7 @@ static __inline int tunnel_check_host(const wchar_t *s)
 			continue;
 		}
 		if (!(c >= 0x80 || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
-					(c >= L'0' && c <= L'9') || (c == L'-' && label > 0))) {
+					(c >= L'0' && c <= L'9') || c == L'_' || (c == L'-' && label > 0))) {
 			return 0;
 		}
 		if (++label > 63) {

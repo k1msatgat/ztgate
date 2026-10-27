@@ -145,6 +145,8 @@ sudo env ENROLL_FILE=./enroll.conf docker/enroll-code.sh 10.0.0.2 -l laptop
 # 7K2QF-9XWM4-ABCDE-FGHJK-MNPQR
 ```
 
+Windows 기기에는 코드 대신 **초대 링크**를 보낼 수 있습니다. `server.env` 에 `PUBLIC_ADDRESS=vpn.example.com` 을 적어 두면 `ztgate_ctl` 의 `enroll_create`(MCP, 웹 콘솔)가 `ztgate://enroll?server=vpn.example.com&port=9000&code=…` 를 함께 돌려줍니다. 받은 사람이 링크를 누르면 GUI 가 서버와 코드가 채워진 등록 창을 엽니다 (MSI 가 `ztgate:` 를 GUI 에 묶습니다). 등록 창에 붙여 넣거나 `vpn_client.exe enroll <링크>` 로도 됩니다. 링크에는 코드가 들어 있으니 코드처럼 그 사람에게만 보냅니다. 관리 정책이 서버를 정해 둔 PC 는 링크의 서버를 따르지 않고 코드만 씁니다.
+
 **4. 클라이언트를 등록하고 연결합니다.**
 
 ```bash
@@ -388,7 +390,7 @@ sudo systemctl enable --now ztgate
 
 | 경로 | 내용 |
 |---|---|
-| `/etc/ztgate/server.env` | `PORT`, `TUN_IP`, `PREFIX`, `MTU`, `FORWARD_OUT`(서버 뒤로 내보낼 인터페이스, 기본 꺼짐), `SESSION_LIFETIME`(세션 키의 수명, 초, 기본 3600), `TCP_PORT`(TCP 로도 받기, `-t`), `WORKERS`(`-w`), `AUTH_RATE`(`-r`), `STATEFUL=1`(`-F`) |
+| `/etc/ztgate/server.env` | `PORT`, `TUN_IP`, `PREFIX`, `MTU`, `FORWARD_OUT`(서버 뒤로 내보낼 인터페이스, 기본 꺼짐), `SESSION_LIFETIME`(세션 키의 수명, 초, 기본 3600), `TCP_PORT`(TCP 로도 받기, `-t`), `WORKERS`(`-w`), `AUTH_RATE`(`-r`), `STATEFUL=1`(`-F`), `PUBLIC_ADDRESS`(기기가 밖에서 서버에 닿는 이름, 쉼표로 넷까지. 있으면 등록 코드와 함께 초대 링크가 나온다) / `PUBLIC_PORT`(밖의 포트가 `PORT` 와 다를 때) |
 | `/etc/ztgate/devices.conf` | 기기 목록. 등록 코드로 온 기기를 서버가 직접 적는다 |
 | `/etc/ztgate/enroll.conf` | 등록 코드의 대기 목록 |
 | `/etc/ztgate/acl.conf` | 있으면 ACL이 켜진다 |

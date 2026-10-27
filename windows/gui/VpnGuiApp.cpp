@@ -47,7 +47,38 @@ BOOL CVpnGuiApp::InitInstance()
 		return FALSE;
 	}
 
+	/* 창은 하나다. 이미 떠 있으면(알림 영역에 있을 수도 있다) 그 창을 앞으로 부르고, 초대 링크를
+	 * 눌러 뜬 것이면 링크를 그 창에 넘긴다 (CMainDlg::OnCopyData). */
+	CString link(m_lpCmdLine);
+
+	link.Trim(_T(" \""));
+	m_instance = CreateMutexW(nullptr, FALSE, L"Local\\ztgate-gui");
+	if (m_instance && GetLastError() == ERROR_ALREADY_EXISTS) {
+		HWND other = nullptr;
+
+		EnumWindows([](HWND w, LPARAM p) -> BOOL {
+			if (GetPropW(w, CMainDlg::kWindowProp)) {
+				*reinterpret_cast<HWND *>(p) = w;
+				return FALSE;
+			}
+			return TRUE;
+		}, reinterpret_cast<LPARAM>(&other));
+		if (other) {
+			COPYDATASTRUCT cd;
+
+			cd.dwData = CMainDlg::kCopyInvite;
+			cd.cbData = static_cast<DWORD>((link.GetLength() + 1) * sizeof(wchar_t));
+			cd.lpData = const_cast<LPWSTR>(static_cast<LPCWSTR>(link));
+			AllowSetForegroundWindow(ASFW_ANY);
+			SendMessageTimeoutW(other, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&cd), SMTO_ABORTIFHUNG, 3000, nullptr);
+			return FALSE;
+		}
+	}
+
 	CMainDlg dlg;
+	if (invite_like(link)) {
+		dlg.m_invite = link;
+	}
 	m_pMainWnd = &dlg;
 	dlg.DoModal();
 	m_pMainWnd = nullptr;

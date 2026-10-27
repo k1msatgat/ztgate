@@ -12,6 +12,7 @@
 #include "tpm.h"
 #include "dpop.h"
 #include "update.h"
+#include "invite.h"
 
 static HANDLE stop_event;
 
@@ -61,9 +62,44 @@ static int print_posture(void)
 /* 서버는 OpenSSL, 여기는 CNG 로 서로 다른 구현을 쓴다. 양쪽이 같은 표준 벡터를 통과하는
  * 것이 "서로의 패킷을 열 수 있다"의 근거다. 벡터와 검사는 secure.c 에 하나만 있고
  * 서버의 `vpn_server selftest` 도 같은 것을 돌린다. */
+static int st(const char *name, int ok)
+{
+	printf("%-28s %s\n", name, ok ? "ok" : "FAIL");
+	return !ok;
+}
+
+/* 서버 목록의 글자 확인과 초대 링크 풀기. 둘 다 사람이 적거나 붙여 넣은 것을 받는 경계다. */
+static int parse_selftest(void)
+{
+	invite_t inv;
+	int failed = 0;
+
+	failed |= st("servers: name and ip", tunnel_check_servers(L"vpn.example.com, 10.0.0.11") == 2);
+	failed |= st("servers: ipv6", tunnel_check_servers(L"[2001:db8::10],2001:db8::11") == 2);
+	failed |= st("servers: four", tunnel_check_servers(L"a,b,c,d") == 4);
+	failed |= st("servers: five", tunnel_check_servers(L"a,b,c,d,e") == -1);
+	failed |= st("servers: bad characters", tunnel_check_servers(L"vpn!1.example.com") == -1 &&
+			tunnel_check_servers(L"vpn_1.corp") == 1);
+	failed |= st("servers: dash at the edge", tunnel_check_servers(L"-vpn.example.com") == -1 &&
+			tunnel_check_servers(L"vpn-.example.com") == -1);
+	failed |= st("servers: empty label", tunnel_check_servers(L"vpn..example.com") == -1);
+	failed |= st("servers: empty", tunnel_check_servers(L" , ") == -1);
+
+	failed |= st("invite: link", invite_parse(L"ztgate://enroll?server=vpn.example.com&port=9000&code=7K2QF-9XWM4", &inv) == 0 &&
+			wcscmp(inv.servers, L"vpn.example.com") == 0 && inv.port == 9000 && strcmp(inv.code, "7K2QF-9XWM4") == 0);
+	failed |= st("invite: upper case, list", invite_parse(L"\"ZTGATE://ENROLL?CODE=AB&SERVER=VPN1.EXAMPLE.COM%2C10.0.0.2&PORT=443\"", &inv) == 0 &&
+			wcscmp(inv.servers, L"VPN1.EXAMPLE.COM,10.0.0.2") == 0 && inv.port == 443);
+	failed |= st("invite: unknown key", invite_parse(L"ztgate://enroll?server=a&port=1&code=x&v=2", &inv) == 0);
+	failed |= st("invite: missing code", invite_parse(L"ztgate://enroll?server=a&port=1", &inv) == -1);
+	failed |= st("invite: bad port", invite_parse(L"ztgate://enroll?server=a&port=70000&code=x", &inv) == -1);
+	failed |= st("invite: bad server", invite_parse(L"ztgate://enroll?server=a%20b%21&port=1&code=x", &inv) == -1);
+	failed |= st("invite: other scheme", invite_parse(L"https://enroll?server=a&port=1&code=x", &inv) == -1);
+	return failed;
+}
+
 static int selftest(void)
 {
-	return crypt_selftest() | update_selftest();
+	return crypt_selftest() | update_selftest() | parse_selftest();
 }
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len)
@@ -297,6 +333,31 @@ int main(int argc, char *argv[])
 		WSACleanup();
 		return ret;
 	}
+	/* 관리자가 보낸 초대 링크 하나로 (invite.h). */
+	if ((argc == 3 || argc == 4) && strcmp(argv[1], "enroll") == 0 && _strnicmp(argv[2], "ztgate:", 7) == 0) {
+		wchar_t link[1024];
+		invite_t inv;
+		char servers[TUNNEL_SERVERS_LEN * 3], port[8];
+
+		if (argc == 4 && strcmp(argv[3], "--force") != 0) {
+			fprintf(stderr, "usage: %s enroll <invite-link> [--force]\n", argv[0]);
+			return 1;
+		}
+		if (MultiByteToWideChar(CP_ACP, 0, argv[2], -1, link, 1024) == 0 || invite_parse(link, &inv) < 0 ||
+				WideCharToMultiByte(CP_ACP, 0, inv.servers, -1, servers, sizeof(servers), NULL, NULL) == 0) {
+			fprintf(stderr, "not an invite link (ztgate://enroll?server=...&port=...&code=...)\n");
+			return 1;
+		}
+		snprintf(port, sizeof(port), "%u", inv.port);
+		if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+			fprintf(stderr, "WSAStartup failed\n");
+			return 1;
+		}
+		ret = enroll_with_code(servers, port, inv.code, argc == 4);
+		SecureZeroMemory(&inv, sizeof(inv));
+		WSACleanup();
+		return ret;
+	}
 	if ((argc == 2 || argc == 3) && strcmp(argv[1], "enroll") == 0) {
 		if (argc == 3 && strcmp(argv[2], "--force") != 0) {
 			fprintf(stderr, "usage: %s enroll [--force]\n", argv[0]);
@@ -310,6 +371,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "       %s posture\n", argv[0]);
 		fprintf(stderr, "       %s selftest\n", argv[0]);
 		fprintf(stderr, "       %s enroll <server> <port> <code> [--force]      enroll with a code from the administrator\n", argv[0]);
+		fprintf(stderr, "       %s enroll <invite-link> [--force]                 the same, from a ztgate://enroll?... link\n", argv[0]);
 		fprintf(stderr, "       %s enroll [--force]                             print an id and key to register by hand\n", argv[0]);
 		fprintf(stderr, "       %s device\n", argv[0]);
 		fprintf(stderr, " e.g. %s ztgate vpn.example.com 9000\n", argv[0]);

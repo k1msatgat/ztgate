@@ -97,6 +97,8 @@ BEGIN_MESSAGE_MAP(CMainDlg, CDialogEx)
 	ON_MESSAGE(WM_VPN_LOGIN, &CMainDlg::OnVpnLogin)
 	ON_MESSAGE(WM_LOGIN_DONE, &CMainDlg::OnLoginDone)
 	ON_MESSAGE(WM_PORTAL_DONE, &CMainDlg::OnPortalDone)
+	ON_MESSAGE(WM_INVITE, &CMainDlg::OnInvite)
+	ON_WM_COPYDATA()
 	ON_WM_LBUTTONUP()
 	ON_WM_SETCURSOR()
 	ON_MESSAGE(WM_WTSSESSION_CHANGE, &CMainDlg::OnSessionChange)
@@ -162,7 +164,40 @@ BOOL CMainDlg::OnInitDialog()
 	/* 창 크기는 내용에 맞춘 고정 크기다. 늘려도 보여 줄 것이 더 없다. */
 	FitWindow();
 
+	SetPropW(GetSafeHwnd(), kWindowProp, reinterpret_cast<HANDLE>(1));
+	if (!m_invite.IsEmpty()) {
+		PostMessage(WM_INVITE);
+	}
+
 	return TRUE;
+}
+
+/* 두 번째로 뜬 GUI 가 보낸 것 (VpnGuiApp.cpp). 링크가 없으면 앞으로 나오기만 한다. */
+BOOL CMainDlg::OnCopyData(CWnd *, COPYDATASTRUCT *cd)
+{
+	if (cd->dwData != kCopyInvite || cd->cbData < sizeof(wchar_t) || cd->cbData > 4096 ||
+			cd->cbData % sizeof(wchar_t) != 0) {
+		return FALSE;
+	}
+
+	const CString link(static_cast<LPCWSTR>(cd->lpData), static_cast<int>(cd->cbData / sizeof(wchar_t)) - 1);
+
+	ShowFromTray();
+	if (invite_like(link)) {
+		m_invite = link;
+		PostMessage(WM_INVITE);
+	}
+	return TRUE;
+}
+
+LRESULT CMainDlg::OnInvite(WPARAM, LPARAM)
+{
+	const CString link = m_invite;
+
+	m_invite.Empty();
+	ShowFromTray();
+	Enroll(link);
+	return 0;
 }
 
 /* ---- 설정 저장 / 복원 --------------------------------------------------- */
@@ -380,7 +415,15 @@ void CMainDlg::RequestDisconnect()
 /* 이 기기의 ID 와 키를 새로 만든다. */
 void CMainDlg::OnEnroll()
 {
+	Enroll(CString());
+}
+
+/* prefill 은 등록 창의 칸에 미리 넣을 것 (초대 링크). 칸에는 코드나 링크를 적는다. */
+void CMainDlg::Enroll(const CString &prefill)
+{
 	device_t dev;
+	invite_t inv;
+	const bool invited = invite_parse(prefill, &inv) == 0;
 
 	if (!ServiceReady()) {
 		return;
@@ -401,13 +444,26 @@ void CMainDlg::OnEnroll()
 		}
 	}
 
-	/* 보통은 관리자가 준 등록 코드로 올린다. 어느 서버에 올리는지는 연결 설정을
-	 * 그대로 쓴다 — 등록한 서버와 연결할 서버가 다를 이유가 없다. */
-	if (!SettingsUsable()) {
+	if (!prefill.IsEmpty() && !invited) {
+		AfxMessageBox(_T("초대 링크가 아닙니다. 관리자에게 링크를 다시 받아 주세요."), MB_ICONWARNING);
 		return;
 	}
 
-	CEnrollCodeDlg ask(_T("올릴 서버  ") + m_server + _T(" : ") + m_port, this);
+	/* 보통은 관리자가 준 등록 코드로 올린다. 어느 서버에 올리는지는 연결 설정을
+	 * 그대로 쓴다 — 등록한 서버와 연결할 서버가 다를 이유가 없다. 초대 링크로 왔으면
+	 * 링크의 서버를 보여 준다 (정책이 서버를 정했으면 정책의 것). */
+	if (!invited && !SettingsUsable()) {
+		return;
+	}
+
+	CString where = m_server + _T(" : ") + m_port;
+
+	if (invited && !m_policy.has_servers) {
+		where.Format(_T("%s : %u"), inv.servers, (unsigned)inv.port);
+	}
+
+	CEnrollCodeDlg ask(_T("올릴 서버  ") + where, this);
+	ask.m_code = prefill;
 	INT_PTR choice = ask.DoModal();
 
 	if (choice == CEnrollCodeDlg::RESULT_MANUAL) {
@@ -438,6 +494,26 @@ void CMainDlg::OnEnroll()
 		return;
 	}
 
+	/* 칸에 링크를 붙여 넣었으면 링크의 서버와 포트를 연결 설정으로 삼는다. 정책이 서버를
+	 * 정했으면 그대로 두고 코드만 쓴다 — 링크가 관리자의 정책을 넘어서면 안 된다. */
+	CStringA code(ask.m_code);
+
+	if (invite_like(ask.m_code)) {
+		if (invite_parse(ask.m_code, &inv) < 0) {
+			AfxMessageBox(_T("초대 링크를 읽을 수 없습니다. 관리자에게 링크를 다시 받아 주세요."), MB_ICONWARNING);
+			return;
+		}
+		if (!m_policy.has_servers && (m_server != inv.servers || (unsigned)_ttoi(m_port) != inv.port)) {
+			m_server = inv.servers;
+			m_port.Format(_T("%u"), (unsigned)inv.port);
+			SaveSettings();
+			UpdateInfo();
+			AppendLog(_T("[gui] 초대 링크의 서버로 설정: ") + m_server + _T(" : ") + m_port);
+		}
+		code = inv.code;
+		SecureZeroMemory(&inv, sizeof(inv));
+	}
+
 	/* 서버를 여럿 적었으면 첫 서버에 올린다. 서버들은 같은 기기 목록을 쓴다. */
 	const uint16_t port = static_cast<uint16_t>(_ttoi(m_port));
 
@@ -448,7 +524,6 @@ void CMainDlg::OnEnroll()
 		 * 있는 일도 없다. 신원을 만들고 저장하는 것은 서비스다 — 키는 이 프로그램을
 		 * 지나가지 않는다. */
 		CWaitCursor wait;
-		CStringA code(ask.m_code);
 
 		result = vpn_remote_enroll(m_session, m_server, port, code);
 	}
@@ -2307,6 +2382,7 @@ void CMainDlg::OnOK()
 /* ---- 종료 -------------------------------------------------------------- */
 void CMainDlg::OnDestroy()
 {
+	RemovePropW(GetSafeHwnd(), kWindowProp);
 	KillTimer(TIMER_TICK_ID);
 	SaveSettings();
 

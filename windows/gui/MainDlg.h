@@ -8,6 +8,7 @@
 #include "vpn_remote.h"
 #include "posture.h"
 #include "policy.h"
+#include "invite.h"
 #include <deque>
 
 #include "PacketStore.h"
@@ -26,6 +27,7 @@
 /* 로그인 워커가 끝났다. lParam = LoginDone* (받는 쪽이 지운다) */
 #define WM_LOGIN_DONE	(WM_APP + 21)
 #define WM_PORTAL_DONE	(WM_APP + 22)	/* wParam = portal::Result */
+#define WM_INVITE	(WM_APP + 23)	/* m_invite 의 링크로 등록 창을 연다 */
 
 /* 토큰을 갱신하지 못했을 때 다시 해 보는 간격 */
 #define LOGIN_RETRY_MS	30000
@@ -99,6 +101,13 @@ class CMainDlg : public CDialogEx
 public:
 	explicit CMainDlg(CWnd *parent = nullptr);
 
+	/* 두 번째로 뜬 GUI 가 이 창을 찾는 표시와, 링크를 넘기는 WM_COPYDATA 의 dwData. */
+	static constexpr LPCWSTR kWindowProp = L"ztgate.gui";
+	static constexpr ULONG_PTR kCopyInvite = 0x5A54494E;	/* 'ZTIN' */
+
+	/* 명령행이나 다른 인스턴스가 준 초대 링크 (invite.h). 창이 뜨면 등록 창을 연다. */
+	CString m_invite;
+
 protected:
 	BOOL OnInitDialog() override;
 	void OnOK() override;
@@ -106,6 +115,8 @@ protected:
 
 	afx_msg void OnConnect();
 	afx_msg void OnEnroll();
+	afx_msg BOOL OnCopyData(CWnd *from, COPYDATASTRUCT *cd);
+	afx_msg LRESULT OnInvite(WPARAM wParam, LPARAM lParam);
 	afx_msg void OnDiag();
 	afx_msg void OnSettings();
 	afx_msg void OnLogin();
@@ -143,6 +154,7 @@ protected:
 
 private:
 	bool BuildConfig(tunnel_config_t &cfg);
+	void Enroll(const CString &prefill);
 	void AppendLog(const CString &text);
 	void RequestDisconnect();
 	bool EditSettings(int bad_id, const CString &why);

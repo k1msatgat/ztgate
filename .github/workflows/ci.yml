@@ -229,6 +229,10 @@ jobs:
           systemctl is-active ztgate
           echo '{"cmd":"status"}' | sudo /usr/sbin/ztgate_ctl
           sudo ztgate status
+          # 초대 링크: server.env 의 PUBLIC_ADDRESS 가 있을 때만, 서버 목록은 %XX 로.
+          echo '{"cmd":"enroll_create"}' | sudo /usr/sbin/ztgate_ctl | python3 -c 'import json,sys; assert "invite" not in json.load(sys.stdin)'
+          echo 'PUBLIC_ADDRESS=vpn1.example.com,vpn2.example.com' | sudo tee -a /etc/ztgate/server.env > /dev/null
+          echo '{"cmd":"enroll_create"}' | sudo /usr/sbin/ztgate_ctl | python3 -c 'import json,re,sys; r=json.load(sys.stdin); assert re.fullmatch(r"ztgate://enroll\?server=vpn1\.example\.com%2Cvpn2\.example\.com&port=9000&code=" + re.escape(r["code"]), r["invite"]), r'
           [ "$(ps -o user= -C vpn_server | head -n 1)" = ztgate ]
           [ "$(sudo stat -c %U:%a /etc/ztgate/server.key)" = ztgate:600 ]
           [ "$(sudo stat -c %U:%a /etc/ztgate-console)" = root:700 ]

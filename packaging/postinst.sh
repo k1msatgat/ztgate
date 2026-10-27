@@ -7,7 +7,7 @@ set -e
 ETC=/etc/ztgate
 install -d -m 700 "$ETC"
 if [ ! -e "$ETC/server.env" ]; then
-	printf 'PORT=9000\nTUN_IP=10.0.0.1\nPREFIX=24\nMTU=1400\n# FORWARD_OUT=eth0\n# SESSION_LIFETIME=3600\n# TCP_PORT=9000\n# WORKERS=1\n# STATEFUL=1\n' > "$ETC/server.env"
+	printf 'PORT=9000\nTUN_IP=10.0.0.1\nPREFIX=24\nMTU=1400\n# FORWARD_OUT=eth0\n# SESSION_LIFETIME=3600\n# TCP_PORT=9000\n# WORKERS=1\n# STATEFUL=1\n# PUBLIC_ADDRESS=vpn.example.com\n' > "$ETC/server.env"
 	chmod 600 "$ETC/server.env"
 fi
 if [ ! -e "$ETC/devices.conf" ]; then

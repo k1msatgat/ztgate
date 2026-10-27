@@ -189,7 +189,8 @@ BOOL CEnrollCodeDlg::OnInitDialog()
 	CDialogEx::OnInitDialog();
 
 	SetDlgItemText(IDC_ENROLL_ID, m_where);
-	GetDlgItem(IDC_ENROLL_CODE)->SendMessage(EM_SETCUEBANNER, TRUE, (LPARAM)L"XXXXX-XXXXX-XXXXX-XXXXX-XXXXX");
+	GetDlgItem(IDC_ENROLL_CODE)->SendMessage(EM_SETCUEBANNER, TRUE, (LPARAM)L"XXXXX-XXXXX-XXXXX-XXXXX-XXXXX 또는 초대 링크");
+	SetDlgItemText(IDC_ENROLL_CODE, m_code);
 	GetDlgItem(IDC_ENROLL_CODE)->SetFocus();
 
 	/* 포커스를 직접 옮겼으므로 FALSE 를 돌려준다. TRUE 면 첫 컨트롤로 되돌아간다. */

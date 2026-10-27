@@ -47,7 +47,7 @@ private:
 class CEnrollCodeDlg : public CDialogEx
 {
 public:
-	/* DoModal 의 결과. IDOK 면 m_code 에 적은 코드가 있다. */
+	/* DoModal 의 결과. IDOK 면 m_code 에 적은 코드(또는 초대 링크)가 있다. 열기 전에 넣어 두면 칸에 채운다. */
 	enum { RESULT_MANUAL = 100 };
 
 	/* where 는 어느 서버에 올리는지를 창에 보여 줄 글이다. */

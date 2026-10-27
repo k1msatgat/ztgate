@@ -231,6 +231,20 @@ function readEnv() {
 	return env;
 }
 
+/* 초대 링크 (windows/core/invite.h 가 푼다). 서버는 밖에서 자기가 어떤 이름으로 보이는지 모르므로
+ * server.env 에 PUBLIC_ADDRESS(이름이나 주소, 쉼표로 넷까지)를 적었을 때만 만든다. 포트는 PUBLIC_PORT,
+ * 없으면 PORT (NAT 이나 포트 포워딩 뒤라 밖의 번호가 다를 때). */
+function inviteLink(code) {
+	const env = readEnv();
+
+	if (!env.PUBLIC_ADDRESS) {
+		return undefined;
+	}
+	const port = env.PUBLIC_PORT || env.PORT;
+
+	return `ztgate://enroll?server=${encodeURIComponent(env.PUBLIC_ADDRESS)}&port=${encodeURIComponent(port)}&code=${code}`;
+}
+
 /* 같은 디렉터리에 쓰고 rename 한다. 쓰다가 죽어도 반쯤 쓰인 기기 목록이 남지 않고,
  * 그 사이에 SIGHUP 을 받은 서버가 잘린 파일을 읽을 일도 없다. */
 function writeAtomic(path, text) {
@@ -1096,7 +1110,7 @@ const COMMANDS = {
 		return { device: publicDevice(d), [RELOAD]: true };
 	},
 
-	/* 코드는 이 응답에서 한 번만 나온다. 파일에는 코드에서 뽑은 값만 남는다. */
+	/* 코드는 이 응답에서 한 번만 나온다 (초대 링크에도 들어 있다). 파일에는 코드에서 뽑은 값만 남는다. */
 	enroll_create(a) {
 		const devices = readDevices();
 		const pending = readEnroll();
@@ -1141,11 +1155,17 @@ const COMMANDS = {
 
 		writeEnroll([...pending, entry]);
 
+		/* 다섯 자씩 끊어 준다. 사람이 읽어 주거나 받아 적는 값이다. */
+		const shown = code.match(/.{5}/g).join('-');
+		const invite = inviteLink(shown);
+
 		return {
-			/* 다섯 자씩 끊어 준다. 사람이 읽어 주거나 받아 적는 값이다. */
-			code: code.match(/.{5}/g).join('-'),
+			code: shown,
+			...(invite ? { invite } : {}),
 			enrollment: publicEnroll(entry),
-			how: 'On the device: "vpn_client.exe enroll <server-ip> <port> <code>", or the GUI posture tab -> enroll. The code works once.',
+			how: invite
+				? 'Send the invite link to the person at the device; opening it (or pasting it into the GUI enroll box, or "vpn_client.exe enroll <link>") enrolls. The code works once.'
+				: 'On the device: "vpn_client.exe enroll <server> <port> <code>", or the GUI -> enroll. The code works once. Set PUBLIC_ADDRESS in server.env to also get an invite link.',
 			[RELOAD]: true,
 		};
 	},

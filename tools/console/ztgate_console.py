@@ -561,6 +561,15 @@ def view_enroll(c, csrf, made=None):
                 '<code>vpn_client enroll &lt;서버&gt; &lt;포트&gt; &lt;코드&gt;</code> 또는 GUI 의 [기기 등록]</p></div>'
                 '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this)">복사</button></div>') % (
             e(made.get("enrollment", {}).get("tunnel_ip")), e(made.get("code")), e(made.get("code")))
+        link = made.get("invite")
+        if link:
+            code += ('<div class="callout"><div style="flex:1;min-width:0"><div class="muted" style="font-size:12.5px">초대 링크</div>'
+                     '<div class="mono" id="invite" style="overflow-wrap:anywhere">%s</div><p>Windows 에서 누르면 서버와 코드가 채워진 '
+                     '등록 창이 열립니다. 코드가 들어 있으니 그 사람에게만 보내세요.</p></div>'
+                     '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this)">복사</button></div>') % (e(link), e(link))
+        else:
+            code += ('<p class="muted">서버의 <code>/etc/ztgate/server.env</code> 에 <code>PUBLIC_ADDRESS=vpn.example.com</code> '
+                     '을 적으면 누르기만 하면 되는 초대 링크도 함께 나옵니다.</p>')
     form = ('<div class="card pad"><h2>새 등록 코드</h2><form method="post" action="/enroll/create">'
             '<input type="hidden" name="csrf" value="%s">'
             '<label class="field"><span>이름</span><input name="label" placeholder="laptop-kim"></label>'

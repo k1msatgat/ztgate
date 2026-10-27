@@ -14,4 +14,5 @@ public:
 
 private:
 	bool m_wsa_ready;
+	HANDLE m_instance = nullptr;	/* 창을 하나로 두는 뮤텍스 */
 };
