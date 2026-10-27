@@ -166,6 +166,7 @@ static void build(int acl_enabled)
 	put("\"replayed\":%llu,", (unsigned long long)stats.replayed);
 	put("\"unknown_session\":%llu,", (unsigned long long)stats.unknown_session);
 	put("\"auth_rate_limited\":%llu,", (unsigned long long)stats.auth_rate_limited);
+	put("\"version_mismatch\":%llu,", (unsigned long long)stats.version_mismatch);
 	put("\"spoofed_src\":%llu,", (unsigned long long)stats.spoofed_src);
 	put("\"acl_denied\":%llu,", (unsigned long long)stats.acl_denied);
 	put("\"acl_denied_posture\":%llu,", (unsigned long long)stats.acl_denied_posture);

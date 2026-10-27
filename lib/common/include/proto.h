@@ -16,6 +16,11 @@ extern "C" {
 
 #define PROTOCOL_VERSION 9 /* 서버와 클라이언트가 같은 값을 쓴다. 2: 기기 인증, 3: 세션 암호화, 4: 서버가 터널 설정을 내려 준다, 5: 사용자 로그인, 6: 이름을 ztgate 로 바꾸며 키 유도 / 거절 / 등록 코드의 라벨을 바꿈, 7: 터널 설정에 내부 DNS, 8: 등록이 기기 공개키를 올리고 서버 공개키를 받는다, 9: 핸드셰이크가 기기 ID 를 감싸 보낸다 */
 
+/* 서버가 받는 가장 낮은 버전. 서버는 [PROTOCOL_VERSION_MIN, PROTOCOL_VERSION] 밖의 REQ 에 VERSION 으로
+ * 그 범위를 알려 준다. 지금은 PROTOCOL_VERSION 과 같다 — 다음에 버전을 올릴 때 이것을 하나 아래에 두고
+ * 그 버전의 클라이언트도 받는다 (docs/decisions/0012-version-compat.md). */
+#define PROTOCOL_VERSION_MIN 9
+
 #define TUN_MTU		1400
 #define BUF_SIZE	2048
 #define TUN_PROR	9000
@@ -104,6 +109,13 @@ extern "C" {
  * 만료로 정리된다. 세션 키로 감싸므로 세션 번호를 엿본 제3자가 남의 세션을 끝낼 수 없다.
  * 프로토콜 v6 그대로 더한 종류라, 모르는 쪽(이전 빌드)은 모르는 종류로 버린다.
  *
+ * VERSION 은 받지 않는 버전의 REQ 에 서버가 하는 답이다: 헤더(서버의 버전, VERSION, 0) | min(1) | max(1).
+ * 이 모양은 앞으로 바꾸지 않는다 — 클라이언트는 헤더의 버전을 보기 전에 종류가 VERSION 인지 먼저 본다.
+ * 그래서 어느 쪽이 먼저 올라갔든 사용자는 "응답 없음" 대신 "버전이 맞지 않음"을 보고, Windows 는 바로
+ * 업데이트를 확인한다. 서명되지 않은 답이라 위조할 수 있다 — 클라이언트는 그것으로 멈추지 않고, 진짜
+ * 답이 오지 않았을 때만 거절처럼 보여 주고 계속 다시 시도한다. 답(10B)은 REQ(88B)보다 작아 증폭이 없다.
+ * v9 에서 더한 종류이고, 모르는 쪽은 버린다.
+ *
  * AES-256-GCM 이고, 앞의 16B(헤더와 counter)는 암호화하지 않지만 tag 가 함께 덮는다.
  * 방향마다 키가 다르고 counter 가 그대로 nonce 가 된다. */
 typedef enum MSG_TYPE {
@@ -116,8 +128,11 @@ typedef enum MSG_TYPE {
 	MSG_TYPE_DENY,
 	MSG_TYPE_ENROLL,
 	MSG_TYPE_LOGIN,
-	MSG_TYPE_DISCONNECT
+	MSG_TYPE_DISCONNECT,
+	MSG_TYPE_VERSION
 } msg_type_t;
+
+#define VERSION_MSG_LEN		(sizeof(msg_header_t) + 2)
 
 typedef enum DISCONNECT_REASON {
 	DISCONNECT_CLIENT_EXIT = 1,	/* 클라이언트가 끝난다 (사용자가 끊었다, 서비스를 멈췄다) */

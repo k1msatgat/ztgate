@@ -24,6 +24,7 @@ typedef struct server_stats {
 	uint64_t replayed;			/* 이미 받은 counter 로 다시 온 패킷 */
 	uint64_t unknown_session;
 	uint64_t auth_rate_limited;		/* 한 주소에서 초당 -r 개를 넘게 온 AUTH 를 열어 보지 않고 버렸다 */
+	uint64_t version_mismatch;		/* 이 서버가 받지 않는 프로토콜 버전의 패킷 (올리지 않은 클라이언트) */
 	uint64_t spoofed_src;
 	uint64_t acl_denied;
 	uint64_t acl_denied_posture;

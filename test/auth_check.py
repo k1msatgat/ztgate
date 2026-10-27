@@ -41,13 +41,13 @@ PORT = int(next((a for a in sys.argv[1:] if a.isdigit()), 19000))
 WORKERS = ["-w", os.environ["ZTGATE_WORKERS"]] if os.environ.get("ZTGATE_WORKERS") else []
 VERSION = 9
 
-REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT = range(1, 11)
+REQ_HANDSHAKE, RES_HANDSHAKE, DATA, KEEPALIVE, CHALLENGE, AUTH, DENY, ENROLL, LOGIN, DISCONNECT, VERSION_MSG = range(1, 12)
 DISCONNECT_CLIENT_EXIT, DISCONNECT_SERVER_SHUTDOWN = 1, 2
 DENY_UNKNOWN_DEVICE, DENY_BAD_AUTH, DENY_TUN_IP, DENY_POSTURE = range(1, 5)
 STATE_UNKNOWN, STATE_OFF, STATE_ON = range(3)
 TYPE_NAME = {RES_HANDSHAKE: "RES_HANDSHAKE", DATA: "DATA", KEEPALIVE: "KEEPALIVE",
              CHALLENGE: "CHALLENGE", DENY: "DENY", ENROLL: "ENROLL", LOGIN: "LOGIN",
-             DISCONNECT: "DISCONNECT"}
+             DISCONNECT: "DISCONNECT", VERSION_MSG: "VERSION"}
 
 HDR_LEN, PUB_LEN, TAG_LEN, MAC_LEN = 8, 64, 16, 32
 NONCE_LEN = 16
@@ -416,7 +416,13 @@ def handshake_tests():
     check("request without the padding (v8 shape: device id only)",
           (c.send(header(REQ_HANDSHAKE) + DEV_ID), c.recv())[1], "no response")
     c.send(struct.pack("!BBHI", 8, REQ_HANDSHAKE, 0, 0) + DEV_ID)
-    check("previous protocol version (v8)", c.recv(), "no response")
+    check("previous protocol version (v8): told the range", c.recv(), "VERSION")
+    expect("...as header v9 | min 9 | max 9, no bigger than the request",
+           (c.raw[:2], c.raw[HDR_LEN:], len(c.raw) <= HDR_LEN + len(DEV_ID)), (bytes([VERSION, VERSION_MSG]), bytes([9, 9]), True))
+    c.send(struct.pack("!BBHI", 10, REQ_HANDSHAKE, 0, 0) + bytes(REQ_LEN))
+    check("a newer protocol version (v10): told the range", c.recv(), "VERSION")
+    c.send(struct.pack("!BBHI", 8, AUTH, 0, 0) + bytes(AUTH_LEN))
+    check("another version's AUTH: not read, no answer", c.recv(), "no response")
     r = c.request()
     check("a request names no device and still gets a challenge", r, "CHALLENGE")
     expect("the challenge is no bigger than the request (no amplification)", len(c.raw) <= HDR_LEN + REQ_LEN, True)
@@ -1245,6 +1251,11 @@ def status_tests(srv):
 
     mode = os.stat(srv.status_path).st_mode & 0o777
     expect("status: socket file mode", "%03o" % mode, "600")
+
+    before = srv.status()
+    c.send(struct.pack("!BBHI", 8, REQ_HANDSHAKE, 0, 0) + bytes(REQ_LEN))
+    c.recv()
+    expect("status: another protocol version is counted", counted(srv.status(), before, "version_mismatch"), (1,))
 
     # 앞의 검사들이 남긴 세션을 지우고 시작한다 (규칙은 icmp 만 허용).
     with open(srv.acl_path, "w") as f:

@@ -36,6 +36,7 @@ CString TypeName(const tunnel_packet_t &p)
 	case MSG_TYPE_DENY:		return _T("DENY");
 	case MSG_TYPE_LOGIN:		return _T("LOGIN");
 	case MSG_TYPE_DISCONNECT:	return _T("DISCONNECT");
+	case MSG_TYPE_VERSION:		return _T("VERSION");
 	default:			return _T("-");
 	}
 }
@@ -56,6 +57,8 @@ CString DenyReasonName(int reason)
 	case DENY_BAD_AUTH:		return _T("인증 실패");
 	case DENY_TUN_IP:		return _T("이 기기에 배정되지 않은 터널 IP");
 	case DENY_POSTURE:		return _T("포스처가 정책에 못 미침");
+	case TUNNEL_DENY_CLIENT_OLD:	return _T("이 프로그램이 서버보다 오래됨");
+	case TUNNEL_DENY_SERVER_OLD:	return _T("서버가 이 프로그램보다 오래됨");
 	default:			return _T("알 수 없는 사유");
 	}
 }

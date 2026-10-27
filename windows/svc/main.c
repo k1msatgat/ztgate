@@ -91,6 +91,8 @@ static int n_blocked;
 #define UPDATE_FIRST_MSEC	(2 * 60 * 1000)
 #define UPDATE_EVERY_MSEC	(6ull * 3600 * 1000)
 static ULONGLONG update_at;
+static ULONGLONG update_last;		/* 마지막으로 확인을 띄운 때 */
+static int update_soon;			/* 서버가 이 PC 보다 새 버전만 받는다 (VERSION). 기다리지 않고 확인한다 */
 static HANDLE update_thread;
 static wchar_t update_url[512];
 static int update_http;
@@ -231,6 +233,9 @@ static void on_packet(void *ctx, const tunnel_packet_t *p)
 	EnterCriticalSection(&lock);
 	packets[pkt_seq % PACKET_RING] = *p;
 	pkt_seq++;
+	if (p->msg_type == MSG_TYPE_VERSION && p->deny_reason == TUNNEL_DENY_CLIENT_OLD) {
+		update_soon = 1;
+	}
 	LeaveCriticalSection(&lock);
 	SetEvent(notify);
 }
@@ -1131,12 +1136,23 @@ static DWORD update_tick(void)
 	if (update_at == 0) {
 		update_at = now + UPDATE_FIRST_MSEC;
 	}
+	EnterCriticalSection(&lock);
+	if (update_soon) {
+		update_soon = 0;
+		/* 다시 시도할 때마다(30초) 오므로 10분에 한 번까지만 앞당긴다. */
+		if (update_last == 0 || now - update_last > 10 * 60 * 1000) {
+			update_at = now;
+			slog("update: the server takes only newer clients, checking now");
+		}
+	}
+	LeaveCriticalSection(&lock);
 	if (now >= update_at && !update_thread) {
 		wcscpy(update_url, pol.update_url);
 		update_http = pol.update_allow_http;
 		memcpy(update_keys, pol.update_keys, sizeof(update_keys));
 		update_nkeys = pol.n_update_keys;
 		update_at = now + UPDATE_EVERY_MSEC;
+		update_last = now;
 		update_thread = CreateThread(NULL, 0, update_main, NULL, 0, NULL);
 	}
 	return update_at > now ? (DWORD)(update_at - now) : 0;

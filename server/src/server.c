@@ -653,6 +653,24 @@ static int handshake_init(void)
  * AUTH 에 감싸여 온다. "이 nonce 로 서명해 봐라"와 ID 를 감쌀 공개키만 돌려준다. 키를 만들고
  * 합의하는 비싼 계산도, 기억할 상태도 없으므로 출발지를 위조한 REQ 를 쏟아부어 서버를 바쁘게
  * 하거나 표를 채울 수 없다. 답은 REQ 보다 크지 않다. */
+/* 받지 않는 버전의 REQ 에: 헤더 | min | max (proto.h 의 VERSION). */
+static void send_version(int32_t sock, const net_ep_t *src, socklen_t srclen)
+{
+	uint8_t res[VERSION_MSG_LEN];
+	msg_header_t msg_header;
+	int32_t off;
+
+	memset(&msg_header, 0, sizeof(msg_header));
+	msg_header.version = PROTOCOL_VERSION;
+	msg_header.type = MSG_TYPE_VERSION;
+	off = msg_encode(res, sizeof(res), &msg_header);
+	res[off++] = PROTOCOL_VERSION_MIN;
+	res[off++] = PROTOCOL_VERSION;
+	if (net_send(sock, res, off, src, srclen) < 0) {
+		perror("sendto version");
+	}
+}
+
 static void handle_request(int32_t sock, const uint8_t *packet, int32_t n,
 		const net_ep_t *src, socklen_t srclen)
 {
@@ -1461,8 +1479,18 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 {
 	msg_header_t h;
 
-	if (msg_decode(packet, (size_t)n, &h) < 0 || h.version != PROTOCOL_VERSION) {
+	if (msg_decode(packet, (size_t)n, &h) < 0) {
 		LOG_LIMITED(LOG_DROP, "[drop] bad header (%d bytes)\n", n);
+		return;
+	}
+	if (h.version < PROTOCOL_VERSION_MIN || h.version > PROTOCOL_VERSION) {
+		/* 접속을 청하는 쪽에만 답한다. 그 밖의 종류는 버전마다 모양이 다르니 읽지 않는다. */
+		if (h.type == MSG_TYPE_REQ_HANDSHAKE && auth_rate_ok(src)) {
+			send_version(sock, src, srclen);
+		}
+		LOG_LIMITED(LOG_DROP, "[drop] protocol v%u from a client (this server takes v%u..v%u)\n",
+				h.version, PROTOCOL_VERSION_MIN, PROTOCOL_VERSION);
+		STAT_INC(version_mismatch);
 		return;
 	}
 

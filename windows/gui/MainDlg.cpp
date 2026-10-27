@@ -1423,7 +1423,7 @@ void CMainDlg::TrackAuth(const tunnel_packet_t &p)
 		}
 	}
 
-	if (p.msg_type == MSG_TYPE_DENY) {
+	if (p.msg_type == MSG_TYPE_DENY || p.msg_type == MSG_TYPE_VERSION) {
 		m_deny_reason = p.deny_reason;
 	}
 	else if (p.msg_type == MSG_TYPE_RES_HANDSHAKE) {
@@ -1678,6 +1678,10 @@ CString CMainDlg::DenyHint() const
 		return _T("기기 인증에 실패했습니다. 새 등록 코드로 [다시 등록] 해야 할 수 있습니다. 관리자에게 문의하세요.");
 	case DENY_TUN_IP:
 		return _T("서버의 기기 설정이 맞지 않습니다. 관리자에게 문의하세요.");
+	case TUNNEL_DENY_CLIENT_OLD:
+		return _T("서버가 이 프로그램보다 새 버전입니다. 업데이트를 확인하는 중입니다. 계속되면 관리자에게 새 버전을 받아 주세요.");
+	case TUNNEL_DENY_SERVER_OLD:
+		return _T("서버가 이 프로그램보다 오래된 버전입니다. 관리자에게 서버 업데이트를 요청하세요.");
 	default:
 		return _T("관리자에게 문의하세요.");
 	}

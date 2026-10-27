@@ -1101,7 +1101,9 @@ static int hs_recv(tunnel_t *t, uint64_t deadline, uint8_t *buf, int cap, msg_he
 			if (!from_server(&t->session, &from)) {
 				continue;
 			}
-			if (msg_decode(buf, (size_t)n, h) < 0 || h->version != PROTOCOL_VERSION) {
+			/* VERSION 은 어느 버전의 서버가 보내든 같은 모양이다 (proto.h). 버전을 보기 전에 받는다. */
+			if (msg_decode(buf, (size_t)n, h) < 0 ||
+					(h->version != PROTOCOL_VERSION && !(h->type == MSG_TYPE_VERSION && n >= (int)VERSION_MSG_LEN))) {
 				continue;
 			}
 			return n;
@@ -1299,6 +1301,7 @@ static int do_handshake(tunnel_t *t)
 	msg_header_t h;
 	uint64_t deadline;
 	uint8_t loose_deny;
+	uint8_t version_seen[2];	/* 이번 시도에 받은 VERSION 의 min, max */
 	int body_len;
 	int ret = HS_FAIL;
 	int tries;
@@ -1310,6 +1313,7 @@ static int do_handshake(tunnel_t *t)
 		tlog(t, "[HS] request %d/%d", tries, HS_RETRY);
 		hs_reset(&hs);
 		loose_deny = 0;
+		version_seen[0] = 0;
 		send_hs_request(t);
 
 		deadline = GetTickCount64() + HS_TIMEOUT_MSEC;
@@ -1370,6 +1374,15 @@ static int do_handshake(tunnel_t *t)
 				}
 				continue;
 
+			case MSG_TYPE_VERSION:
+				/* 서명이 없는 답이다. 확인할 수 없는 DENY 처럼 기억만 하고 진짜 답을 끝까지 기다린다. */
+				if (h.version == PROTOCOL_VERSION || body[0] > body[1]) {
+					continue;
+				}
+				version_seen[0] = body[0];
+				version_seen[1] = body[1];
+				continue;
+
 			case MSG_TYPE_RES_HANDSHAKE:
 				/* AUTH 를 보내기 전에 온 수락은 받지 않는다. 그리고 tag 가 맞지 않는
 				 * 수락도 받지 않는다 — 기기 키를 모르는 쪽은 맞는 tag 를 만들 수 없다. */
@@ -1393,6 +1406,19 @@ static int do_handshake(tunnel_t *t)
 
 		if (loose_deny != 0) {
 			tlog(t, "[HS] denied: %s", deny_reason_name(loose_deny));
+			ret = HS_DENIED;
+			goto out;
+		}
+		if (version_seen[0] != 0) {
+			const int client_old = version_seen[0] > PROTOCOL_VERSION;
+
+			h.version = version_seen[1];
+			h.type = MSG_TYPE_VERSION;
+			h.session_idx = 0;
+			hs_emit(t, TUNNEL_DIR_RX, &h, res, (int)VERSION_MSG_LEN, NULL,
+					client_old ? TUNNEL_DENY_CLIENT_OLD : TUNNEL_DENY_SERVER_OLD);
+			tlog(t, "[HS] the server takes protocol v%u..v%u, this client speaks v%u: %s", version_seen[0],
+					version_seen[1], PROTOCOL_VERSION, client_old ? "update this PC" : "the server is older");
 			ret = HS_DENIED;
 			goto out;
 		}

@@ -121,6 +121,10 @@ int tunnel_login_set(tunnel_login_t *l, const char *token, size_t len);
 /* 서버를 여럿 적으면(이중화) 첫 서버 말고 셋까지 더 둔다. 지금 서버가 UDP 로도 TCP 로도 답하지
  * 않으면 다음 서버로 넘어간다. 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다. 이름 하나가 주소를
  * 여럿 돌려주면(DNS 라운드 로빈) 그 주소들도 이 넷 안에 든다. */
+/* 서버가 VERSION 으로 답했을 때 tunnel_packet_t.deny_reason 에 싣는 값 (와이어의 DENY 사유가 아니다). */
+#define TUNNEL_DENY_CLIENT_OLD	0x80	/* 서버가 이 클라이언트보다 새 버전만 받는다: 이 PC 를 올린다 */
+#define TUNNEL_DENY_SERVER_OLD	0x81	/* 서버가 이 클라이언트보다 오래된 버전이다: 서버를 올린다 */
+
 #define TUNNEL_ALT_SERVERS	3
 #define TUNNEL_SERVERS_MAX	(1 + TUNNEL_ALT_SERVERS)
 #define TUNNEL_SERVERS_LEN	256
