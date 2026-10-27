@@ -1,41 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" font-family="Segoe UI, Malgun Gothic, Apple SD Gothic Neo, sans-serif" font-size="15" role="img" aria-label="ztgate 구조: 기기, 서버, 보호할 내부망">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" font-family="Segoe UI, Malgun Gothic, Apple SD Gothic Neo, sans-serif" font-size="18" role="img" aria-label="ztgate 구조: 기기, 서버, 보호할 내부망">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0B1626"/><stop offset="1" stop-color="#12233F"/>
     </linearGradient>
     <marker id="t" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3FBFAE"/></marker>
-    <marker id="g" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6F7D93"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#A9B6CA"/></marker>
     <marker id="w" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5B8FD6"/></marker>
   </defs>
   <rect width="1200" height="490" rx="16" fill="url(#bg)"/>
 
   <!-- 기기 -->
-  <text x="40" y="52" fill="#8FA1BC" font-size="13" font-weight="700" letter-spacing="1">기기</text>
-  <rect x="40" y="70" width="260" height="76" rx="10" fill="#16294A" stroke="#24395A"/>
+  <text x="40" y="52" fill="#C3D0E2" font-size="16" font-weight="700" letter-spacing="1">기기</text>
+  <rect x="40" y="70" width="260" height="76" rx="10" fill="#16294A" stroke="#3A5A86"/>
   <text x="170" y="102" text-anchor="middle" fill="#E6ECF5" font-weight="700">Linux 클라이언트</text>
-  <text x="170" y="126" text-anchor="middle" fill="#9AA8BD" font-size="13">tun · 포스처 10초마다 보고</text>
-  <rect x="40" y="172" width="260" height="76" rx="10" fill="#16294A" stroke="#24395A"/>
+  <text x="170" y="126" text-anchor="middle" fill="#D5DEEB" font-size="16">tun · 포스처 10초마다 보고</text>
+  <rect x="40" y="172" width="260" height="76" rx="10" fill="#16294A" stroke="#3A5A86"/>
   <text x="170" y="204" text-anchor="middle" fill="#E6ECF5" font-weight="700">Windows 클라이언트</text>
-  <text x="170" y="228" text-anchor="middle" fill="#9AA8BD" font-size="13">서비스 + GUI · Wintun</text>
+  <text x="170" y="228" text-anchor="middle" fill="#D5DEEB" font-size="16">서비스 + GUI · Wintun</text>
   <rect x="40" y="372" width="260" height="76" rx="10" fill="none" stroke="#3B5478" stroke-dasharray="6 5"/>
   <text x="170" y="404" text-anchor="middle" fill="#E6ECF5" font-weight="700">IdP (Keycloak 등)</text>
-  <text x="170" y="428" text-anchor="middle" fill="#9AA8BD" font-size="13">사용자 로그인 · JWT 발급</text>
-  <line x1="170" y1="252" x2="170" y2="366" stroke="#6F7D93" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#g)"/>
-  <text x="182" y="314" fill="#8FA1BC" font-size="13">사용자 로그인</text>
+  <text x="170" y="428" text-anchor="middle" fill="#D5DEEB" font-size="16">사용자 로그인 · JWT 발급</text>
+  <line x1="170" y1="252" x2="170" y2="366" stroke="#A9B6CA" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#g)"/>
+  <text x="182" y="314" fill="#C3D0E2" font-size="16">사용자 로그인</text>
 
   <!-- 서버 -->
   <rect x="430" y="40" width="340" height="420" rx="14" fill="#13233A" stroke="#2C5E9E" stroke-width="1.6"/>
-  <text x="600" y="72" text-anchor="middle" fill="#78A5E2" font-weight="700" font-size="16">ztgate 서버 · Linux · C</text>
-  <g font-size="14" fill="#E6ECF5" text-anchor="middle">
-    <rect x="456" y="92" width="288" height="50" rx="8" fill="#1A2D48" stroke="#2C4466"/>
+  <text x="600" y="72" text-anchor="middle" fill="#9DC1F2" font-weight="700" font-size="19">ztgate 서버 · Linux · C</text>
+  <g font-size="17" fill="#E6ECF5" text-anchor="middle">
+    <rect x="456" y="92" width="288" height="50" rx="8" fill="#1A2D48" stroke="#41618D"/>
     <text x="600" y="122">UDP 9000 · SO_REUSEPORT 워커</text>
-    <rect x="456" y="164" width="288" height="50" rx="8" fill="#1A2D48" stroke="#2C4466"/>
+    <rect x="456" y="164" width="288" height="50" rx="8" fill="#1A2D48" stroke="#41618D"/>
     <text x="600" y="194">핸드셰이크 · 세션 키 (ECDH · HKDF)</text>
-    <rect x="456" y="236" width="288" height="50" rx="8" fill="#1A2D48" stroke="#2C4466"/>
+    <rect x="456" y="236" width="288" height="50" rx="8" fill="#1A2D48" stroke="#41618D"/>
     <text x="600" y="266">GCM tag · 재전송 창 · 출발지 검사</text>
     <rect x="456" y="308" width="288" height="50" rx="8" fill="#1A2D48" stroke="#2A9D8F" stroke-width="1.6"/>
     <text x="600" y="338" fill="#3FBFAE" font-weight="700">ACL · 포스처 · 사용자 조건</text>
-    <rect x="456" y="380" width="288" height="50" rx="8" fill="#1A2D48" stroke="#2C4466"/>
+    <rect x="456" y="380" width="288" height="50" rx="8" fill="#1A2D48" stroke="#41618D"/>
     <text x="600" y="410">tun (IFF_MULTI_QUEUE)</text>
   </g>
   <g stroke="#5B8FD6" stroke-width="1.6">
@@ -50,26 +50,26 @@
     <line x1="304" y1="108" x2="450" y2="112" marker-start="url(#t)" marker-end="url(#t)"/>
     <line x1="304" y1="210" x2="450" y2="124" marker-start="url(#t)" marker-end="url(#t)"/>
   </g>
-  <text x="318" y="94" fill="#3FBFAE" font-size="13" font-weight="700">암호화 UDP 터널</text>
-  <line x1="304" y1="404" x2="450" y2="340" stroke="#6F7D93" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#g)"/>
-  <text x="312" y="430" fill="#8FA1BC" font-size="12.5">공개키만 받아 둔다</text>
+  <text x="365" y="92" text-anchor="middle" fill="#3FBFAE" font-size="15" font-weight="700">암호화 UDP 터널</text>
+  <line x1="304" y1="404" x2="450" y2="340" stroke="#A9B6CA" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#g)"/>
+  <text x="365" y="436" text-anchor="middle" fill="#C3D0E2" font-size="15">공개키만<tspan x="365" dy="19">받아 둔다</tspan></text>
 
   <!-- 내부망 -->
-  <text x="866" y="52" fill="#8FA1BC" font-size="13" font-weight="700" letter-spacing="1">보호할 내부망</text>
+  <text x="866" y="52" fill="#C3D0E2" font-size="16" font-weight="700" letter-spacing="1">보호할 내부망</text>
   <rect x="860" y="70" width="300" height="270" rx="14" fill="none" stroke="#3B5478" stroke-dasharray="7 5"/>
-  <rect x="885" y="94" width="250" height="76" rx="10" fill="#16294A" stroke="#24395A"/>
+  <rect x="885" y="94" width="250" height="76" rx="10" fill="#16294A" stroke="#3A5A86"/>
   <text x="1010" y="126" text-anchor="middle" fill="#E6ECF5" font-weight="700">앱 커넥터</text>
-  <text x="1010" y="150" text-anchor="middle" fill="#9AA8BD" font-size="13">서버로 나가는 세션만</text>
-  <rect x="885" y="240" width="250" height="76" rx="10" fill="#16294A" stroke="#24395A"/>
+  <text x="1010" y="150" text-anchor="middle" fill="#D5DEEB" font-size="16">서버로 나가는 세션만</text>
+  <rect x="885" y="240" width="250" height="76" rx="10" fill="#16294A" stroke="#3A5A86"/>
   <text x="1010" y="272" text-anchor="middle" fill="#E6ECF5" font-weight="700">내부 자원</text>
-  <text x="1010" y="296" text-anchor="middle" fill="#9AA8BD" font-size="13">ACL 이 허락한 곳만</text>
+  <text x="1010" y="296" text-anchor="middle" fill="#D5DEEB" font-size="16">ACL 이 허락한 곳만</text>
   <line x1="1010" y1="172" x2="1010" y2="234" stroke="#5B8FD6" stroke-width="1.8" marker-end="url(#w)"/>
   <line x1="750" y1="114" x2="879" y2="130" stroke="#3FBFAE" stroke-width="3.2" marker-start="url(#t)" marker-end="url(#t)"/>
-  <text x="784" y="166" fill="#3FBFAE" font-size="13" font-weight="700">커넥터 세션</text>
+  <text x="784" y="166" fill="#3FBFAE" font-size="16" font-weight="700">커넥터 세션</text>
 
   <!-- 관리 -->
-  <rect x="860" y="372" width="300" height="76" rx="10" fill="#16294A" stroke="#24395A"/>
+  <rect x="860" y="372" width="300" height="76" rx="10" fill="#16294A" stroke="#3A5A86"/>
   <text x="1010" y="404" text-anchor="middle" fill="#E6ECF5" font-weight="700">웹 관리 콘솔</text>
-  <text x="1010" y="428" text-anchor="middle" fill="#9AA8BD" font-size="13">터널 주소에서만 열림</text>
+  <text x="1010" y="428" text-anchor="middle" fill="#D5DEEB" font-size="16">터널 주소에서만 열림</text>
   <line x1="772" y1="404" x2="854" y2="410" stroke="#5B8FD6" stroke-width="1.8" marker-end="url(#w)"/>
 </svg>
