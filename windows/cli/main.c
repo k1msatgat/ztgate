@@ -150,14 +150,10 @@ static int enroll_with_code(const char *server, const char *port, const char *co
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.on_log = on_log;
 
-	{
-		wchar_t w[INET6_ADDRSTRLEN + 2];
-
-		if (MultiByteToWideChar(CP_ACP, 0, server, -1, w, INET6_ADDRSTRLEN + 2) == 0 ||
-				tunnel_parse_addr(w, &cfg.server_ip) < 0) {
-			fprintf(stderr, "invalid server ip : %s\n", server);
-			return 1;
-		}
+	if (MultiByteToWideChar(CP_ACP, 0, server, -1, cfg.servers, TUNNEL_SERVERS_LEN) == 0 ||
+			tunnel_check_servers(cfg.servers) < 0) {
+		fprintf(stderr, "invalid server : %s\n", server);
+		return 1;
 	}
 	port_num = strtol(port, &end, 10);
 	if (*end != '\0' || port_num <= 0 || port_num > 65535) {
@@ -290,7 +286,7 @@ int main(int argc, char *argv[])
 	}
 	if ((argc == 5 || argc == 6) && strcmp(argv[1], "enroll") == 0) {
 		if (argc == 6 && strcmp(argv[5], "--force") != 0) {
-			fprintf(stderr, "usage: %s enroll <server-ip> <port> <code> [--force]\n", argv[0]);
+			fprintf(stderr, "usage: %s enroll <server> <port> <code> [--force]\n", argv[0]);
 			return 1;
 		}
 		if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -310,13 +306,13 @@ int main(int argc, char *argv[])
 	}
 
 	if (argc != 4) {
-		fprintf(stderr, "usage: %s <adapter-name> <server-ip> <port>\n", argv[0]);
+		fprintf(stderr, "usage: %s <adapter-name> <server[,server...]> <port>\n", argv[0]);
 		fprintf(stderr, "       %s posture\n", argv[0]);
 		fprintf(stderr, "       %s selftest\n", argv[0]);
-		fprintf(stderr, "       %s enroll <server-ip> <port> <code> [--force]   enroll with a code from the administrator\n", argv[0]);
+		fprintf(stderr, "       %s enroll <server> <port> <code> [--force]      enroll with a code from the administrator\n", argv[0]);
 		fprintf(stderr, "       %s enroll [--force]                             print an id and key to register by hand\n", argv[0]);
 		fprintf(stderr, "       %s device\n", argv[0]);
-		fprintf(stderr, " e.g. %s ztgate 49.247.139.39 9000\n", argv[0]);
+		fprintf(stderr, " e.g. %s ztgate vpn.example.com 9000\n", argv[0]);
 		fprintf(stderr, " the tunnel address and the routes come from the server\n");
 		return 1;
 	}
@@ -335,15 +331,11 @@ int main(int argc, char *argv[])
 		goto out;
 	}
 
-	{
-		wchar_t list[256];
-
-		/* 서버 여럿: 10.0.0.10,10.0.0.11 (tunnel.h 의 TUNNEL_ALT_SERVERS) */
-		if (MultiByteToWideChar(CP_ACP, 0, argv[2], -1, list, 256) == 0 ||
-				tunnel_parse_servers(list, &cfg.server_ip, cfg.alt_ips, &cfg.n_alt) < 0) {
-			fprintf(stderr, "invalid server ip : %s\n", argv[2]);
-			goto out;
-		}
+	/* 서버 여럿: vpn.example.com,10.0.0.11 (tunnel.h 의 TUNNEL_SERVERS_MAX) */
+	if (MultiByteToWideChar(CP_ACP, 0, argv[2], -1, cfg.servers, TUNNEL_SERVERS_LEN) == 0 ||
+			tunnel_check_servers(cfg.servers) < 0) {
+		fprintf(stderr, "invalid server : %s\n", argv[2]);
+		goto out;
 	}
 
 	server_port = strtol(argv[3], &end, 10);

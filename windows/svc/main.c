@@ -81,6 +81,8 @@ static net_route_t learned[NET_MAX_ROUTES + 1];
 static int n_learned;
 static int learned_dirty;
 static int blocking;			/* WFP 필터가 걸려 있다 */
+static tunnel_addr_t server_addrs[TUNNEL_SERVERS_MAX];	/* 터널이 마지막으로 푼 서버 주소 (on_servers) */
+static int n_server_addrs;
 static net_route_t blocked[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
 static int n_blocked;
 
@@ -212,6 +214,16 @@ static void on_config(void *ctx, const net_config_t *cfg)
 	SetEvent(notify);
 }
 
+static void on_servers(void *ctx, const tunnel_addr_t *addrs, int n)
+{
+	(void)ctx;
+
+	EnterCriticalSection(&lock);
+	memcpy(server_addrs, addrs, n * sizeof(addrs[0]));
+	n_server_addrs = n;
+	LeaveCriticalSection(&lock);
+}
+
 static void on_packet(void *ctx, const tunnel_packet_t *p)
 {
 	(void)ctx;
@@ -239,19 +251,32 @@ static void remember(void)
 
 	RegSetValueExW(key, L"adapter", 0, REG_SZ, (const BYTE *)run_cfg.adapter_name,
 			(DWORD)((wcslen(run_cfg.adapter_name) + 1) * sizeof(wchar_t)));
-	/* 0.9.2 부터 주소는 SOCKADDR_INET 그대로 (IPv6). 예전의 DWORD server / alt_servers 는 recall 이 읽는다. */
-	RegSetValueExW(key, L"server_addr", 0, REG_BINARY, (const BYTE *)&run_cfg.server_ip, sizeof(run_cfg.server_ip));
+	/* 0.9.4 부터 서버는 적힌 글자 그대로 (DNS 이름). 예전 값들(server, alt_servers, server_addr,
+	 * alt_addrs)은 recall 이 읽어 글자로 바꾼다. */
+	RegSetValueExW(key, L"servers", 0, REG_SZ, (const BYTE *)run_cfg.servers,
+			(DWORD)((wcslen(run_cfg.servers) + 1) * sizeof(wchar_t)));
 	RegSetValueExW(key, L"port", 0, REG_DWORD, (const BYTE *)&port, sizeof(port));
-	RegSetValueExW(key, L"alt_addrs", 0, REG_BINARY, (const BYTE *)run_cfg.alt_ips,
-			(DWORD)(run_cfg.n_alt * sizeof(run_cfg.alt_ips[0])));
 	RegDeleteValueW(key, L"server");
 	RegDeleteValueW(key, L"alt_servers");
+	RegDeleteValueW(key, L"server_addr");
+	RegDeleteValueW(key, L"alt_addrs");
 	RegSetValueExW(key, L"wanted", 0, REG_DWORD, (const BYTE *)&want, sizeof(want));
 	RegCloseKey(key);
 }
 
+/* 예전 설치본이 남긴 주소를 목록 글자 끝에 붙인다. */
+static void servers_append(const tunnel_addr_t *a)
+{
+	char s[INET6_ADDRSTRLEN];
+	const size_t len = wcslen(run_cfg.servers);
+
+	swprintf(run_cfg.servers + len, TUNNEL_SERVERS_LEN - len, L"%ls%hs", len > 0 ? L"," : L"",
+			tunnel_addr_str(a, s, sizeof(s)));
+}
+
 static int recall(void)
 {
+	tunnel_addr_t old[1 + TUNNEL_ALT_SERVERS];
 	DWORD ip = 0, port = 0, want = 0;
 	DWORD len;
 
@@ -268,33 +293,43 @@ static int recall(void)
 	RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"wanted", RRF_RT_REG_DWORD, NULL, &want, &len);
 
 	run_cfg.server_port = (uint16_t)port;
-	len = sizeof(run_cfg.server_ip);
-	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"server_addr", RRF_RT_REG_BINARY, NULL,
-				&run_cfg.server_ip, &len) == ERROR_SUCCESS && len == sizeof(run_cfg.server_ip)) {
-		len = sizeof(run_cfg.alt_ips);
-		if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"alt_addrs", RRF_RT_REG_BINARY, NULL,
-					run_cfg.alt_ips, &len) == ERROR_SUCCESS) {
-			run_cfg.n_alt = (int)(len / sizeof(run_cfg.alt_ips[0]));
+	len = sizeof(run_cfg.servers);
+	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"servers", RRF_RT_REG_SZ, NULL,
+				run_cfg.servers, &len) != ERROR_SUCCESS) {
+		run_cfg.servers[0] = L'\0';
+		len = sizeof(old[0]);
+		if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"server_addr", RRF_RT_REG_BINARY, NULL,
+					&old[0], &len) == ERROR_SUCCESS && len == sizeof(old[0])) {
+			/* 0.9.2 ~ 0.9.3: SOCKADDR_INET 하나와 그 목록. */
+			servers_append(&old[0]);
+			len = sizeof(old) - sizeof(old[0]);
+			if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"alt_addrs", RRF_RT_REG_BINARY, NULL,
+						&old[1], &len) == ERROR_SUCCESS) {
+				for (DWORD i = 0; i < len / sizeof(old[0]); i++) {
+					servers_append(&old[1 + i]);
+				}
+			}
 		}
-	}
-	else if (ip != 0) {
-		/* 예전 설치본이 남긴 IPv4 하나와 IPv4 목록. */
-		struct in_addr old[TUNNEL_ALT_SERVERS];
+		else if (ip != 0) {
+			/* 그 전: IPv4 하나와 IPv4 목록. */
+			struct in_addr v4[TUNNEL_ALT_SERVERS];
 
-		run_cfg.server_ip.si_family = AF_INET;
-		run_cfg.server_ip.Ipv4.sin_addr.s_addr = ip;
-		len = sizeof(old);
-		if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"alt_servers", RRF_RT_REG_BINARY, NULL,
-					old, &len) == ERROR_SUCCESS) {
-			run_cfg.n_alt = (int)(len / sizeof(old[0]));
-			for (int i = 0; i < run_cfg.n_alt; i++) {
-				run_cfg.alt_ips[i].si_family = AF_INET;
-				run_cfg.alt_ips[i].Ipv4.sin_addr = old[i];
+			memset(old, 0, sizeof(old));
+			old[0].si_family = AF_INET;
+			old[0].Ipv4.sin_addr.s_addr = ip;
+			servers_append(&old[0]);
+			len = sizeof(v4);
+			if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"alt_servers", RRF_RT_REG_BINARY, NULL,
+						v4, &len) == ERROR_SUCCESS) {
+				for (DWORD i = 0; i < len / sizeof(v4[0]); i++) {
+					old[0].Ipv4.sin_addr = v4[i];
+					servers_append(&old[0]);
+				}
 			}
 		}
 	}
 
-	return want != 0 && run_cfg.server_ip.si_family != 0 && port != 0 && port <= 65535;
+	return want != 0 && tunnel_check_servers(run_cfg.servers) > 0 && port != 0 && port <= 65535;
 }
 
 /* ---- 워커 ------------------------------------------------------------------ */
@@ -311,10 +346,8 @@ static void policy_servers(void)
 	if (!pol.has_servers) {
 		return;
 	}
-	run_cfg.server_ip = pol.server_ip;
+	wcscpy(run_cfg.servers, pol.servers_text);
 	run_cfg.server_port = pol.port;
-	run_cfg.n_alt = pol.n_alt;
-	memcpy(run_cfg.alt_ips, pol.alt_ips, sizeof(run_cfg.alt_ips));
 	if (run_cfg.adapter_name[0] == L'\0') {
 		wcscpy(run_cfg.adapter_name, L"ztgate");
 	}
@@ -345,6 +378,7 @@ static int tunnel_start(void)
 	run_cfg.login = &login;
 	run_cfg.on_login = on_login;
 	run_cfg.on_config = on_config;
+	run_cfg.on_servers = on_servers;
 	run_cfg.ctx = NULL;
 
 	ResetEvent(tunnel_stop);
@@ -699,9 +733,9 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 	}
 	memcpy(&c, body, sizeof(c));
 	c.adapter_name[TUNNEL_ADAPTER_NAME_LEN - 1] = L'\0';
+	c.servers[TUNNEL_SERVERS_LEN - 1] = L'\0';
 
-	if (c.adapter_name[0] == L'\0' || (c.server_ip.si_family != AF_INET && c.server_ip.si_family != AF_INET6) ||
-			c.server_port == 0) {
+	if (c.adapter_name[0] == L'\0' || tunnel_check_servers(c.servers) < 0 || c.server_port == 0) {
 		return send_error(IPC_ERR_BAD_REQUEST);
 	}
 	if (worker || wanted) {
@@ -710,12 +744,8 @@ static int cmd_connect(const uint8_t *body, uint32_t len)
 
 	memset(&run_cfg, 0, sizeof(run_cfg));
 	wcscpy(run_cfg.adapter_name, c.adapter_name);
-	run_cfg.server_ip = c.server_ip;
+	wcscpy(run_cfg.servers, c.servers);
 	run_cfg.server_port = c.server_port;
-	run_cfg.n_alt = c.n_alt <= TUNNEL_ALT_SERVERS ? c.n_alt : TUNNEL_ALT_SERVERS;
-	for (int i = 0; i < run_cfg.n_alt; i++) {
-		run_cfg.alt_ips[i] = c.alt_ips[i];
-	}
 	policy_servers();
 
 	err = tunnel_start();
@@ -788,6 +818,11 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 	}
 	memcpy(&e, body, sizeof(e));
 	e.code[IPC_CODE_LEN - 1] = '\0';
+	e.servers[TUNNEL_SERVERS_LEN - 1] = L'\0';
+	if (tunnel_check_servers(e.servers) < 0) {
+		SecureZeroMemory(&e, sizeof(e));
+		return send_error(IPC_ERR_BAD_REQUEST);
+	}
 
 	if (worker || wanted) {
 		SecureZeroMemory(&e, sizeof(e));
@@ -795,7 +830,7 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 	}
 
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.server_ip = e.server_ip;
+	wcscpy(cfg.servers, e.servers);
 	cfg.server_port = e.server_port;
 	cfg.on_log = on_log;
 
@@ -1015,7 +1050,7 @@ static void policy_apply(int startup)
 /* 막아야 하는 때: 정책이 BlockWhenDown 이고, 연결을 원하는데 터널이 열려 있지 않다. */
 static void block_sync(void)
 {
-	struct in_addr allow[1 + TUNNEL_ALT_SERVERS];
+	struct in_addr allow[TUNNEL_SERVERS_MAX];
 	net_route_t want[POLICY_NETS_MAX + NET_MAX_ROUTES + 1];
 	int n = 0, n_allow = 0, on, saved = 0;
 	uint32_t s;
@@ -1052,15 +1087,15 @@ static void block_sync(void)
 		return;
 	}
 
-	/* 막는 대역은 IPv4 라 IPv4 서버만 열어 두면 된다. */
-	if (run_cfg.server_ip.si_family == AF_INET) {
-		allow[n_allow++] = run_cfg.server_ip.Ipv4.sin_addr;
-	}
-	for (int i = 0; i < run_cfg.n_alt; i++) {
-		if (run_cfg.alt_ips[i].si_family == AF_INET) {
-			allow[n_allow++] = run_cfg.alt_ips[i].Ipv4.sin_addr;
+	/* 막는 대역은 IPv4 라 IPv4 서버만 열어 두면 된다. 주소는 터널이 마지막으로 푼 것이다 — 서버를 이름으로
+	 * 적었으면 부팅 직후 한 번도 풀기 전에는 열어 둘 주소를 모른다. 서버가 내부 대역 안에 있을 때만 문제다. */
+	EnterCriticalSection(&lock);
+	for (int i = 0; i < n_server_addrs; i++) {
+		if (server_addrs[i].si_family == AF_INET) {
+			allow[n_allow++] = server_addrs[i].Ipv4.sin_addr;
 		}
 	}
+	LeaveCriticalSection(&lock);
 	if (wfp_block(want, n, allow, n_allow) == 0) {
 		blocking = 1;
 		memcpy(blocked, want, n * sizeof(want[0]));
@@ -1641,14 +1676,10 @@ static int ctl(int argc, wchar_t **argv)
 	else if (wcscmp(argv[0], L"connect") == 0 && argc >= 4) {
 		memset(&c, 0, sizeof(c));
 		wcsncpy(c.adapter_name, argv[1], TUNNEL_ADAPTER_NAME_LEN - 1);
-		{
-			int n_alt;
-
-			if (tunnel_parse_servers(argv[2], &c.server_ip, c.alt_ips, &n_alt) < 0) {
-				goto usage;
-			}
-			c.n_alt = (uint16_t)n_alt;
+		if (tunnel_check_servers(argv[2]) < 0) {
+			goto usage;
 		}
+		wcsncpy(c.servers, argv[2], TUNNEL_SERVERS_LEN - 1);
 		c.server_port = (uint16_t)wcstoul(argv[3], NULL, 10);
 		verbose = 1;
 		seconds = 6;
@@ -1681,9 +1712,10 @@ static int ctl(int argc, wchar_t **argv)
 	}
 	else if (wcscmp(argv[0], L"enroll") == 0 && argc >= 4) {
 		memset(&e, 0, sizeof(e));
-		if (tunnel_parse_addr(argv[1], &e.server_ip) < 0) {
+		if (tunnel_check_servers(argv[1]) < 0) {
 			goto usage;
 		}
+		wcsncpy(e.servers, argv[1], TUNNEL_SERVERS_LEN - 1);
 		e.server_port = (uint16_t)wcstoul(argv[2], NULL, 10);
 		WideCharToMultiByte(CP_ACP, 0, argv[3], -1, e.code, IPC_CODE_LEN - 1, NULL, NULL);
 		verbose = 1;

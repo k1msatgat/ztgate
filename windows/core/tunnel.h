@@ -119,18 +119,22 @@ int tunnel_login_set(tunnel_login_t *l, const char *token, size_t len);
 /* 콜백은 tunnel_run()을 호출한 스레드에서 불린다.
  * GUI에서는 여기서 컨트롤을 직접 건드리지 말고 PostMessage로 넘겨야 한다. */
 /* 서버를 여럿 적으면(이중화) 첫 서버 말고 셋까지 더 둔다. 지금 서버가 UDP 로도 TCP 로도 답하지
- * 않으면 다음 서버로 넘어간다. 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다. */
+ * 않으면 다음 서버로 넘어간다. 서버들은 같은 기기 목록과 서버 키를 쓴다고 본다. 이름 하나가 주소를
+ * 여럿 돌려주면(DNS 라운드 로빈) 그 주소들도 이 넷 안에 든다. */
 #define TUNNEL_ALT_SERVERS	3
+#define TUNNEL_SERVERS_MAX	(1 + TUNNEL_ALT_SERVERS)
+#define TUNNEL_SERVERS_LEN	256
 
 /* 서버 주소. IPv4 또는 IPv6 (si_family). 포트는 server_port 로 따로 두고 소켓을 열 때 채운다. */
 typedef SOCKADDR_INET tunnel_addr_t;
 
 typedef struct tunnel_config {
 	wchar_t adapter_name[TUNNEL_ADAPTER_NAME_LEN];
-	tunnel_addr_t server_ip;
+	/* 서버 목록. 적힌 그대로다: "vpn.example.com", "203.0.113.10, 203.0.113.11", "[2001:db8::10]".
+	 * 이름은 터널이 연결을 시작할 때와 서버를 한 바퀴 다 돌았을 때 다시 푼다. 운영자가 DNS 의 주소를
+	 * 바꾸면 클라이언트를 다시 설정하지 않아도 따라간다. */
+	wchar_t servers[TUNNEL_SERVERS_LEN];
 	uint16_t server_port;		/* host byte order */
-	tunnel_addr_t alt_ips[TUNNEL_ALT_SERVERS];	/* 같은 포트의 다른 서버 */
-	int n_alt;
 
 	/* 기기 신원. 호출자가 device_load() 로 읽어 채운다. 포인터가 아니라 배열로 둬서
 	 * cfg 를 구조체째 복사해도 그대로 따라온다. */
@@ -159,6 +163,10 @@ typedef struct tunnel_config {
 	 * 내부 대역을 여기서 배운다 (wfp.h). NULL 이면 부르지 않는다. */
 	void (*on_config)(void *ctx, const net_config_t *cfg);
 
+	/* servers 를 풀어 얻은 주소들 (풀 때마다). 서비스는 내부 대역을 막는 동안에도 이 주소들은
+	 * 열어 둔다. NULL 이면 부르지 않는다. */
+	void (*on_servers)(void *ctx, const tunnel_addr_t *addrs, int n);
+
 	void *ctx;
 } tunnel_config_t;
 
@@ -178,11 +186,15 @@ typedef enum tunnel_enroll_result {
 	TUNNEL_ENROLL_ERROR		/* 이쪽의 오류 (소켓, 암호 도구) 또는 중지 요청 */
 } tunnel_enroll_result_t;
 
+/* servers 목록을 주소로 푼다 (IP 는 그대로, 이름은 GetAddrInfoW). 같은 주소는 한 번만, out 에 max 개까지.
+ * 푼 수를 돌려준다 (하나도 못 풀면 0). WSAStartup 뒤에 불러야 한다. 이름 풀이를 기다리며 블로킹한다. */
+int tunnel_resolve_servers(const wchar_t *servers, tunnel_addr_t *out, int max);
+
 /* 등록 코드(code)로 서버에 이 기기의 id 를 올린다 (proto.h 의 "기기 등록", v8). 이번에 만든 고정
  * 키 쌍의 공개키를 보내고, 서버가 받아 주면 답에 실린 서버 공개키로 기기 키를 뽑아 key 에 적는다
  * (TUNNEL_ENROLL_OK 일 때만). tunnel_enroll_result_t 를 돌려준다.
  *
- * cfg 에서는 서버 주소 / 포트와 on_log 만 쓴다. 어댑터를 만들지 않으므로 관리자 권한이
+ * cfg 에서는 servers 의 첫 주소 / 포트와 on_log 만 쓴다. 어댑터를 만들지 않으므로 관리자 권한이
  * 필요 없다. 응답을 기다리는 동안 블로킹한다 (길어야 십여 초). stop_event 는
  * manual-reset 이벤트여야 하고, signaled 되면 기다리던 것을 그만둔다.
  *
@@ -240,11 +252,44 @@ static __inline const char *tunnel_addr_str(const tunnel_addr_t *a, char *out, s
 	return out;
 }
 
-/* "10.0.0.10,10.0.0.11" 을 첫 서버와 나머지로 나눈다 (IPv6 도). 틀리면(주소가 아님, 넷보다 많음) -1. */
-static __inline int tunnel_parse_servers(const wchar_t *list, tunnel_addr_t *first,
-		tunnel_addr_t alt[TUNNEL_ALT_SERVERS], int *n_alt)
+/* 서버 하나로 쓸 수 있는 글자인가: IP 이거나 DNS 이름 (글자, 숫자, '-' 로 된 63자까지의 조각을 '.' 로
+ * 이은 253자까지). 한글 같은 국제 도메인은 GetAddrInfoW 가 바꿔 주므로 받는다. */
+static __inline int tunnel_check_host(const wchar_t *s)
 {
-	wchar_t buf[256];
+	tunnel_addr_t a;
+	size_t n = wcslen(s), label = 0;
+
+	if (tunnel_parse_addr(s, &a) == 0) {
+		return 1;
+	}
+	if (n == 0 || n > 253 || s[0] == L'.' || s[n - 1] == L'.') {
+		return 0;
+	}
+	for (size_t i = 0; i < n; i++) {
+		const wchar_t c = s[i];
+
+		if (c == L'.') {
+			if (label == 0 || s[i - 1] == L'-') {
+				return 0;
+			}
+			label = 0;
+			continue;
+		}
+		if (!(c >= 0x80 || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') ||
+					(c >= L'0' && c <= L'9') || (c == L'-' && label > 0))) {
+			return 0;
+		}
+		if (++label > 63) {
+			return 0;
+		}
+	}
+	return s[n - 1] != L'-';
+}
+
+/* "vpn.example.com, 10.0.0.11" 처럼 쉼표로 넷까지. 서버 수, 틀리면(주소도 이름도 아님, 넷보다 많음) -1. */
+static __inline int tunnel_check_servers(const wchar_t *list)
+{
+	wchar_t buf[TUNNEL_SERVERS_LEN];
 	wchar_t *tok, *ctx = NULL;
 	int n = 0;
 
@@ -253,24 +298,12 @@ static __inline int tunnel_parse_servers(const wchar_t *list, tunnel_addr_t *fir
 	}
 	wcscpy_s(buf, sizeof(buf) / sizeof(buf[0]), list);
 	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL; tok = wcstok_s(NULL, L", ", &ctx)) {
-		tunnel_addr_t a;
-
-		if (n > TUNNEL_ALT_SERVERS || tunnel_parse_addr(tok, &a) < 0) {
+		if (n == TUNNEL_SERVERS_MAX || !tunnel_check_host(tok)) {
 			return -1;
-		}
-		if (n == 0) {
-			*first = a;
-		}
-		else {
-			alt[n - 1] = a;
 		}
 		n++;
 	}
-	if (n == 0) {
-		return -1;
-	}
-	*n_alt = n - 1;
-	return 0;
+	return n > 0 ? n : -1;
 }
 
 

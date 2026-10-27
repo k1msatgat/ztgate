@@ -1038,7 +1038,7 @@ tools/update/ztgate_update_sign.py manifest update.key 0.9.3 ztgate-0.9.3.msi ht
 
 | 값 | 종류 | 뜻 |
 |---|---|---|
-| `Servers`, `Port` | 문자열, DWORD | 붙을 서버 (쉼표로 넷까지, 장애 조치). GUI 의 설정 창은 잠긴다 |
+| `Servers`, `Port` | 문자열, DWORD | 붙을 서버의 DNS 이름이나 IP (쉼표로 넷까지, 장애 조치). 이름은 연결할 때마다 다시 푼다. GUI 의 설정 창은 잠긴다 |
 | `AlwaysOn` | DWORD 1 | 서비스가 부팅하자마자 붙고 늘 붙어 있다. 사용자는 끊지 못한다 (GUI 와 `ctl disconnect` 모두 거절). 등록되지 않은 PC 는 등록되는 대로 붙는다 |
 | `BlockWhenDown` | DWORD 1 | 연결을 원하는데 터널이 열려 있지 않은 동안 내부 대역으로 나가는 연결을 WFP 로 막는다. 서버 주소는 늘 허용한다 |
 | `InternalNetworks` | 문자열 | 위에서 막을 대역 (`10.0.0.0/8, 172.16.0.0/12`). 비우면 서버가 마지막으로 내려 준 경로와 터널 대역 (서비스가 기억해 두어 부팅 직후에도 막는다) |

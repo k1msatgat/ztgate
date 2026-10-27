@@ -93,7 +93,7 @@ int policy_load(ztgate_policy_t *p)
 
 	if (reg_str(L"Servers", p->servers_text, sizeof(p->servers_text) / sizeof(p->servers_text[0]))) {
 		any = 1;
-		p->has_servers = tunnel_parse_servers(p->servers_text, &p->server_ip, p->alt_ips, &p->n_alt) == 0;
+		p->has_servers = tunnel_check_servers(p->servers_text) > 0;
 	}
 	if (reg_dword(L"Port", &v)) {
 		any = 1;

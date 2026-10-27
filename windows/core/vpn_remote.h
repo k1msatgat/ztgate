@@ -50,8 +50,8 @@ ULONGLONG vpn_remote_connected_since(vpn_session_t *s);
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN]);
 
 /* 등록 코드로 서버에 이 PC 를 올리라고 서비스에 시킨다. tunnel_enroll_result_t 를 돌려준다.
- * 답이 올 때까지 블로킹한다 (길어야 수십 초). server_ip 는 IPv4 또는 IPv6. */
-int vpn_remote_enroll(vpn_session_t *s, const tunnel_addr_t *server_ip, uint16_t server_port, const char *code);
+ * 답이 올 때까지 블로킹한다 (길어야 수십 초). servers 는 tunnel_config_t.servers 와 같은 글자이고 첫 주소에 올린다. */
+int vpn_remote_enroll(vpn_session_t *s, const wchar_t *servers, uint16_t server_port, const char *code);
 
 /* 코드 없이: 서비스가 새 신원을 만들어 저장하고 ID 와 키를 돌려준다. 관리자가 서버에
  * 손으로 옮겨 적는다. 키를 볼 수 있는 것은 이 한 번뿐이다. DEVICE_OK / DEVICE_ERROR. */

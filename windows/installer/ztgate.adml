@@ -8,7 +8,7 @@
       <string id="ztgate">ztgate</string>
       <string id="SUPPORTED_ZTGATE_09">ztgate 0.9 이상</string>
       <string id="Servers">연결할 서버</string>
-      <string id="Servers_Help">이 PC 가 붙을 ztgate 서버의 IPv4 주소입니다. 서버를 여럿 두면 쉼표로 넷까지 적습니다(예: 203.0.113.10, 203.0.113.11). 지금 서버가 답하지 않으면 다음 서버로 넘어갑니다. 사용자는 GUI 설정에서 바꿀 수 없습니다.</string>
+      <string id="Servers_Help">이 PC 가 붙을 ztgate 서버의 이름이나 IP 주소(IPv4, IPv6)입니다. 서버를 여럿 두면 쉼표로 넷까지 적습니다(예: vpn1.example.com, vpn2.example.com). 지금 서버가 답하지 않으면 다음 서버로 넘어갑니다. 이름은 연결을 시작할 때와 서버를 한 바퀴 다 돌았을 때 다시 풀므로, DNS 의 주소를 바꾸면 PC 들이 따라갑니다. 이름 하나가 주소를 여럿 돌려주면 그 주소들도 차례로 써 봅니다. 사용자는 GUI 설정에서 바꿀 수 없습니다.</string>
       <string id="AlwaysOn">항상 연결 (Always-on)</string>
       <string id="AlwaysOn_Help">서비스가 부팅하자마자 "연결할 서버"에 붙고, 끊기면 다시 붙습니다. 사용자는 연결을 끊을 수 없습니다. 기기가 아직 등록되지 않았으면 등록되는 대로 붙습니다.</string>
       <string id="BlockWhenDown">터널이 끊긴 동안 내부망 차단</string>
@@ -20,7 +20,7 @@
     </stringTable>
     <presentationTable>
       <presentation id="Servers">
-        <textBox refId="Servers"><label>서버 주소 (쉼표로 넷까지)</label></textBox>
+        <textBox refId="Servers"><label>서버 이름이나 주소 (쉼표로 넷까지)</label></textBox>
         <decimalTextBox refId="Port" defaultValue="9000">포트</decimalTextBox>
       </presentation>
       <presentation id="BlockWhenDown">

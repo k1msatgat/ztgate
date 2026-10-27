@@ -35,12 +35,9 @@ extern "C" {
 #define POLICY_NETS_MAX		16
 
 typedef struct ztgate_policy {
-	int has_servers;
-	tunnel_addr_t server_ip;
-	tunnel_addr_t alt_ips[TUNNEL_ALT_SERVERS];
-	int n_alt;
+	int has_servers;		/* servers_text 가 tunnel_check_servers 를 통과했다 */
 	uint16_t port;			/* 0 이면 정하지 않았다 */
-	wchar_t servers_text[256];	/* 화면에 보일 그대로 */
+	wchar_t servers_text[TUNNEL_SERVERS_LEN];	/* tunnel_config_t.servers 로 그대로 간다 */
 
 	int always_on;
 	int block_when_down;

@@ -96,7 +96,10 @@ typedef struct tunnel {
 	 * 패킷마다 len(2) 을 붙이고, 받은 스트림은 trbuf 에 모아 틀 하나씩 꺼낸다. */
 	int tcp;
 	int tcp_lost;			/* 연결이 끊겼다. 다시 열고 핸드셰이크한다 */
-	int cur_server;			/* 0 = cfg->server_ip, 1.. = cfg->alt_ips[i - 1] */
+	/* cfg->servers 를 푼 주소들. 지금 붙는 곳은 addrs[cur_server] 다. */
+	tunnel_addr_t addrs[TUNNEL_SERVERS_MAX];
+	int n_addrs;
+	int cur_server;
 	uint8_t trbuf[2 + BUF_SIZE];
 	size_t trlen;
 
@@ -222,11 +225,8 @@ static int route_usable(const tunnel_t *t, const net_route_t *r)
 	/* 서버를 여럿 적었으면 모두. 지금 서버만 빼면 다른 서버로 넘어갈 때 그리로 가는 패킷이 죽은
 	 * 터널로 들어간다. */
 	/* 경로는 IPv4 라 IPv6 서버는 덮일 일이 없다. */
-	if (t->cfg->server_ip.si_family == AF_INET && (t->cfg->server_ip.Ipv4.sin_addr.s_addr & mask) == r->addr) {
-		return 0;
-	}
-	for (int i = 0; i < t->cfg->n_alt; i++) {
-		if (t->cfg->alt_ips[i].si_family == AF_INET && (t->cfg->alt_ips[i].Ipv4.sin_addr.s_addr & mask) == r->addr) {
+	for (int i = 0; i < t->n_addrs; i++) {
+		if (t->addrs[i].si_family == AF_INET && (t->addrs[i].Ipv4.sin_addr.s_addr & mask) == r->addr) {
 			return 0;
 		}
 	}
@@ -252,18 +252,106 @@ static int server_len(const SOCKADDR_INET *a)
 	return a->si_family == AF_INET6 ? (int)sizeof(a->Ipv6) : (int)sizeof(a->Ipv4);
 }
 
-/* 다음 서버로 (서버를 여럿 적었을 때만). 새 서버로는 UDP 부터 해 본다. 1 이면 넘어갔다. */
+int tunnel_resolve_servers(const wchar_t *servers, tunnel_addr_t *out, int max)
+{
+	wchar_t buf[TUNNEL_SERVERS_LEN];
+	wchar_t *tok, *ctx = NULL;
+	int n = 0;
+
+	if (wcslen(servers) >= TUNNEL_SERVERS_LEN) {
+		return 0;
+	}
+	wcscpy_s(buf, TUNNEL_SERVERS_LEN, servers);
+	for (tok = wcstok_s(buf, L", ", &ctx); tok != NULL && n < max; tok = wcstok_s(NULL, L", ", &ctx)) {
+		ADDRINFOW hints, *res = NULL;
+		tunnel_addr_t got[TUNNEL_SERVERS_MAX];
+		int n_got = 0;
+
+		if (tunnel_parse_addr(tok, &got[0]) == 0) {
+			n_got = 1;
+		}
+		else {
+			memset(&hints, 0, sizeof(hints));
+			hints.ai_family = AF_UNSPEC;
+			hints.ai_socktype = SOCK_DGRAM;
+			if (GetAddrInfoW(tok, NULL, &hints, &res) == 0) {
+				for (const ADDRINFOW *p = res; p != NULL && n_got < TUNNEL_SERVERS_MAX; p = p->ai_next) {
+					memset(&got[n_got], 0, sizeof(got[n_got]));
+					if (p->ai_family == AF_INET && p->ai_addrlen >= sizeof(SOCKADDR_IN)) {
+						got[n_got].Ipv4 = *(const SOCKADDR_IN *)p->ai_addr;
+						got[n_got++].Ipv4.sin_port = 0;
+					}
+					else if (p->ai_family == AF_INET6 && p->ai_addrlen >= sizeof(SOCKADDR_IN6)) {
+						got[n_got].Ipv6 = *(const SOCKADDR_IN6 *)p->ai_addr;
+						got[n_got++].Ipv6.sin6_port = 0;
+					}
+				}
+				FreeAddrInfoW(res);
+			}
+		}
+		for (int i = 0; i < n_got && n < max; i++) {
+			int dup = 0;
+
+			for (int j = 0; j < n && !dup; j++) {
+				dup = memcmp(&out[j], &got[i], sizeof(got[i])) == 0;
+			}
+			if (!dup) {
+				out[n++] = got[i];
+			}
+		}
+	}
+	return n;
+}
+
+/* cfg->servers 를 다시 푼다. 못 풀면(이름 서버가 답하지 않는다) 전에 푼 주소를 그대로 쓴다. 쓸 주소가 있으면 1. */
+static int resolve(tunnel_t *t)
+{
+	tunnel_addr_t got[TUNNEL_SERVERS_MAX];
+	const int n = tunnel_resolve_servers(t->cfg->servers, got, TUNNEL_SERVERS_MAX);
+	char s[INET6_ADDRSTRLEN];
+
+	if (n == 0) {
+		tlog(t, "[dns] cannot resolve %ls%s", t->cfg->servers, t->n_addrs > 0 ? ", keeping the last addresses" : "");
+		return t->n_addrs > 0;
+	}
+	if (n != t->n_addrs || memcmp(got, t->addrs, n * sizeof(got[0])) != 0) {
+		memcpy(t->addrs, got, n * sizeof(got[0]));
+		t->n_addrs = n;
+		for (int i = 0; i < n; i++) {
+			tlog(t, "[dns] server %d: %s", i + 1, tunnel_addr_str(&got[i], s, sizeof(s)));
+		}
+		if (t->cfg->on_servers) {
+			t->cfg->on_servers(t->cfg->ctx, got, n);
+		}
+	}
+	if (t->cur_server >= t->n_addrs) {
+		t->cur_server = 0;
+	}
+	return 1;
+}
+
+/* 다음 서버로 (주소가 여럿일 때만). 한 바퀴를 다 돌면 이름을 다시 푼다 — 주소가 하나면 매번. 새 서버로는
+ * UDP 부터 해 본다. 1 이면 넘어갔다. */
 static int next_server(tunnel_t *t, char *server_str)
 {
 	char was[INET6_ADDRSTRLEN];
 
-	if (t->cfg->n_alt == 0) {
+	strcpy(was, server_str);
+	if (t->n_addrs <= 1) {
+		resolve(t);
+		server_set(t, &t->addrs[0]);
+		tunnel_addr_str(&t->addrs[0], server_str, INET6_ADDRSTRLEN);
+		if (strcmp(was, server_str) != 0) {
+			tlog(t, "[HS] %s does not answer, the name now points to %s", was, server_str);
+		}
 		return 0;
 	}
-	strcpy(was, server_str);
-	t->cur_server = (t->cur_server + 1) % (t->cfg->n_alt + 1);
-	server_set(t, t->cur_server == 0 ? &t->cfg->server_ip : &t->cfg->alt_ips[t->cur_server - 1]);
-	tunnel_addr_str(t->cur_server == 0 ? &t->cfg->server_ip : &t->cfg->alt_ips[t->cur_server - 1], server_str, INET6_ADDRSTRLEN);
+	t->cur_server = (t->cur_server + 1) % t->n_addrs;
+	if (t->cur_server == 0) {
+		resolve(t);
+	}
+	server_set(t, &t->addrs[t->cur_server]);
+	tunnel_addr_str(&t->addrs[t->cur_server], server_str, INET6_ADDRSTRLEN);
 	tlog(t, "[HS] %s does not answer, switching to %s", was, server_str);
 	transport_switch(t, 0);
 	return 1;
@@ -2087,13 +2175,19 @@ int tunnel_enroll(const tunnel_config_t *base, const char *code,
 	t->stop_event = stop_event;
 	t->sock = INVALID_SOCKET;
 	t->t0_ms = GetTickCount64();
-	server_set(t, &cfg.server_ip);
 
 	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
 		crypt_ecdh_free(mine);
 		crypt_wipe(&cfg, sizeof(cfg));
 		return TUNNEL_ENROLL_ERROR;
 	}
+
+	/* 서버를 여럿 적었으면 첫 주소에 올린다. 서버들은 같은 기기 목록을 쓴다. */
+	if (!resolve(t)) {
+		ret = TUNNEL_ENROLL_NO_RESPONSE;
+		goto out;
+	}
+	server_set(t, &t->addrs[0]);
 
 	if (socket_open(t) < 0) {
 		goto out;
@@ -2210,9 +2304,6 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 
 	t->t0_ms = GetTickCount64();
 
-	server_set(t, &cfg->server_ip);
-	tunnel_addr_str(&cfg->server_ip, server_str, sizeof(server_str));
-
 	set_state(t, TUNNEL_STATE_CONNECTING);
 
 	/* 지난번에 끝나지 못하고(서비스가 죽었다) 남은 이름 해석 규칙. */
@@ -2225,6 +2316,12 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 	}
 	wsa_ready = 1;
 
+	if (!resolve(t)) {
+		goto out;
+	}
+	server_set(t, &t->addrs[0]);
+	tunnel_addr_str(&t->addrs[0], server_str, sizeof(server_str));
+
 	/* 서버가 받아 준 뒤에 어댑터를 만든다. 순서를 반대로 하면 서버에 닿지 못하거나
 	 * 거절당하는 경우에도 PC 에 네트워크 어댑터와 터널 대역 경로가 잠깐 생겼다
 	 * 사라진다. 접근이 허락되기 전에는 터널이 존재하지 않는 편이 맞다. */
@@ -2232,8 +2329,8 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 		goto out;
 	}
 
-	tlog(t, cfg->server_ip.si_family == AF_INET6 ? "[%ls] tunneling to [%s]:%u" : "[%ls] tunneling to %s:%u",
-			cfg->adapter_name, server_str, cfg->server_port);
+	tlog(t, t->addrs[0].si_family == AF_INET6 ? "[%ls] tunneling to %ls [%s]:%u" : "[%ls] tunneling to %ls %s:%u",
+			cfg->adapter_name, cfg->servers, server_str, cfg->server_port);
 
 	/* 서버마다 UDP, 그다음 같은 번호의 TCP. 답하는 서버를 찾을 때까지 차례로. 거절은 답이다 —
 	 * 다른 서버도 같은 목록으로 같은 판정을 하므로 넘어가지 않는다. */
@@ -2245,7 +2342,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				hs = do_handshake(t);
 			}
 		}
-		if (hs != HS_FAIL || tries >= cfg->n_alt ||
+		if (hs != HS_FAIL || tries >= t->n_addrs - 1 ||
 				WaitForSingleObject(t->stop_event, 0) == WAIT_OBJECT_0 || !next_server(t, server_str)) {
 			break;
 		}
@@ -2386,7 +2483,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 				/* 지금 전송으로 답이 없다. 다음에는 다른 쪽(UDP <-> TCP)으로 해 본다. TCP 로도 답이
 				 * 없었으면 다른 서버의 UDP 로 (서버를 여럿 적었을 때). */
 				tlog(t, "[HS] failed re-handshake[%s][%u], retry in %ds",
-						server_str, cfg->server_port, cfg->n_alt > 0 ? 2 : SERVER_TIMEOUT_SEC);
+						server_str, cfg->server_port, t->n_addrs > 1 ? 2 : SERVER_TIMEOUT_SEC);
 				if (!t->tcp || !next_server(t, server_str)) {
 					/* TCP 로 연결조차 안 되면 소켓 없이 남지 않게 UDP 로 돌아간다. 비워 두면 다음
 					 * 보내기가 실패해 터널이 끝나 버린다 (10057). */
@@ -2399,7 +2496,7 @@ int tunnel_run(const tunnel_config_t *cfg, HANDLE stop_event)
 			now = GetTickCount64();
 			session->last_rx_ms = now;
 			/* 다른 서버가 있으면 30초를 기다리지 않고 2초 뒤에 다시 해 본다. */
-			if (t->hs_failed && cfg->n_alt > 0) {
+			if (t->hs_failed && t->n_addrs > 1) {
 				session->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 2000;
 			}
 		}
