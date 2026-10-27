@@ -122,14 +122,20 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
    printf 'PEERS="sync@10.0.0.11"\nSSH_KEY=/etc/ztgate-sync/sync.key\n' | sudo install -m 600 /dev/stdin /etc/ztgate-sync/sync.conf
    ```
 
-4. 주 서버에서 한 번 보내 보고, 자동 동기화를 켭니다. 그 뒤로는 기기 목록이나 ACL 이 바뀔 때마다 부 서버로 갑니다. 서버 키가 바뀌었거나 ACL, 로그인, DNS 를 켜고 끈 때는 부 서버를 다시 띄우고, 그 밖에는 다시 읽게만 합니다. 처음 보낼 때는 서버 키가 바뀌므로 부 서버가 한 번 다시 뜹니다.
+4. 주 서버에서 root 로 부 서버에 한 번 접속해 호스트 키를 받아 둡니다. 동기화는 묻지 않고 접속하므로, 모르는 호스트 키면 `Host key verification failed` 로 실패합니다. 지문이 부 서버의 것(부 서버에서 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`)과 같은지 보고 `yes` 를 칩니다.
+
+   ```bash
+   sudo ssh -i /etc/ztgate-sync/sync.key sync@10.0.0.11 true
+   ```
+
+5. 주 서버에서 한 번 보내 보고, 자동 동기화를 켭니다. 그 뒤로는 기기 목록이나 ACL 이 바뀔 때마다 부 서버로 갑니다. 서버 키가 바뀌었거나 ACL, 로그인, DNS 를 켜고 끈 때는 부 서버를 다시 띄우고, 그 밖에는 다시 읽게만 합니다. 처음 보낼 때는 서버 키가 바뀌므로 부 서버가 한 번 다시 뜹니다.
 
    ```bash
    sudo ztgate-sync
    sudo systemctl enable --now ztgate-sync.path ztgate-sync.timer
    ```
 
-5. PC 에 두 서버를 모두 적습니다. 주 서버를 첫 번째로 적습니다. 기기는 첫 번째 서버에 등록하기 때문입니다.
+6. PC 에 두 서버를 모두 적습니다. 주 서버를 첫 번째로 적습니다. 기기는 첫 번째 서버에 등록하기 때문입니다.
    - 초대 링크를 쓰면 `PUBLIC_ADDRESS=vpn1.example.com,vpn2.example.com` 처럼 적습니다.
    - Windows 정책을 쓰면 `Servers` 에 쉼표로 이어 적습니다.
 

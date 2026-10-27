@@ -471,6 +471,7 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
   # 설정과 키는 서버 계정이 쓸 수 있는 /etc/ztgate 가 아니라 root 만 여는 곳에 둔다 (도구는 남이 쓸 수 있는 sync.conf 를 읽지 않는다).
   sudo install -d -m 700 /etc/ztgate-sync
   printf 'PEERS="sync@10.0.0.11"\nSSH_KEY=/etc/ztgate-sync/sync.key\n' | sudo install -m 600 /dev/stdin /etc/ztgate-sync/sync.conf
+  sudo ssh -i /etc/ztgate-sync/sync.key sync@10.0.0.11 true   # 부 서버의 호스트 키를 지문으로 확인해 받아 둔다
   sudo ztgate-sync                                         # 한 번 해 보고
   sudo systemctl enable --now ztgate-sync.path ztgate-sync.timer
   ```
@@ -952,6 +953,7 @@ sendto(buf, n + 32)     └─────────────────�
 | 암호 도구 | `vpn_server selftest` / `vpn_client selftest` / `vpn_client.exe selftest`. 같은 표준 벡터 20개 | CI |
 | 빌드 | Linux `-Wall -Wextra -Werror`, Windows `/W4` 경고 없음 | CI |
 | 컨테이너 | `docker/demo.sh`. 서버 + 클라이언트 두 컨테이너로 같은 시나리오 | CI |
+| 서버 두 대 | `docker/ha.sh`. 주 서버, 부 서버, 클라이언트 세 컨테이너로 ssh 동기화와 주 서버가 꺼질 때의 장애 조치, ACL 을 켤 때의 다시 띄우기와 고칠 때의 다시 읽기 | CI |
 | 서버 처리량 | `tools/loadgen/bench.sh`. 아래 [성능](#성능) | CI |
 | 터널 처리량 | `tools/loadgen/iperf.sh`. 실제 서버와 클라이언트 사이의 iperf3 TCP / UDP, 같은 veth 의 직결 값과 나란히 | CI |
 | 실제 IdP | `test/keycloak_check.sh`. Keycloak 을 아래 설정대로 만들고, 그 토큰을 `vpn_server verify-token` 에 넣는다 (받기, 다른 앱의 토큰, 변조, 기기 인가 첫 단계). Windows GUI 의 흐름(인가 코드 + PKCE, 루프백 포트 둘, 갱신, 폐기 뒤 갱신 거절)은 브라우저가 하는 일을 스크립트가 대신해 돌린다 | CI |
@@ -1251,7 +1253,7 @@ ztgate/
 | OpenSSL 암호 구현을 `server/src/crypt.c` 에서 `lib/common/src/crypt_openssl.c` 로 옮긴 것 |
 | Linux 클라이언트 v4: `client/src/session.c`(핸드셰이크, 등록, 세션 송신. loadgen 과 공유), `identity.c`(신원 파일), `posture.c`(커널 버전, nftables), `netcfg.c`(ioctl 로 주소·MTU·경로), `client.c` 의 v4 루프와 명령. 동작 규칙은 Windows 클라이언트의 `tunnel.c` 를 따랐다 |
 | `test/linux_e2e.sh`(netns 두 개의 전체 경로 시험)와 CI 단계, `test/client.sh` / `common.sh` 를 새 명령행으로 고친 것 |
-| Docker: `Dockerfile`, `docker/entrypoint.sh`, `docker/enroll-code.sh`, `docker-compose.yml`, `docker/demo.sh`, CI 의 `docker` 잡 |
+| Docker: `Dockerfile`, `docker/entrypoint.sh`, `docker/enroll-code.sh`, `docker-compose.yml`, `docker/demo.sh`, `docker/ha.sh`, CI 의 `docker` 잡 |
 | `docs/experiments.md`의 실험 절차와 해석 초안 (실험 0은 CI 가 돌린 측정, 1~8은 직접 실행) |
 | 이 README: Linux 기준 재구성, "표준 프로토콜과의 대조", 보안 모델의 확인 열 |
 | 사용자 로그인 (프로토콜 v5): `server/src/idp.c`(JWT 검증, JWKS), `server/src/json.c`, `policy.c` 의 사용자 조건, `acl.c` / `server.c` / `audit.c` / `status.c` 의 연결, `vpn_server verify-token`, 클라이언트의 `-t` 와 `LOGIN`, `client/ztgate_login`(OIDC 기기 인가), `tools/idp/`(시험용 IdP), `auth_check.py` 의 로그인 시험, `linux_e2e.sh` 의 5단계, `test/keycloak_check.sh` 와 CI 의 `idp` 잡, MCP 의 ACL 사용자 조건. 토큰을 세션이 열린 뒤에 싣는 것, 서버가 IdP 와 통신하지 않는 것, 로그인을 세션이 아니라 규칙의 조건으로 두는 것은 AI가 제안하고 검토 후 채택 |
