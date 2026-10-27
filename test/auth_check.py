@@ -1476,8 +1476,12 @@ def enroll_tests(srv, dev_path):
 
     other = Client()
     didx = session(other)
-    check("enroll: a device session cannot enroll anything",
-          (other.send(seal(ENROLL, didx, new_id + new_pub)), other.recv())[1], "no response")
+    # 앞의 IP 조각 시험이 남긴 조각이 만료되면 커널이 이 기기 주소로 ICMP 를 보낸다. 그 DATA 는 답이 아니다.
+    other.send(seal(ENROLL, didx, new_id + new_pub))
+    reply = other.recv()
+    while reply and reply[0] == DATA:
+        reply = other.recv()
+    check("enroll: a device session cannot enroll anything", reply, "no response")
 
     check("enroll: request too short", (c.send(seal(ENROLL, idx, new_id)), c.recv())[1], "no response")
     check("enroll: an id that is already registered", enroll(idx, DEV_ID, new_pub), "ENROLL(2)")
