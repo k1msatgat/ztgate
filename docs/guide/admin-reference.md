@@ -8,9 +8,9 @@
 |---|---|
 | 운영체제 | Ubuntu 22.04, Ubuntu 24.04, Rocky Linux 9, RHEL 9 (x86_64) |
 | 주소 | 공인 주소, 또는 공인 주소에서 오는 포트 포워딩 |
-| 포트 | UDP 9000 (`PORT`). UDP 를 막는 네트워크의 PC 를 받으려면 TCP 포트 하나 (`TCP_PORT`, 443 도 됩니다) |
+| 포트 | UDP 9000 (`PORT`). UDP 를 막는 네트워크의 PC 를 받으려면 같은 번호의 TCP 포트도 (`TCP_PORT=9000`). Windows 는 같은 번호의 TCP 로만 넘어갑니다 |
 | 이름 | DNS 이름을 권장합니다 (`vpn.example.com`). PC 는 연결할 때마다 이름을 다시 풀기 때문에, 서버 주소가 바뀌어도 PC 를 다시 설정하지 않습니다 |
-| 함께 쓰는 프로그램 | Node.js 는 관리 도구 `ztgate_ctl` 에 필요합니다. nftables 는 서버 뒤로 내보낼 때, rsync 는 서버 두 대를 맞출 때 필요합니다 |
+| 함께 쓰는 프로그램 | Node.js 18 이상은 관리 도구 `ztgate_ctl` 에 필요합니다 (Ubuntu 22.04 의 기본 `nodejs` 는 12 라 따로 깝니다). nftables 는 서버 뒤로 내보낼 때, rsync 는 서버 두 대를 맞출 때 필요합니다 |
 
 ## 매일 쓰는 명령
 

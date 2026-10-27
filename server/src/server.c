@@ -1485,7 +1485,8 @@ static void udp_in(int32_t sock, int tun_fd, uint8_t *packet, size_t cap, int n,
 	}
 	if (h.version < PROTOCOL_VERSION_MIN || h.version > PROTOCOL_VERSION) {
 		/* 접속을 청하는 쪽에만 답한다. 그 밖의 종류는 버전마다 모양이 다르니 읽지 않는다. */
-		if (h.type == MSG_TYPE_REQ_HANDSHAKE && auth_rate_ok(src)) {
+		/* 답(VERSION_MSG_LEN)보다 짧은 요청에는 답하지 않는다 (증폭 없음). */
+		if (h.type == MSG_TYPE_REQ_HANDSHAKE && n >= (int)VERSION_MSG_LEN && auth_rate_ok(src)) {
 			send_version(sock, src, srclen);
 		}
 		LOG_LIMITED(LOG_DROP, "[drop] protocol v%u from a client (this server takes v%u..v%u)\n",
@@ -1941,7 +1942,8 @@ int main(int argc, char *argv[])
 		workers[i].sock = -1;
 		workers[i].tun_fd = nworkers == 1 ? tun_alloc(ifname) : tun_open_queue(ifname);
 		if (workers[i].tun_fd < 0) {
-			fprintf(stderr, "tun_alloc failed%s\n", nworkers > 1 ? " (multi-queue)" : "");
+			fprintf(stderr, "tun_alloc failed%s: needs /dev/net/tun and CAP_NET_ADMIN (run as root, or as the ztgate.service unit)\n",
+					nworkers > 1 ? " (multi-queue)" : "");
 			return 1;
 		}
 		workers[i].sock = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);

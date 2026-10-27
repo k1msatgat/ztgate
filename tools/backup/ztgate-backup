@@ -22,6 +22,11 @@ UNIT=${ZTGATE_UNIT-ztgate.service}
 
 die() { echo "ztgate-backup: $*" >&2; exit 1; }
 
+# KEEP=0 이면 head -n -0 이 모든 백업을 지울 목록으로 돌려준다.
+case "$KEEP" in
+	''|*[!0-9]*|0) die "KEEP must be a number of at least 1 (got '$KEEP')" ;;
+esac
+
 backup() {
 	[ -d "$ETC" ] || die "$ETC not found"
 	umask 077
@@ -75,10 +80,13 @@ restore() {
 	local before
 	before=$(backup)
 	echo "current configuration saved to $before"
-	[ -z "$UNIT" ] || systemctl stop "$UNIT"
 	local stage
 	stage=$(mktemp -d "$(dirname "$ETC")/.ztgate-restore.XXXXXX")
-	tar -xzf "$file" -C "$stage" --no-same-owner
+	# 서버를 내리기 전에 푼다. 풀다가 실패하면 서버는 그대로 돌고 있다.
+	tar -xzf "$file" -C "$stage" --no-same-owner || { rm -rf "$stage"; die "could not extract $file; the server was not touched"; }
+	[ -z "$UNIT" ] || systemctl stop "$UNIT"
+	# 여기서부터 실패해도 서버는 다시 올린다.
+	[ -z "$UNIT" ] || trap 'systemctl start "$UNIT"' EXIT
 	chmod 700 "$stage/$name"
 	rm -rf "$ETC.old"
 	mv "$ETC" "$ETC.old"
@@ -92,7 +100,10 @@ restore() {
 	fi
 	rmdir "$stage"
 	rm -rf "$ETC.old"
-	[ -z "$UNIT" ] || systemctl start "$UNIT"
+	if [ -n "$UNIT" ]; then
+		trap - EXIT
+		systemctl start "$UNIT"
+	fi
 	echo "restored $ETC from $file"
 }
 

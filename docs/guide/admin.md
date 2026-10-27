@@ -11,7 +11,14 @@
    sudo dnf install ./ztgate-server-<버전>-1.x86_64.rpm
    ```
 
-   설치는 서버 키(`/etc/ztgate/server.key`)와 기본 설정(`/etc/ztgate/server.env`)을 처음 한 번 만듭니다.
+   설치는 서버 키(`/etc/ztgate/server.key`)와 기본 설정(`/etc/ztgate/server.env`)을 처음 한 번 만듭니다. 관리 도구 `ztgate_ctl` 은 Node.js 18 이상이 필요합니다. Ubuntu 22.04 의 기본 `nodejs` 는 12 라서 NodeSource 같은 곳에서 18 이상을 깝니다.
+
+   서버의 방화벽에서 포트를 엽니다. Rocky Linux 와 RHEL 은 firewalld 가 기본으로 켜져 있습니다. 클라우드 서버라면 보안 그룹에서도 엽니다.
+
+   ```bash
+   sudo firewall-cmd --permanent --add-port=9000/udp --add-port=9000/tcp && sudo firewall-cmd --reload   # Rocky, RHEL
+   sudo ufw allow 9000/udp && sudo ufw allow 9000/tcp                                                      # Ubuntu 에서 ufw 를 쓴다면
+   ```
 
 2. 서버 키를 바로 백업합니다 ([설정 백업하기](#설정-백업하기)). 서버 키를 잃으면 모든 기기가 다시 등록해야 합니다.
 
@@ -19,9 +26,9 @@
 
    ```bash
    PORT=9000                        # 기기가 붙는 UDP 포트
-   TUN_IP=10.0.0.1                  # 터널 안의 서버 주소. 기기는 같은 /24 대역의 주소를 받습니다
+   TUN_IP=10.0.0.1                  # 터널 안의 서버 주소. 기기는 같은 대역(PREFIX, 기본 /24)의 주소를 받습니다
    PUBLIC_ADDRESS=vpn.example.com   # 기기가 밖에서 서버에 닿는 이름. 적으면 초대 링크가 만들어집니다
-   # TCP_PORT=443                   # UDP 를 막는 네트워크에 있는 기기를 받으려면
+   # TCP_PORT=9000                  # UDP 를 막는 네트워크의 기기용. Windows 는 PORT 와 같은 번호의 TCP 로만 넘어갑니다
    # FORWARD_OUT=eth0               # 터널에서 서버 뒤의 사내망으로 내보내려면 그 인터페이스
    ```
 
@@ -33,6 +40,12 @@
    ```
 
 서버는 root 가 아닌 `ztgate` 계정으로 돕니다. `/etc/ztgate` 의 파일을 손으로 고쳤으면 `sudo systemctl reload ztgate` 를 실행합니다. `kill -HUP` 로 보내면 파일 소유가 맞춰지지 않아 서버가 그 파일을 읽지 못합니다.
+
+다시 읽기(reload)로 반영되지 않는 것이 있습니다. 아래를 바꿨으면 `sudo systemctl restart ztgate` 로 다시 띄웁니다. 붙어 있던 PC 는 바로 다시 붙습니다.
+
+- `server.env` 의 값 (포트, 터널 대역, MTU, `FORWARD_OUT`, 워커 수)
+- ACL, 사용자 로그인, 내부 DNS 를 켜거나 끄는 것 (`acl.conf`, `idp.conf`, `dns.conf` 를 새로 만들거나 지웠을 때)
+- 서버 키
 
 ## 웹 관리 콘솔 켜기
 
@@ -80,7 +93,12 @@
 
 ACL 을 처음 켤 때는 서버를 다시 시작합니다. 그 뒤에 고친 규칙은 다시 시작하지 않아도 바로 적용됩니다.
 
-사용자 로그인(SSO)을 켜려면 Keycloak 이나 Entra ID 같은 IdP 를 `/etc/ztgate/idp.conf` 에 적습니다. 방법은 README 의 "사용자 로그인" 절에 있습니다.
+사용자 로그인(SSO)은 아래 순서로 켭니다. 각 줄의 뜻과 IdP 쪽 설정은 README 의 "사용자 로그인" 절에 있습니다.
+
+1. `/etc/ztgate/idp.conf` 에 `issuer`, `audience`, `jwks` 를 적습니다.
+2. IdP 의 공개키 묶음을 받아 둡니다: `sudo systemctl enable --now ztgate-jwks.timer`. 이 타이머가 15분마다 새로 받습니다.
+3. 토큰 하나로 맞는지 봅니다: `sudo /opt/ztgate/server/bin/vpn_server verify-token /etc/ztgate/idp.conf < token.txt`.
+4. 서버를 다시 띄웁니다: `sudo systemctl restart ztgate`. 로그인을 켜는 것은 서버가 뜰 때만 정해집니다.
 
 ## 설정 백업하기
 
@@ -95,15 +113,16 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 ## 서버 두 대로 장애에 대비하기
 
 1. 두 번째 서버를 같은 방법으로 설치합니다. `server.env` 의 `TUN_IP` 는 첫 서버와 같게 둡니다.
-2. 두 번째 서버(부 서버)에 동기화 계정을 만듭니다. 그 계정에는 첫 서버(주 서버)의 공개키를 등록하고, `sudo rsync` 와 `sudo systemctl reload ztgate` 만 허락합니다.
-3. 주 서버에 `/etc/ztgate/sync.conf` 를 만듭니다.
+2. 두 번째 서버(부 서버)에 동기화 계정을 만듭니다. 그 계정에는 첫 서버(주 서버)의 공개키를 등록하고, `sudo rsync`, `sudo systemctl reload ztgate`, `sudo systemctl restart ztgate` 만 허락합니다.
+3. 주 서버에 root 만 여는 폴더 `/etc/ztgate-sync` 를 만들고, 그 안에 `sync.conf` 와 키를 둡니다. `/etc/ztgate` 에는 두지 않습니다. 서버 계정이 쓸 수 있는 곳이라, 서버를 차지한 쪽이 동기화 도구(root)에 명령을 끼워 넣을 수 있기 때문입니다. 도구는 다른 계정이 쓸 수 있는 `sync.conf` 를 읽지 않습니다.
 
    ```bash
-   PEERS="sync@10.0.0.11"
-   SSH_KEY=/etc/ztgate/sync.key
+   sudo install -d -m 700 /etc/ztgate-sync
+   sudo ssh-keygen -t ed25519 -N '' -f /etc/ztgate-sync/sync.key
+   printf 'PEERS="sync@10.0.0.11"\nSSH_KEY=/etc/ztgate-sync/sync.key\n' | sudo install -m 600 /dev/stdin /etc/ztgate-sync/sync.conf
    ```
 
-4. 주 서버에서 한 번 보내 보고, 자동 동기화를 켭니다. 그 뒤로는 기기 목록이나 ACL 이 바뀔 때마다 부 서버로 갑니다.
+4. 주 서버에서 한 번 보내 보고, 자동 동기화를 켭니다. 그 뒤로는 기기 목록이나 ACL 이 바뀔 때마다 부 서버로 갑니다. 서버 키가 바뀌었거나 ACL, 로그인, DNS 를 켜고 끈 때는 부 서버를 다시 띄우고, 그 밖에는 다시 읽게만 합니다. 처음 보낼 때는 서버 키가 바뀌므로 부 서버가 한 번 다시 뜹니다.
 
    ```bash
    sudo ztgate-sync

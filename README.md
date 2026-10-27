@@ -243,7 +243,7 @@ any            any              any    any    deny
 **서버.** IdP의 공개키 묶음(JWKS)을 파일로 받아 두고 `-u`로 설정을 줍니다. 서버는 IdP와 직접 통신하지 않습니다. 단일 스레드 이벤트 루프가 HTTPS 응답을 기다리는 동안 모든 터널이 멈추기 때문입니다. IdP가 키를 바꾸면 파일을 갈아 끼우고 `SIGHUP`을 보냅니다. 이 일은 `tools/idp/ztgate_jwks.py` 가 서버 밖에서 합니다. 이 도구는 설정 문서에서 `jwks_uri` 를 찾아 받고, 서명 키가 있는 온전한 묶음이고 지금 것과 다를 때만 갈아 끼운 뒤 다시 읽게 합니다. `ztgate-jwks.timer` 가 15분마다 돌립니다.
 
 ```bash
-curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs > /etc/ztgate/jwks.json
+curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs | sudo tee /etc/ztgate/jwks.json > /dev/null   # 서비스로 설치했으면 ztgate-jwks.timer 가 대신 받는다
 cat > /etc/ztgate/idp.conf <<'EOF'
 issuer        https://idp.example.com/realms/corp    # 토큰의 iss 와 정확히 같아야 한다
 audience      ztgate                                 # 토큰의 aud 에 들어 있어야 한다
@@ -251,7 +251,7 @@ jwks          jwks.json                              # 상대 경로는 이 파�
 user-claim    preferred_username                     # 기본 sub
 groups-claim  groups                                 # 기본 groups
 EOF
-./server/bin/vpn_server verify-token /etc/ztgate/idp.conf < token.txt    # 서버를 띄우기 전에 토큰 하나를 대 본다
+./server/bin/vpn_server verify-token /etc/ztgate/idp.conf < token.txt    # 서버를 띄우기 전에 토큰 하나를 대 본다 (패키지는 /opt/ztgate/server/bin/vpn_server)
 # ok user=alice groups=ops expires_in=299s
 ```
 
@@ -400,15 +400,15 @@ sudo systemctl enable --now ztgate
 | `/etc/ztgate/dns.conf` | 있으면 내부 DNS 를 기기에 내려 준다 |
 | `/etc/ztgate/server.key` | 서버 키. 설치할 때 한 번 만든다. 서버가 지키는 비밀은 이것 하나다. 바꾸면 등록 코드로 올라온 기기가 모두 다시 등록해야 한다 |
 | `/var/log/ztgate/audit.log` | 감사 로그 (사건마다 JSON 한 줄) |
-| `/run/ztgate/status.sock` | 상태 소켓 (root 전용) |
+| `/run/ztgate/status.sock` | 상태 소켓 (`ztgate` 계정과 root 만) |
 
 ### 패키지로 설치하기 (DEB / RPM)
 
 저장소를 빌드할 수 없는 장비에는 서버 패키지 `ztgate-server` 를 씁니다. CI 가 만들어 산출물(`ztgate-server-deb`, `ztgate-server-rpm`)로 올리고, 직접 만들려면 `make server` 뒤에 `packaging/build.sh deb` 또는 `packaging/build.sh rpm` 입니다 (`packaging/out/`).
 
 ```bash
-sudo apt install ./ztgate-server_0.9.0_amd64.deb        # Debian / Ubuntu (OpenSSL 3)
-sudo dnf install ./ztgate-server-0.9.0-1.x86_64.rpm     # Rocky / RHEL 9
+sudo apt install ./ztgate-server_<버전>_amd64.deb        # Debian, Ubuntu (OpenSSL 3, Node.js 18 이상)
+sudo dnf install ./ztgate-server-<버전>-1.x86_64.rpm     # Rocky, RHEL 9
 sudo systemctl enable --now ztgate
 ```
 
@@ -420,7 +420,7 @@ sudo systemctl enable --now ztgate
 
 | 하려는 일 | 방법 |
 |---|---|
-| 기기 추가 | `sudo env ENROLL_FILE=/etc/ztgate/enroll.conf docker/enroll-code.sh <터널 IP> [조건] -l <이름>`으로 코드를 만들어 건넨다 |
+| 기기 추가 | 웹 콘솔의 등록 코드 화면, 또는 `echo '{"cmd":"enroll_create","label":"laptop"}' \| sudo ztgate_ctl` 로 코드(와 초대 링크)를 만들어 건넨다. `docker/enroll-code.sh` 는 컨테이너와 손으로 띄운 서버용이다 |
 | 정책 바꾸기 | `acl.conf`나 `devices.conf`를 고치고 `sudo systemctl reload ztgate`. 붙어 있는 기기는 다음 keepalive(10초 이내)부터 따른다 |
 | 기기 폐기 | `devices.conf`에서 그 줄을 지우고 reload. 다음 keepalive에서 끊긴다 |
 | IdP 키 교체 | `ztgate-jwks.timer` 가 15분마다 받아 바뀌었으면 reload 한다. 바로 받으려면 `sudo systemctl start ztgate-jwks`. 깨진 묶음은 깔지 않고, 서버도 깨진 파일이면 이전 키를 그대로 쓴다 |
@@ -464,12 +464,13 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
 - 처음에는 답하는 서버를 찾을 때까지 차례로 해 봅니다 (Windows 는 서버마다 UDP, 그다음 같은 번호의 TCP). 연결 중에 지금 서버가 30초 동안 조용하고 다시 핸드셰이크도 실패하면, 30초를 더 기다리지 않고 2초 뒤 다음 서버로 넘어갑니다. 거절은 답이라 넘어가지 않습니다.
 - 서버들은 **같은 기기 목록, ACL, 서버 키**를 써야 합니다 (같은 서버 키라야 등록 때 고정한 서버 공개키로 어느 서버에나 붙습니다). `ztgate-sync` 가 맞춰 줍니다 (아래). 세션은 서버마다 따로라, 넘어가면 새 핸드셰이크로 새 세션을 엽니다. 넘어가는 동안의 패킷은 잃습니다.
 - 서버 뒤로 내보내는 경로(`FORWARD_OUT`)와 터널 주소 대역이 서버마다 같아야 클라이언트가 같은 주소를 받습니다. 같은 기기가 두 서버에 동시에 붙지는 않습니다 (클라이언트는 한 번에 한 서버).
-- **설정 맞추기 (`ztgate-sync`).** 한 대를 주 서버로 정하고, 설정은 거기서만 고칩니다. 주 서버의 `/etc/ztgate/sync.conf` 에 부 서버를 적고 켜면, 기기 목록 · ACL · 로그인 설정 · DNS · 서버 키가 바뀔 때마다 부 서버들에 rsync 로 보내고 다시 읽게 합니다 (5분마다 한 번 더, 꺼져 있던 부 서버를 따라잡게). `server.env` 와 등록 코드는 보내지 않습니다. 기기는 주 서버에서 등록하므로 `PUBLIC_ADDRESS` 의 첫 이름이 주 서버여야 합니다. 부 서버에는 `.sync-primary` 표시가 생기고, 그 서버의 `ztgate_ctl` 은 설정을 고치는 명령을 거절합니다.
+- **설정 맞추기 (`ztgate-sync`).** 한 대를 주 서버로 정하고, 설정은 거기서만 고칩니다. 주 서버의 `/etc/ztgate-sync/sync.conf`(root 만 여는 폴더) 에 부 서버를 적고 켜면, 기기 목록 · ACL · 로그인 설정 · DNS · 서버 키가 바뀔 때마다 부 서버들에 rsync 로 보내고 다시 읽게 합니다 (5분마다 한 번 더, 꺼져 있던 부 서버를 따라잡게). 서버 키가 바뀌었거나 ACL, 로그인, DNS 를 켜고 끈 때는 다시 읽기로 반영되지 않으므로 부 서버를 다시 띄웁니다. `server.env` 와 등록 코드는 보내지 않습니다. 기기는 주 서버에서 등록하므로 `PUBLIC_ADDRESS` 의 첫 이름이 주 서버여야 합니다. 부 서버에는 `.sync-primary` 표시가 생기고, 그 서버의 `ztgate_ctl` 은 설정을 고치는 명령을 거절합니다.
 
   ```bash
-  # 주 서버. 부 서버의 ztgate 동기화 계정에는 키를 등록하고 sudo 로 rsync 와 systemctl reload ztgate 만 연다.
-  echo 'PEERS="sync@10.0.0.11"' | sudo tee /etc/ztgate/sync.conf
-  echo 'SSH_KEY=/etc/ztgate/sync.key' | sudo tee -a /etc/ztgate/sync.conf
+  # 주 서버. 부 서버의 동기화 계정에는 키를 등록하고 sudo 로 rsync 와 systemctl reload / restart ztgate 만 연다.
+  # 설정과 키는 서버 계정이 쓸 수 있는 /etc/ztgate 가 아니라 root 만 여는 곳에 둔다 (도구는 남이 쓸 수 있는 sync.conf 를 읽지 않는다).
+  sudo install -d -m 700 /etc/ztgate-sync
+  printf 'PEERS="sync@10.0.0.11"\nSSH_KEY=/etc/ztgate-sync/sync.key\n' | sudo install -m 600 /dev/stdin /etc/ztgate-sync/sync.conf
   sudo ztgate-sync                                         # 한 번 해 보고
   sudo systemctl enable --now ztgate-sync.path ztgate-sync.timer
   ```
@@ -493,7 +494,7 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
 | 연결은 되는데 특정 목적지만 안 됨 | 그 목적지의 `allow` 규칙이 없거나 규칙의 조건(포스처, `user=`, `group=`)이 맞지 않습니다. 감사 로그의 `access` 줄에서 판정을 봅니다 |
 | 로그인이 거절됨 | `vpn_server verify-token /etc/ztgate/idp.conf < token.txt`가 이유(서명, `iss`, `aud`, `exp`)를 알려 줍니다 |
 | 조건을 적었는데 정책이 바뀌지 않음 | `devices.conf`에서 조건은 터널 IP 바로 뒤에 적습니다. 줄 끝의 `# 이름` 뒤에 붙이면 주석이 됩니다 |
-| 서버가 설정 파일을 읽지 않음 | 키가 든 파일(`devices.conf`, `enroll.conf`, `acl.conf`)은 권한이 `600`이어야 합니다 |
+| 서버가 설정 파일을 읽지 않음 | 키가 든 파일(`devices.conf`, `enroll.conf`)은 권한이 `600`이어야 합니다. 서비스로 설치했으면 손으로 고친 뒤 `kill -HUP` 대신 `systemctl reload ztgate` 를 씁니다 (파일 소유를 `ztgate` 로 맞춘다) |
 
 ## 등록부터 차단과 복구까지의 동작 흐름
 

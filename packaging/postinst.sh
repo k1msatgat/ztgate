@@ -28,4 +28,6 @@ if command -v systemctl > /dev/null 2>&1 && [ -d /run/systemd/system ]; then
 	if systemctl is-active --quiet ztgate.service; then
 		systemctl restart ztgate.service || true
 	fi
+	# 콘솔과 지표 내보내기도 새 코드로 (켜져 있을 때만).
+	systemctl try-restart ztgate-console.service ztgate-exporter.service || true
 fi

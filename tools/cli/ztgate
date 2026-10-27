@@ -106,7 +106,9 @@ def call(ctl, cmd, **args):
                            timeout=CTL_TIMEOUT)
         return json.loads(p.stdout.strip().splitlines()[-1])
     except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
-        return {"ok": False, "error": "ztgate_ctl: %s" % type(e).__name__}
+        # ztgate_ctl 이 JSON 을 내지 못했다 (Node.js 가 너무 오래됨, 권한 없음 등). 그 이유는 stderr 에 있다.
+        why = (p.stderr.strip().splitlines() or [""])[-1] if "p" in locals() and p.stderr else ""
+        return {"ok": False, "error": "ztgate_ctl 이 답하지 않았습니다 (%s)%s" % (type(e).__name__, ": " + why if why else "")}
 
 
 def posture(p, paint):
@@ -122,7 +124,17 @@ def show_status(r, paint):
     sessions = r.get("sessions", [])
     run = paint("ok", "● 실행 중") if r.get("running") else paint("bad", "● 멈춤")
     print("%s  %s" % (paint("bold", "ztgate 서버"), run))
-    denied = sum(cnt.get(k, 0) for k in ("deny_unknown_device", "deny_bad_auth", "deny_posture"))
+    if r.get("sync_primary"):
+        print("  " + paint("warn", "부 서버입니다. 설정은 %s 에서 고칩니다." % r["sync_primary"]))
+    if r.get("last_result"):
+        print("  " + paint("bad", "마지막 종료: %s" % r["last_result"]))
+        for line in (r.get("last_log") or [])[-5:]:
+            print("    " + paint("dim", str(line)))
+    if (r.get("acl") or {}).get("restart_required"):
+        print("  " + paint("warn", "ACL 을 켜거나 끈 것은 서버를 다시 띄워야 반영됩니다 (sudo systemctl restart ztgate)."))
+    if r.get("sessions_error"):
+        print("  " + paint("bad", "서버가 상태 소켓에 답하지 않아 세션을 보여 줄 수 없습니다."))
+    denied = sum(cnt.get(k, 0) for k in ("deny_unknown_device", "deny_bad_auth", "deny_tun_ip", "deny_posture"))
     facts = [("세션", num(len(sessions))), ("등록 기기", num(r.get("registered_devices"))),
              ("ACL 규칙", num(r.get("acl", {}).get("rules", 0))), ("핸드셰이크", num(cnt.get("handshake_ok", 0))),
              ("거절", paint("bad", num(denied)) if denied else "0"),
@@ -133,7 +145,8 @@ def show_status(r, paint):
             num(cnt.get("deny_unknown_device", 0)), num(cnt.get("deny_bad_auth", 0)), num(cnt.get("deny_posture", 0)))))
     print()
     if not sessions:
-        print("  " + paint("dim", "붙어 있는 세션이 없습니다."))
+        if not r.get("sessions_error"):
+            print("  " + paint("dim", "붙어 있는 세션이 없습니다."))
         return
     rows = []
     for s in sessions:
