@@ -19,7 +19,8 @@ check() {
 	fi
 }
 
-mkdir -p "$W/a" "$W/b" "$W/c"
+mkdir -p "$W/a" "$W/b" "$W/c" "$W/sync"
+export ZTGATE_SYNC_CONF="$W/sync/sync.conf"
 echo "devices v1" > "$W/a/devices.conf"
 echo "acl v1" > "$W/a/acl.conf"
 echo "key" > "$W/a/server.key"
@@ -27,12 +28,19 @@ echo "PORT=9000" > "$W/a/server.env"
 echo "pending" > "$W/a/enroll.conf"
 chmod 600 "$W/a/devices.conf" "$W/a/server.key"
 echo "FORWARD_OUT=eth1" > "$W/b/server.env"
-cat > "$W/a/sync.conf" <<EOF
-PEERS="$W/b $W/c"
-RELOAD="echo reload >> $W/reloads"
-EOF
+conf() {
+	printf 'PEERS="%s"\nRELOAD="echo reload >> %s"\nRESTART="echo restart >> %s"\n' "$1" "$W/log" "$W/log" > "$ZTGATE_SYNC_CONF"
+	chmod 600 "$ZTGATE_SYNC_CONF"
+}
+conf "$W/b $W/c"
 
 check "no sync.conf: refused" "$(ZTGATE_SYNC_CONF=$W/none "$SYNC" > /dev/null 2>&1; echo $?)" 1
+chmod 620 "$ZTGATE_SYNC_CONF"
+check "sync.conf writable by the group: refused" "$("$SYNC" > /dev/null 2>&1; echo $?)" 1
+chmod 600 "$ZTGATE_SYNC_CONF"
+cp "$ZTGATE_SYNC_CONF" "$W/a/sync.conf"
+check "sync.conf inside the server's folder: refused" "$(ZTGATE_SYNC_CONF=$W/a/sync.conf "$SYNC" > /dev/null 2>&1; echo $?)" 1
+rm "$W/a/sync.conf"
 
 "$SYNC" > "$W/out" 2>&1
 check "sync: exit" "$?" 0
@@ -41,23 +49,27 @@ check "sync: acl and server key too" "$(cat "$W/b/acl.conf") / $(cat "$W/b/serve
 check "sync: modes kept" "$(stat -c %a "$W/b/server.key")" 600
 check "sync: server.env is each server's own" "$(cat "$W/b/server.env")" "FORWARD_OUT=eth1"
 check "sync: enrollment codes stay on the primary" "$([ -e "$W/b/enroll.conf" ] && echo yes || echo no)" no
-check "sync: each peer reloaded once" "$(grep -c reload "$W/reloads")" 2
-check "sync: the peer knows its primary" "$(cat "$W/b/.sync-primary")" "$(hostname)"
+check "sync: a new server key restarts each peer" "$(cat "$W/log" | tr '\n' ' ')" "restart restart "
+check "sync: the peer knows its primary, readable" "$(cat "$W/b/.sync-primary") $(stat -c %a "$W/b/.sync-primary")" "$(hostname) 644"
 
+: > "$W/log"
 echo "devices v2" > "$W/a/devices.conf"
-rm "$W/a/acl.conf"
 "$SYNC" > /dev/null 2>&1
 check "again: the change arrives" "$(cat "$W/b/devices.conf")" "devices v2"
-check "again: a file removed on the primary is removed" "$([ -e "$W/b/acl.conf" ] && echo yes || echo no)" no
+check "again: only the device list changed, so a reload" "$(cat "$W/log" | tr '\n' ' ')" "reload reload "
 
-check "on a secondary: refused" "$(ZTGATE_ETC=$W/b ZTGATE_SYNC_CONF=$W/a/sync.conf "$SYNC" > /dev/null 2>&1; echo $?)" 1
-
-cat > "$W/a/sync.conf" <<EOF
-PEERS="$W/b $W/missing/x"
-RELOAD="true"
-EOF
+: > "$W/log"
+rm "$W/a/acl.conf"
 "$SYNC" > /dev/null 2>&1
-check "one peer unreachable: failure, the other still synced" "$? $(cat "$W/b/devices.conf")" "1 devices v2"
+check "acl removed on the primary: removed on the peer" "$([ -e "$W/b/acl.conf" ] && echo yes || echo no)" no
+check "acl removed: a restart (the acl is decided at start)" "$(cat "$W/log" | tr '\n' ' ')" "restart restart "
+
+check "on a secondary: refused" "$(ZTGATE_ETC=$W/b "$SYNC" > /dev/null 2>&1; echo $?)" 1
+
+conf "$W/b $W/missing/x"
+echo "devices v3" > "$W/a/devices.conf"
+"$SYNC" > /dev/null 2>&1
+check "one peer unreachable: failure, the other still synced" "$? $(cat "$W/b/devices.conf")" "1 devices v3"
 
 echo
 [ "$failed" -eq 0 ] && echo "all passed" || echo "$failed FAILED"

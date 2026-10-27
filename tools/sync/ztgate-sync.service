@@ -1,7 +1,7 @@
 # 주 서버의 설정을 부 서버들에 (tools/sync/ztgate-sync). ztgate-sync.path 와 ztgate-sync.timer 가 부른다.
 [Unit]
 Description=ztgate configuration sync to the other servers
-ConditionPathExists=/etc/ztgate/sync.conf
+ConditionPathExists=/etc/ztgate-sync/sync.conf
 After=network-online.target
 Wants=network-online.target
 
