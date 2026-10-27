@@ -12,6 +12,13 @@
  * 다시 한다. */
 'use strict';
 
+/* node: 접두사와 아래에서 쓰는 API 는 Node 18 부터 있다. Ubuntu 22.04 의 기본 nodejs(12)로 돌면 require 에서
+ * 죽어 부른 쪽(ztgate status, 콘솔)은 이유 없이 답을 못 받는다. JSON 으로 이유를 알린다. */
+if (Number(process.versions.node.split('.')[0]) < 18) {
+	process.stdout.write(JSON.stringify({ ok: false, error: `ztgate_ctl needs Node.js 18 or later (this is ${process.version})` }) + '\n');
+	process.exit(1);
+}
+
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const net = require('node:net');
@@ -29,7 +36,8 @@ const STATUS_SOCK = '/run/ztgate/status.sock';
 const SERVER_BIN = '/opt/ztgate/server/bin/vpn_server';
 const AUTH_CHECK = '/opt/ztgate/test/auth_check.py';
 const AUDIT_FILE = '/var/log/ztgate/audit.log';
-const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled', 'admin'];
+const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled', 'login', 'logout',
+	'admin'];
 
 /* 감사 로그는 계속 자란다. 통째로 읽지 않고 끝에서 이만큼만 본다. */
 const AUDIT_TAIL_BYTES = 4 * 1024 * 1024;
@@ -224,7 +232,8 @@ function readEnv() {
 	for (const line of text.split('\n')) {
 		const m = /^\s*([A-Z_]+)=(.*)$/.exec(line);
 		if (m) {
-			env[m[1]] = m[2].trim();
+			/* systemd 의 EnvironmentFile 처럼 값을 감싼 따옴표 하나는 벗긴다 (PUBLIC_ADDRESS="vpn.example.com"). */
+			env[m[1]] = m[2].trim().replace(/^(['"])(.*)\1$/, '$2');
 		}
 	}
 
@@ -238,11 +247,16 @@ function inviteLink(code) {
 	const env = readEnv();
 
 	if (!env.PUBLIC_ADDRESS) {
-		return undefined;
+		return {};
+	}
+	/* 클라이언트(invite.h, tunnel_check_servers)가 받는 글자만: 이름이나 주소를 쉼표로. 틀린 값으로 만든
+	 * 링크는 PC 에서 "초대 링크가 아닙니다" 로만 보인다. */
+	if (!/^[A-Za-z0-9._:\[\]-]{1,253}(,[A-Za-z0-9._:\[\]-]{1,253}){0,3}$/.test(env.PUBLIC_ADDRESS.replace(/ /g, ''))) {
+		return { invite_error: `PUBLIC_ADDRESS in ${ENV_FILE} is not a list of up to four names or addresses: ${env.PUBLIC_ADDRESS}` };
 	}
 	const port = env.PUBLIC_PORT || env.PORT;
 
-	return `ztgate://enroll?server=${encodeURIComponent(env.PUBLIC_ADDRESS)}&port=${encodeURIComponent(port)}&code=${code}`;
+	return { invite: `ztgate://enroll?server=${encodeURIComponent(env.PUBLIC_ADDRESS)}&port=${encodeURIComponent(port)}&code=${code}` };
 }
 
 /* 같은 디렉터리에 쓰고 rename 한다. 쓰다가 죽어도 반쯤 쓰인 기기 목록이 남지 않고,
@@ -808,6 +822,7 @@ async function status() {
 		listen: `udp/${env.PORT}`,
 		tunnel_address: `${env.TUN_IP}/${env.PREFIX}`,
 		registered_devices: readDevices().length,
+		sync_primary: syncPrimary(),
 		acl: {
 			enabled: acl !== null,
 			rules: acl === null ? 0 : acl.length,
@@ -891,6 +906,19 @@ function reload() {
 	};
 }
 
+/* 파일은 이미 바뀌었다. 여기서 실패를 ok:false 로 답하면 부른 쪽은 바뀌지 않았다고 믿고 다시 해서
+ * "no device with this id" 를 만나거나, 만들어진 등록 코드를 끝내 보지 못한다. */
+function reloadAfterWrite() {
+	try {
+		return reload();
+	} catch (e) {
+		if (!(e instanceof CtlError)) {
+			process.stderr.write(`${e.stack}\n`);
+		}
+		return { reloaded: false, reload_error: e instanceof CtlError ? e.message : `internal error: ${e.code || e.name}` };
+	}
+}
+
 /* ---- 명령 ------------------------------------------------------------------ */
 
 /* 기기 목록과 등록 대기 목록은 서버도 고친다 (등록 코드로 기기가 올라올 때). 읽고 → 고치고 →
@@ -908,6 +936,15 @@ const LOCKED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove',
 const SYNC_MARK = `${ETC}/.sync-primary`;
 const SYNCED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove', 'enroll_create', 'enroll_revoke',
 	'acl_set', 'acl_clear']);
+
+function syncPrimary() {
+	try {
+		return fs.readFileSync(SYNC_MARK, 'utf8').trim();
+	} catch (e) {
+		return null;
+	}
+}
+
 const RELOAD = Symbol('reload');
 
 function withConfigLock(fn) {
@@ -1108,6 +1145,9 @@ const COMMANDS = {
 			if (devices.some((x) => x !== d && x.tunnel_ip === a.tunnel_ip)) {
 				fail(`tunnel_ip ${a.tunnel_ip} is already assigned`);
 			}
+			if (readEnroll().some((x) => x.tunnel_ip === a.tunnel_ip)) {
+				fail(`tunnel_ip ${a.tunnel_ip} is reserved by a pending enrollment code (enroll_list)`);
+			}
 			d.tunnel_ip = a.tunnel_ip;
 		}
 
@@ -1163,13 +1203,14 @@ const COMMANDS = {
 
 		/* 다섯 자씩 끊어 준다. 사람이 읽어 주거나 받아 적는 값이다. */
 		const shown = code.match(/.{5}/g).join('-');
-		const invite = inviteLink(shown);
+		/* 링크를 만들지 못해도(틀린 PUBLIC_ADDRESS) 코드는 이미 적혔다. 실패로 답하지 않고 이유를 함께 준다. */
+		const link = inviteLink(shown);
 
 		return {
 			code: shown,
-			...(invite ? { invite } : {}),
+			...link,
 			enrollment: publicEnroll(entry),
-			how: invite
+			how: link.invite
 				? 'Send the invite link to the person at the device; opening it (or pasting it into the GUI enroll box, or "vpn_client.exe enroll <link>") enrolls. The code works once.'
 				: 'On the device: "vpn_client.exe enroll <server> <port> <code>", or the GUI -> enroll. The code works once. Set PUBLIC_ADDRESS in server.env to also get an invite link.',
 			[RELOAD]: true,
@@ -1261,11 +1302,9 @@ const COMMANDS = {
 
 		/* ACL 을 켠 채 돌고 있는 서버에는 바로 적용한다. ACL 없이 뜬 서버는 다시
 		 * 읽어도 켜지지 않으므로 restart_required 로 남는다. */
-		if (unit().running && aclApplied() !== 'none') {
-			reload();
-		}
+		const r = unit().running && aclApplied() !== 'none' ? reloadAfterWrite() : {};
 
-		return COMMANDS.acl_get();
+		return { ...COMMANDS.acl_get(), ...r };
 	},
 
 	acl_clear() {
@@ -1346,15 +1385,15 @@ async function main() {
 		if (req === null || typeof req !== 'object' || !Object.hasOwn(COMMANDS, req.cmd)) {
 			fail(`unknown command (${Object.keys(COMMANDS).join(', ')})`);
 		}
-		if (SYNCED_COMMANDS.has(req.cmd) && fs.existsSync(SYNC_MARK)) {
-			fail(`this server takes its configuration from ${fs.readFileSync(SYNC_MARK, 'utf8').trim()}; change it there`);
+		if (SYNCED_COMMANDS.has(req.cmd) && syncPrimary() !== null) {
+			fail(`this server takes its configuration from ${syncPrimary()}; change it there`);
 		}
 		let r = LOCKED_COMMANDS.has(req.cmd)
 			? await withConfigLock(() => COMMANDS[req.cmd](req))
 			: await COMMANDS[req.cmd](req);
 		if (r[RELOAD]) {
 			delete r[RELOAD];
-			r = { ...r, ...reload() };
+			r = { ...r, ...reloadAfterWrite() };
 		}
 		out = { ok: true, ...r };
 	} catch (e) {

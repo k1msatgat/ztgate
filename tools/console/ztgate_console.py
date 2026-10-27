@@ -48,6 +48,42 @@ import urllib.parse
 
 SESSION_TTL = 8 * 3600
 CTL_TIMEOUT = 60
+CTL_SILENT = "관리 도구(ztgate_ctl)가 답하지 않았습니다. 서버의 콘솔 로그(journalctl -u ztgate-console)를 보세요."
+
+# ztgate_ctl 은 영어로 답한다 (MCP 와 같이 쓴다). 자주 나오는 것만 옮기고, 나머지는 원문을 그대로 붙인다.
+CTL_ERRORS = [
+    (r"tunnel_ip (\S+) is already assigned", "터널 주소 {0} 는 이미 다른 기기에 배정되어 있습니다."),
+    (r"tunnel_ip (\S+) is reserved by a pending enrollment code", "터널 주소 {0} 는 기다리는 등록 코드가 맡아 두었습니다."),
+    (r"tunnel_ip (\S+) is the server's own tunnel address", "터널 주소 {0} 는 서버 자신의 주소입니다."),
+    (r"tunnel_ip must be an IPv4 address", "터널 주소는 10.0.0.5 같은 IPv4 주소로 적어 주세요."),
+    (r"no free address left in the tunnel subnet", "터널 대역에 남은 주소가 없습니다."),
+    (r"device list is full \(max (\d+)", "기기 목록이 가득 찼습니다 (기다리는 등록까지 최대 {0}대)."),
+    (r"too many pending enrollments \(max (\d+)\)",
+     "기다리는 등록 코드가 너무 많습니다 (최대 {0}개). 하나를 거두거나 만료되기를 기다리세요."),
+    (r"the device files are being changed by the server", "서버가 기기 파일을 고치는 중입니다. 잠시 뒤에 다시 해 주세요."),
+    (r"cannot lock the device files", "기기 파일을 잠그지 못했습니다. 잠시 뒤에 다시 해 주세요."),
+    (r"this server takes its configuration from (.+); change it there",
+     "이 서버는 {0} 의 설정을 받는 부 서버입니다. 설정은 주 서버에서 고칩니다."),
+    (r"no device with this id", "이 ID 의 기기가 없습니다. 이미 지워졌을 수 있습니다."),
+    (r"no pending enrollment with this id", "이 등록 코드가 없습니다. 이미 쓰였거나 만료됐을 수 있습니다."),
+    (r"label must be", "이름은 영문, 숫자, 빈칸, _ . - 로 1~32자여야 합니다."),
+    (r"too many rules \(max (\d+)\)", "규칙이 너무 많습니다 (최대 {0}개)."),
+    (r"rule (\d+): (.+)", "{n}번째 규칙이 맞지 않습니다: {1}"),
+    (r"sent SIGHUP but the server did not report a reload", "3초 안에 다시 읽었다는 기록이 없습니다."),
+    (r"server rejected the device file", "서버가 기기 파일을 받아들이지 않고 이전 목록을 씁니다."),
+    (r"server rejected the ACL file", "서버가 ACL 파일을 받아들이지 않고 이전 규칙을 씁니다."),
+]
+CTL_ERRORS = [(re.compile(rx), text) for rx, text in CTL_ERRORS]
+
+
+def ko_error(text, lead="관리 도구가 거절했습니다: "):
+    text = str(text or "").strip()
+    for rx, ko in CTL_ERRORS:
+        m = rx.match(text)
+        if m:
+            g = m.groups()
+            return ko.format(*g, n=int(g[0]) + 1 if g and g[0].isdigit() else "")
+    return lead + (text or "까닭을 알리지 않았습니다")
 
 
 ROLES = {"admin": "관리자", "viewer": "조회 전용"}
@@ -115,13 +151,14 @@ def save_users(path, users):
 
 
 class Session:
-    __slots__ = ("csrf", "expires", "user", "role")
+    __slots__ = ("csrf", "expires", "user", "role", "by_token")
 
-    def __init__(self, user, role, now):
+    def __init__(self, user, role, now, by_token=False):
         self.csrf = secrets.token_urlsafe(24)
         self.expires = now + SESSION_TTL
         self.user = user
         self.role = role
+        self.by_token = by_token
 
     @property
     def admin(self):
@@ -153,9 +190,20 @@ class Console:
         try:
             p = subprocess.run([self.ctl], input=json.dumps(req), capture_output=True, text=True,
                                timeout=CTL_TIMEOUT)
-            return json.loads(p.stdout.strip().splitlines()[-1])
-        except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
-            return {"ok": False, "error": "ztgate_ctl: %s" % type(e).__name__}
+        except (OSError, subprocess.TimeoutExpired) as ex:
+            sys.stderr.write("console: %s %s: %s\n" % (self.ctl, cmd, ex))
+            return {"ok": False, "error": CTL_SILENT}
+        if p.stderr.strip():
+            sys.stderr.write("console: %s %s: %s\n" % (self.ctl, cmd, p.stderr.strip()))
+        try:
+            r = json.loads(p.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            r = None
+        if not isinstance(r, dict):
+            return {"ok": False, "error": CTL_SILENT}
+        if not r.get("ok"):
+            r["error"] = ko_error(r.get("error"))
+        return r
 
     def login(self, addr, form):
         """(쿠키 또는 None, 실패했을 때 보여 줄 글). 계정이 있으면 이름 / 비밀번호(/ 코드), 없으면 토큰."""
@@ -169,11 +217,11 @@ class Console:
             u = users.get(form.get("name", "").strip())
             if u and password_ok(form.get("password", ""), u[1]) and \
                     (not u[2] or totp_ok(u[2], form.get("code", "").strip(), now)):
-                who = (form["name"].strip(), u[0])
+                who = (form["name"].strip(), u[0], False)
             err = "이름, 비밀번호 또는 인증 코드가 맞지 않습니다."
         else:
             if hmac.compare_digest(form.get("token", "").encode(), self.token.encode()):
-                who = ("token", "admin")
+                who = ("token", "admin", True)
             err = "토큰이 맞지 않습니다."
         with self.lock:
             if who is None:
@@ -183,14 +231,18 @@ class Console:
                 return None, err
             sid = secrets.token_urlsafe(32)
             self.sessions = {k: v for k, v in self.sessions.items() if v.expires > now}
-            self.sessions[sid] = Session(who[0], who[1], now)
+            self.sessions[sid] = Session(who[0], who[1], now, by_token=who[2])
             return sid, None
 
     def check(self, sid):
         """로그인한 세션이면 Session, 아니면 None."""
+        # 계정 파일은 요청마다 다시 읽는다 (몇 줄이다). 지우거나 역할을 바꾼 계정의 세션이 8시간 동안
+        # 예전 권한으로 남지 않게 하고, 계정이 하나라도 생기면 토큰으로 연 세션도 닫는다.
+        users = self.users()
         with self.lock:
             s = self.sessions.get(sid)
-            if s is None or s.expires < time.time():
+            if s is None or s.expires < time.time() or \
+                    (s.by_token or users.get(s.user, ("",))[0] != s.role if users else not s.by_token):
                 self.sessions.pop(sid, None)
                 return None
             return s
@@ -202,19 +254,21 @@ class Console:
 
 # ---- 화면 -----------------------------------------------------------------------
 # 색과 간격은 docs/design/tokens.md 를 따른다. 밖에서 받아 오는 파일(글꼴, 스크립트, 그림)은 없다.
+# 어두운 테마의 --on-accent 는 짙은 글씨다. 밝아진 accent(#5B8FD6) 위의 흰 글씨는 대비가 3.3:1 밖에 안 된다.
 
 CSS = """
 :root{--navy-950:#0B1626;--navy-900:#0F1E36;--navy-800:#16294A;--bg:#F5F7FA;--surface:#FFFFFF;--surface-2:#EEF2F7;
 --border:#DCE3EC;--text:#1A2333;--muted:#5B6678;--accent:#1E4E8C;--accent-hover:#173F73;--accent-soft:#E6EEF8;
 --teal:#2A9D8F;--teal-text:#1F7A6F;--teal-soft:#E3F4F1;--warn:#C27C0E;--warn-soft:#FBF1DE;--danger:#B4232F;
---danger-soft:#FBE9EA;--idle:#8A95A8;--shadow:0 1px 2px rgba(15,30,54,.06),0 1px 8px rgba(15,30,54,.04);color-scheme:light}
+--danger-soft:#FBE9EA;--idle:#8A95A8;--on-accent:#fff;--shadow:0 1px 2px rgba(15,30,54,.06),0 1px 8px rgba(15,30,54,.04);color-scheme:light}
 :root[data-theme=dark]{--bg:#0B1626;--surface:#13233A;--surface-2:#1A2D48;--border:#24395A;--text:#E6ECF5;--muted:#9AA8BD;
 --accent:#5B8FD6;--accent-hover:#78A5E2;--accent-soft:#1B3254;--teal:#3FBFAE;--teal-text:#3FBFAE;--teal-soft:#123A3A;
---warn:#E0A33A;--warn-soft:#3A2C12;--danger:#E5636D;--danger-soft:#3D1A20;--idle:#6F7D93;--shadow:none;color-scheme:dark}
+--warn:#E0A33A;--warn-soft:#3A2C12;--danger:#E5636D;--danger-soft:#3D1A20;--idle:#6F7D93;--on-accent:#0B1626;--shadow:none;
+color-scheme:dark}
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#0B1626;--surface:#13233A;--surface-2:#1A2D48;
 --border:#24395A;--text:#E6ECF5;--muted:#9AA8BD;--accent:#5B8FD6;--accent-hover:#78A5E2;--accent-soft:#1B3254;
 --teal:#3FBFAE;--teal-text:#3FBFAE;--teal-soft:#123A3A;--warn:#E0A33A;--warn-soft:#3A2C12;--danger:#E5636D;
---danger-soft:#3D1A20;--idle:#6F7D93;--shadow:none;color-scheme:dark}}
+--danger-soft:#3D1A20;--idle:#6F7D93;--on-accent:#0B1626;--shadow:none;color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;font:14px/1.55 system-ui,"Segoe UI","Malgun Gothic","Apple SD Gothic Neo",sans-serif;background:var(--bg);color:var(--text)}
 code,.mono,textarea{font-family:ui-monospace,Consolas,"D2Coding",monospace}
@@ -231,7 +285,7 @@ a{color:var(--accent)}
 .nav svg{width:18px;height:18px;flex:none;opacity:.9}
 .side-foot{margin-top:auto;padding:12px 8px 0;border-top:1px solid rgba(255,255,255,.08);font-size:12px;color:#8FA1BC}
 .main{flex:1;min-width:0;display:flex;flex-direction:column}
-.top{display:flex;align-items:center;gap:12px;padding:18px 32px;border-bottom:1px solid var(--border);background:var(--surface)}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:18px 32px;border-bottom:1px solid var(--border);background:var(--surface)}
 .top h1{font-size:20px;margin:0;font-weight:650}
 .top .sub{color:var(--muted);font-size:13px;margin-left:4px}
 .top .right{margin-left:auto;display:flex;gap:8px;align-items:center}
@@ -272,7 +326,7 @@ h2:first-child{margin-top:0}
 .dot.on{background:var(--teal);box-shadow:0 0 0 3px var(--teal-soft)}
 .btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:13.5px;font-weight:600;padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;text-decoration:none}
 .btn:hover{background:var(--surface-2)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.primary:hover{background:var(--accent-hover)}
 .btn.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--border))}
 .btn.danger:hover{background:var(--danger-soft)}
@@ -283,6 +337,8 @@ form.inline{display:inline}
 .msg{display:flex;gap:10px;align-items:flex-start;padding:12px 16px;margin:0 0 18px;border-radius:10px;border:1px solid transparent;font-size:13.5px}
 .msg.err{background:var(--danger-soft);color:var(--danger);border-color:color-mix(in srgb,var(--danger) 25%,transparent)}
 .msg.ok{background:var(--teal-soft);color:var(--teal-text);border-color:color-mix(in srgb,var(--teal) 25%,transparent)}
+.msg.warn{background:var(--warn-soft);color:var(--text);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .empty{padding:36px;text-align:center;color:var(--muted)}
 .empty svg{width:34px;height:34px;opacity:.5;display:block;margin:0 auto 10px}
 .grid2{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:20px;align-items:start}
@@ -295,13 +351,13 @@ input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(
 .checks input{accent-color:var(--accent)}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .callout{display:flex;gap:18px;align-items:center;padding:18px 22px;border-radius:10px;background:var(--teal-soft);border:1px solid color-mix(in srgb,var(--teal) 30%,transparent);margin-bottom:20px}
-.callout .code{font:600 22px/1.2 ui-monospace,Consolas,monospace;letter-spacing:1.5px;color:var(--text);user-select:all}
+.callout .code{font:600 22px/1.2 ui-monospace,Consolas,monospace;letter-spacing:1.5px;color:var(--text);user-select:all;overflow-wrap:anywhere}
 .callout p{margin:4px 0 0;color:var(--muted);font-size:13px}
 textarea{width:100%;font-size:13px;line-height:1.6;padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2);color:var(--text);resize:vertical}
 .help{color:var(--muted);font-size:12.5px;margin:10px 0 14px}
 .filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px}
 .filters a{padding:5px 12px;border-radius:999px;border:1px solid var(--border);background:var(--surface);color:var(--text);text-decoration:none;font-size:12.5px}
-.filters a.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.filters a.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .kv{display:inline-block;margin:1px 8px 1px 0;font-size:12px;white-space:nowrap}
 .kv i{font-style:normal;color:var(--muted)}
 .login{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
@@ -319,10 +375,13 @@ background:radial-gradient(1200px 600px at 20% -10%,#1E4E8C33,transparent),var(-
 THEME_JS = ("(function(){var k='ztgate-theme';try{var t=localStorage.getItem(k);if(t)document.documentElement.dataset.theme=t}"
             "catch(x){}window.ztTheme=function(){var d=document.documentElement,c=d.dataset.theme||(matchMedia("
             "'(prefers-color-scheme: dark)').matches?'dark':'light'),n=c==='dark'?'light':'dark';d.dataset.theme=n;"
-            "try{localStorage.setItem(k,n)}catch(x){}};window.ztCopy=function(el){var t=el.getAttribute('data-copy');"
-            "function sel(){var r=document.createRange();r.selectNodeContents(document.getElementById('code'));"
-            "var s=getSelection();s.removeAllRanges();s.addRange(r)}if(navigator.clipboard&&isSecureContext)"
-            "navigator.clipboard.writeText(t).then(function(){el.textContent='복사했습니다'},sel);else sel()}})();")
+            "try{localStorage.setItem(k,n)}catch(x){}};window.ztCopy=function(el,id){var t=el.getAttribute('data-copy'),"
+            "l=el.dataset.label||(el.dataset.label=el.textContent);function say(m){el.textContent=m;"
+            "document.getElementById('live').textContent=m;clearTimeout(el.ztT);el.ztT=setTimeout(function(){"
+            "el.textContent=l},2000)}function sel(){var r=document.createRange();r.selectNodeContents("
+            "document.getElementById(id));var s=getSelection();s.removeAllRanges();s.addRange(r);"
+            "say('골라 두었습니다. Ctrl+C 로 복사하세요')}if(navigator.clipboard&&isSecureContext)"
+            "navigator.clipboard.writeText(t).then(function(){say('복사했습니다')},sel);else sel()}})();")
 
 LOGO = ('<svg width="%d" height="%d" viewBox="0 0 64 64" aria-hidden="true">'
         '<path d="M32 4 56 12v18c0 15-10 25-24 30C18 55 8 45 8 30V12z" fill="#0F1E36"/>'
@@ -406,6 +465,11 @@ def tag_chips(tags):
     return "".join('<span class="chip mono">#%s</span>' % e(t) for t in tags or []) or '<span class="muted">—</span>'
 
 
+def note(kind, text):
+    """kind 는 err, warn, ok."""
+    return '<div class="msg %s" role="alert">%s</div>' % (kind, e(text))
+
+
 def badge(kind, text):
     return '<span class="badge %s">%s</span>' % (kind, e(text))
 
@@ -421,15 +485,14 @@ def card_table(head, rows):
 
 
 def page(path, body, csrf=None, msg=None, who=""):
-    note = ""
-    if msg:
-        note = '<div class="msg %s">%s</div>' % ("err" if msg[0] == "err" else "ok", e(msg[1]))
+    top = note(msg[0], msg[1]) if msg else ""
     head = ('<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>ztgate 콘솔</title>'
             '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">'
             '<style>%s</style><script>%s</script></head>') % (CSS, THEME_JS)
     if not csrf:
-        return head + '<body><div class="login">%s%s</div></body></html>' % (note, body)
-    nav = "".join('<a href="%s"%s>%s<span>%s</span></a>' % (p, ' class="on"' if p == path else "", ICONS[p], n)
+        return head + '<body><div class="login">%s%s</div></body></html>' % (top, body)
+    nav = "".join('<a href="%s"%s>%s<span>%s</span></a>' % (
+        p, ' class="on" aria-current="page"' if p == path else "", ICONS[p], n)
                   for p, n in PAGES)
     title = dict(PAGES).get(path, "없는 페이지")
     return head + (
@@ -440,8 +503,9 @@ def page(path, body, csrf=None, msg=None, who=""):
         '<button class="btn icon" type="button" onclick="ztTheme()" title="밝게 / 어둡게">%s</button>'
         '<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="%s">'
         '<button class="btn">%s로그아웃</button></form></div></header><main class="content">%s%s</main></div></div>'
-        '</body></html>') % (LOGO % (34, 34), nav, e(title), e(SUBTITLE.get(path, "")), e(who), ICONS["theme"], e(csrf),
-                             ICONS["logout"], note, body)
+        '<div id="live" class="sr" aria-live="polite"></div></body></html>') % (
+            LOGO % (34, 34), nav, e(title), e(SUBTITLE.get(path, "")), e(who), ICONS["theme"], e(csrf),
+            ICONS["logout"], top, body)
 
 
 def posture_chips(p):
@@ -455,22 +519,26 @@ def posture_chips(p):
     return "".join(out)
 
 
-def view_overview(c):
-    st = c.call("status")
+DENY_KINDS = [("deny_unknown_device", "모르는 기기"), ("deny_bad_auth", "인증"), ("deny_tun_ip", "터널 주소"),
+              ("deny_posture", "포스처")]
+
+
+def view_overview(c, st):
     if not st.get("ok"):
-        return '<div class="msg err">%s</div>' % e(st.get("error"))
+        return note("err", st.get("error"))
     cnt = st.get("counters", {})
     sessions = st.get("sessions", [])
-    denied = sum(cnt.get(k, 0) for k in ("deny_unknown_device", "deny_bad_auth", "deny_posture"))
+    denied = sum(cnt.get(k, 0) for k, _ in DENY_KINDS)
     run = badge("ok", "실행 중") if st.get("running") else badge("bad", "멈춤")
+    acl = st.get("acl", {})
     cards = [
         ("서버", run, "vpn_server", "hl"),
         ("연결된 세션", num(len(sessions)), "터널이 열린 기기", "hl"),
         ("등록된 기기", num(st.get("registered_devices")), "", ""),
-        ("ACL 규칙", num(st.get("acl", {}).get("rules", 0)), "첫 일치 · 기본 거부", ""),
+        ("ACL 규칙", num(acl.get("rules", 0)), "첫 일치 · 기본 거부", "") if acl.get("enabled") else
+        ("ACL", "꺼짐", "ACL 꺼짐 · 터널 대역 안은 모두 닿음", ""),
         ("핸드셰이크 성공", num(cnt.get("handshake_ok", 0)), "서버가 뜬 뒤", ""),
-        ("거절", num(denied), "모르는 기기 %s · 인증 %s · 포스처 %s" % (
-            num(cnt.get("deny_unknown_device", 0)), num(cnt.get("deny_bad_auth", 0)), num(cnt.get("deny_posture", 0))),
+        ("거절", num(denied), " · ".join("%s %s" % (n, num(cnt.get(k, 0))) for k, n in DENY_KINDS),
          "alert" if denied else ""),
         ("ACL 차단", num(cnt.get("acl_denied", 0)), "규칙에 막힌 패킷", "alert" if cnt.get("acl_denied") else ""),
     ]
@@ -487,45 +555,72 @@ def view_overview(c):
                         e(user) if user else '<span class="muted">—</span>', e(s.get("endpoint")),
                         tag_chips(s.get("tags")), posture_chips(s.get("posture", {})),
                         size(s.get("rx_bytes", 0)), size(s.get("tx_bytes", 0)), ago(s.get("age_sec"))))
-    table = card_table(["터널 주소", "기기", "사용자", "출발지", "태그", "포스처", ">받음 / 보냄", ">연결된 지"], rows) \
-        if rows else empty("붙어 있는 세션이 없습니다.")
-    return '<div class="stats">%s</div><h2>세션 <span class="muted">%d</span></h2>%s' % (out, len(rows), table)
+    if rows:
+        table = card_table(["터널 주소", "기기", "사용자", "출발지", "태그", "포스처", ">받음 / 보냄", ">연결된 지"], rows)
+    elif not st.get("running"):
+        table = empty("서버가 멈춰 있어 세션이 없습니다.")
+    elif st.get("sessions_error"):
+        table = note("err", "세션 정보를 받지 못했습니다 (서버가 상태 소켓에 답하지 않았습니다).")
+    else:
+        table = empty("붙어 있는 세션이 없습니다.")
+    stopped = ""
+    if not st.get("running"):
+        stopped = note("err", "서버가 멈춰 있습니다" + (" (%s)" % st["last_result"] if st.get("last_result") else "") +
+                       ". 서버에서 sudo systemctl start ztgate 로 다시 띄웁니다.")
+    return '%s<div class="stats">%s</div><h2>세션 <span class="muted">%d</span></h2>%s' % (stopped, out, len(rows), table)
 
 
-def view_devices(c, csrf):
+def confirm(text):
+    """onsubmit 에 넣을 확인 창. 글은 JS 문자열로 만든 뒤 속성 값으로 한 번 더 escape 한다."""
+    return 'return confirm(%s)' % json.dumps(text, ensure_ascii=False)
+
+
+def view_devices(c, csrf, st):
     r = c.call("device_list")
     if not r.get("ok"):
-        return '<div class="msg err">%s</div>' % e(r.get("error"))
-    st = c.call("status")
-    online = {s.get("device_id") for s in st.get("sessions", [])} if st.get("ok") else set()
+        return note("err", r.get("error"))
+    live = st.get("ok") and (not st.get("running") or "sessions" in st)
+    online = {s.get("device_id") for s in st.get("sessions", [])} if live else set()
     rows = []
     for d in r.get("devices", []):
         on = d.get("id") in online
         key = "P-256" if d.get("key_type") == "p256" else "공유 키" if d.get("key_type") else ""
+        ask = confirm("'%s' 기기를 지울까요? 다음 keepalive 에서 끊깁니다." % (d.get("label") or (d.get("id") or "")[:16]))
         actions = ('<a class="btn sm" href="/devices/edit?id=%s">편집</a> '
-                   '<form class="inline" method="post" action="/devices/remove" onsubmit="return confirm(\'이 기기를 지울까요? 다음 keepalive 에서 끊깁니다.\')">'
+                   '<form class="inline" method="post" action="/devices/remove" onsubmit="%s">'
                    '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
-                   '<button class="btn sm danger">지우기</button></form>') % (e(d.get("id")), e(csrf), e(d.get("id"))) if csrf else ""
+                   '<button class="btn sm danger">지우기</button></form>') % (
+            e(d.get("id")), e(ask), e(csrf), e(d.get("id"))) if csrf else ""
+        state = (badge("ok", "연결됨") if on else badge("idle", "끊김")) if live else badge("idle", "알 수 없음")
         rows.append('<tr><td style="white-space:nowrap"><span class="dot%s"></span><b>%s</b></td><td><span class="id" title="%s">%s…</span></td>'
                     '<td class="mono">%s</td><td>%s</td><td style="white-space:nowrap">%s</td><td>%s</td><td>%s</td>'
                     '<td class="num" style="white-space:nowrap">%s</td></tr>' % (
                         " on" if on else "", e(d.get("label") or "(이름 없음)"), e(d.get("id")), e((d.get("id") or "")[:16]),
-                        e(d.get("tunnel_ip")), badge("ok", "연결됨") if on else badge("idle", "끊김"),
-                        e(key), req_chips(d.get("requirements")), tag_chips(d.get("tags")), actions))
+                        e(d.get("tunnel_ip")), state, e(key), req_chips(d.get("requirements")), tag_chips(d.get("tags")), actions))
     add = ('<a class="btn primary" style="margin-left:auto" href="/enroll">%s새 기기 등록</a>' % ICONS["plus"]) if csrf else ""
     head = ('<div class="row" style="margin-bottom:14px"><h2 style="margin:0">기기 <span class="muted">%d</span></h2>'
             '%s</div>') % (len(rows), add)
+    if not live:
+        head += note("warn", "서버에서 세션 정보를 받지 못해 연결 상태를 보여 주지 못합니다.")
     table = card_table(["이름", "ID", "터널 주소", "상태", "키", "접속 조건", "태그", ""], rows) if rows else \
         empty("등록된 기기가 없습니다. [등록 코드]에서 코드를 만들어 기기에 넣으세요.")
     return head + table
 
 
-def view_device_edit(c, csrf, dev_id):
+def view_device_edit(c, csrf, dev_id, draft=None):
+    """draft 는 저장에 실패한 양식. 있으면 그 값으로 채운다."""
     r = c.call("device_list")
-    d = next((x for x in r.get("devices", []) if x.get("id") == dev_id), None) if r.get("ok") else None
+    if not r.get("ok"):
+        return note("err", r.get("error"))
+    d = next((x for x in r.get("devices", []) if x.get("id") == dev_id), None)
     if d is None:
         return empty("이 ID 의 기기가 없습니다.")
     req = d.get("requirements") or {}
+    label, tunnel_ip, tags = d.get("label") or "", d.get("tunnel_ip"), " ".join(d.get("tags") or [])
+    if draft is not None:
+        req = {k: bool(draft.get(k)) for k in ("firewall", "antivirus", "disk")}
+        req["min_build"] = draft.get("min_build")
+        label, tunnel_ip, tags = draft.get("label", ""), draft.get("tunnel_ip", ""), draft.get("tags", "")
     checks = "".join('<label><input type="checkbox" name="%s"%s> %s</label>' % (k, " checked" if req.get(k) else "", n)
                      for k, n in (("firewall", "방화벽"), ("antivirus", "백신"), ("disk", "디스크 암호화")))
     return ('<div class="card pad" style="max-width:560px"><h2>%s</h2><p class="id">%s</p>'
@@ -538,52 +633,65 @@ def view_device_edit(c, csrf, dev_id):
             '<label class="field"><span>최소 OS 빌드 (0 이면 보지 않음)</span><input type="number" name="min_build" value="%s" min="0"></label>'
             '<div class="row"><button class="btn primary">저장</button><a class="btn" href="/devices">취소</a></div>'
             '</form></div>') % (
-        e(d.get("label") or "(이름 없음)"), e(dev_id), e(csrf), e(dev_id), e(d.get("label") or ""), e(d.get("tunnel_ip")),
-        e(" ".join(d.get("tags") or [])), checks, e(req.get("min_build") or 0))
+        e(d.get("label") or "(이름 없음)"), e(dev_id), e(csrf), e(dev_id), e(label), e(tunnel_ip), e(tags), checks,
+        e(req.get("min_build") or 0))
 
 
-def view_enroll(c, csrf, made=None):
+def view_enroll(c, csrf, made=None, draft=None):
+    """made 는 방금 만든 코드(enroll_create 의 답), draft 는 만들지 못한 양식."""
     r = c.call("enroll_list")
     rows = []
     for p in r.get("pending", []) if r.get("ok") else []:
         left = max(0, p.get("expires_in_sec", 0))
-        revoke = ('<form class="inline" method="post" action="/enroll/revoke">'
+        ask = confirm("'%s' 의 등록 코드를 거둘까요? 이 코드로는 더 등록할 수 없습니다." % (p.get("label") or p.get("tunnel_ip")))
+        revoke = ('<form class="inline" method="post" action="/enroll/revoke" onsubmit="%s">'
                   '<input type="hidden" name="csrf" value="%s"><input type="hidden" name="id" value="%s">'
-                  '<button class="btn sm danger">거두기</button></form>') % (e(csrf), e(p.get("id"))) if csrf else ""
+                  '<button class="btn sm danger">거두기</button></form>') % (e(ask), e(csrf), e(p.get("id"))) if csrf else ""
         rows.append('<tr><td><b>%s</b></td><td class="mono">%s</td><td>%s</td><td>%s</td><td>%s</td><td class="num">%s</td></tr>' % (
                         e(p.get("label") or "(이름 없음)"), e(p.get("tunnel_ip")), req_chips(p.get("requirements")),
-                        tag_chips(p.get("tags")), badge("warn" if left < 180 else "idle", "%d분 남음" % (left // 60)),
+                        tag_chips(p.get("tags")), badge("warn" if left < 180 else "idle",
+                                                        "%d분 남음" % (left // 60) if left >= 60 else "1분 안에 끝남"),
                         revoke))
     code = ""
     if made:
         code = ('<div class="callout"><div style="flex:1"><div class="muted" style="font-size:12.5px">등록 코드 · %s 에 배정</div>'
                 '<div class="code" id="code">%s</div><p>한 번만 쓸 수 있고 곧 만료됩니다. 기기에서 '
                 '<code>vpn_client enroll &lt;서버&gt; &lt;포트&gt; &lt;코드&gt;</code> 또는 GUI 의 [기기 등록]</p></div>'
-                '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this)">복사</button></div>') % (
+                '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this,\'code\')">복사</button></div>') % (
             e(made.get("enrollment", {}).get("tunnel_ip")), e(made.get("code")), e(made.get("code")))
         link = made.get("invite")
         if link:
             code += ('<div class="callout"><div style="flex:1;min-width:0"><div class="muted" style="font-size:12.5px">초대 링크</div>'
                      '<div class="mono" id="invite" style="overflow-wrap:anywhere">%s</div><p>Windows 에서 누르면 서버와 코드가 채워진 '
                      '등록 창이 열립니다. 코드가 들어 있으니 그 사람에게만 보내세요.</p></div>'
-                     '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this)">복사</button></div>') % (e(link), e(link))
+                     '<button class="btn" type="button" data-copy="%s" onclick="ztCopy(this,\'invite\')">복사</button></div>') % (
+                         e(link), e(link))
+        elif made.get("invite_error"):
+            code += note("warn", "초대 링크를 만들지 못했습니다. /etc/ztgate/server.env 의 PUBLIC_ADDRESS 는 이름이나 주소를 "
+                         "쉼표로 넷까지 적습니다 (예: vpn.example.com). 코드는 그대로 쓸 수 있습니다.")
         else:
             code += ('<p class="muted">서버의 <code>/etc/ztgate/server.env</code> 에 <code>PUBLIC_ADDRESS=vpn.example.com</code> '
                      '을 적으면 누르기만 하면 되는 초대 링크도 함께 나옵니다.</p>')
+    f = draft or {}
+    checks = "".join('<label><input type="checkbox" name="%s"%s> %s</label>' % (k, " checked" if f.get(k) else "", n)
+                     for k, n in (("firewall", "방화벽"), ("antivirus", "백신"), ("disk", "디스크 암호화")))
     form = ('<div class="card pad"><h2>새 등록 코드</h2><form method="post" action="/enroll/create">'
             '<input type="hidden" name="csrf" value="%s">'
-            '<label class="field"><span>이름</span><input name="label" placeholder="laptop-kim"></label>'
-            '<label class="field"><span>터널 주소</span><input name="tunnel_ip" placeholder="비우면 자동으로 배정"></label>'
-            '<label class="field"><span>태그 (빈칸으로 나눔)</span><input name="tags" placeholder="eng laptop"></label>'
-            '<div class="field"><span>접속 조건</span><div class="checks">'
-            '<label><input type="checkbox" name="firewall"> 방화벽</label>'
-            '<label><input type="checkbox" name="antivirus"> 백신</label>'
-            '<label><input type="checkbox" name="disk"> 디스크 암호화</label></div></div>'
-            '<label class="field"><span>유효 시간 (분)</span><input type="number" name="ttl" value="15" min="1" max="1440"></label>'
-            '<button class="btn primary">%s코드 만들기</button></form></div>') % (e(csrf), ICONS["plus"]) if csrf else \
-        '<div class="card pad"><h2>새 등록 코드</h2><p class="muted">조회 전용 계정은 코드를 만들 수 없습니다.</p></div>'
-    pending = card_table(["이름", "터널 주소", "접속 조건", "태그", "남은 시간", ""], rows) if rows else \
-        empty("기다리는 등록 코드가 없습니다.")
+            '<label class="field"><span>이름</span><input name="label" placeholder="laptop-kim" value="%s"></label>'
+            '<label class="field"><span>터널 주소</span><input name="tunnel_ip" placeholder="비우면 자동으로 배정" value="%s"></label>'
+            '<label class="field"><span>태그 (빈칸으로 나눔)</span><input name="tags" placeholder="eng laptop" value="%s"></label>'
+            '<div class="field"><span>접속 조건</span><div class="checks">%s</div></div>'
+            '<label class="field"><span>유효 시간 (분)</span><input type="number" name="ttl" value="%s" min="1" max="1440"></label>'
+            '<button class="btn primary">%s코드 만들기</button></form></div>') % (
+        e(csrf), e(f.get("label", "")), e(f.get("tunnel_ip", "")), e(f.get("tags", "")), checks, e(f.get("ttl") or 15),
+        ICONS["plus"]) if csrf else \
+        '<div class="card pad"><h2>새 등록 코드</h2><p class="muted">이 계정이나 이 서버에서는 코드를 만들 수 없습니다.</p></div>'
+    if not r.get("ok"):
+        pending = note("err", r.get("error"))
+    elif rows:
+        pending = card_table(["이름", "터널 주소", "접속 조건", "태그", "남은 시간", ""], rows)
+    else:
+        pending = empty("기다리는 등록 코드가 없습니다.")
     return '%s<div class="grid2">%s<div><h2>기다리는 등록 <span class="muted">%d</span></h2>%s</div></div>' % (
         code, form, len(rows), pending)
 
@@ -640,7 +748,7 @@ def parse_rules(text):
 def view_acl(c, csrf=None, draft=None):
     r = c.call("acl_get")
     if not r.get("ok"):
-        return '<div class="msg err">%s</div>' % e(r.get("error"))
+        return note("err", r.get("error"))
     if not r.get("enabled"):
         return empty("ACL 이 꺼져 있습니다 (터널 대역 안까지만 닿습니다).")
     rows = []
@@ -658,24 +766,31 @@ def view_acl(c, csrf=None, draft=None):
                         cond or '<span class="muted">—</span>'))
     text = draft if draft is not None else "\n".join(rule_line(x) for x in r.get("rules") or [])
     edit = ('<h2>규칙 고치기</h2><div class="card pad"><form method="post" action="/acl/set"><input type="hidden" name="csrf" value="%s">'
-            '<textarea name="rules" rows="%d" spellcheck="false">%s</textarea>'
+            '<label class="field"><span>규칙 (한 줄에 하나)</span>'
+            '<textarea name="rules" rows="%d" spellcheck="false">%s</textarea></label>'
             '<p class="help">한 줄에 규칙 하나, 파일과 같은 모양: <code>출발지 목적지 프로토콜 포트 allow|deny '
             '[firewall=on antivirus=on disk=on min-build=N user=이름 group=이름 tag=역할]</code>. 저장하면 서버가 '
             '바로 다시 읽습니다. 맨 끝에 <code>any any any any deny</code> 를 두는 것을 잊지 마세요.</p>'
             '<button class="btn primary">저장하고 적용</button></form></div>') % (
         e(csrf), max(6, text.count("\n") + 3), e(text)) if csrf else ""
-    note = ""
+    restart = ""
     if r.get("restart_required"):
-        note = '<div class="msg err">ACL 을 켜거나 끈 것은 서버를 다시 시작해야 반영됩니다.</div>'
+        restart = note("err", "ACL 을 켜거나 끈 것은 서버를 다시 시작해야 반영됩니다.")
     return "%s<h2>규칙 <span class=\"muted\">%d</span></h2>%s%s" % (
-        note, len(rows), card_table(["#", "출발지", "목적지", "프로토콜", "포트", "판정", "조건"], rows), edit)
+        restart, len(rows), card_table(["#", "출발지", "목적지", "프로토콜", "포트", "판정", "조건"], rows), edit)
 
 
 EVENTS = [("", "전체"), ("session_open", "세션 시작"), ("session_close", "세션 끝"), ("auth_denied", "인증 거절"),
-          ("enrolled", "기기 등록"), ("access", "ACL 판정"), ("login", "사용자 로그인"), ("reload", "정책 다시 읽기"),
-          ("admin", "관리 작업")]
+          ("enrolled", "기기 등록"), ("access", "ACL 판정"), ("login", "사용자 로그인"), ("logout", "사용자 로그아웃"),
+          ("reload", "정책 다시 읽기"), ("admin", "관리 작업")]
 EVENT_KIND = {"session_open": "ok", "session_close": "idle", "auth_denied": "bad", "enrolled": "info",
-              "access": "warn", "login": "info", "reload": "info", "admin": "info"}
+              "access": "warn", "login": "info", "logout": "idle", "reload": "info", "admin": "info"}
+
+
+def audit_value(v):
+    if isinstance(v, bool):
+        return "성공" if v else "실패"
+    return json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
 
 
 def view_audit(c, q):
@@ -684,7 +799,7 @@ def view_audit(c, q):
         args["event"] = q["event"]
     r = c.call("audit", **args)
     if not r.get("ok"):
-        return '<div class="msg err">%s</div>' % e(r.get("error"))
+        return note("err", r.get("error"))
     cur = q.get("event", "")
     filters = "".join('<a href="/audit%s"%s>%s</a>' % ("?event=" + urllib.parse.quote(v) if v else "",
                                                        ' class="on"' if v == cur else "", e(n)) for v, n in EVENTS)
@@ -692,11 +807,11 @@ def view_audit(c, q):
     rows = []
     for ev in reversed(r.get("events", [])):
         kind = ev.get("event") or ""
-        rest = "".join('<span class="kv"><i>%s</i> <code>%s</code></span>' % (
-            e(k), e(json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v))
-            for k, v in ev.items() if k not in ("time", "event"))
+        rest = "".join('<span class="kv"><i>%s</i> <code>%s</code></span>' % (e(k), e(audit_value(v)))
+                       for k, v in ev.items() if k not in ("time", "event"))
+        tone = "bad" if kind == "admin" and ev.get("ok") is False else EVENT_KIND.get(kind, "idle")
         rows.append('<tr><td class="mono" style="white-space:nowrap">%s</td><td>%s<div class="id">%s</div></td><td>%s</td></tr>' % (
-            e((ev.get("time") or "").replace("T", " ").rstrip("Z")), badge(EVENT_KIND.get(kind, "idle"), names.get(kind, kind)),
+            e((ev.get("time") or "").replace("T", " ").rstrip("Z")), badge(tone, names.get(kind, kind)),
             e(kind), rest))
     table = card_table(["시각 (UTC)", "종류", "내용"], rows) if rows else empty("이 종류의 기록이 없습니다.")
     return '<div class="filters">%s</div>%s' % (filters, table)
@@ -715,7 +830,7 @@ def login_view(err=None, accounts=False):
                 '(<code>ztgate_console.py user add</code>) 토큰 로그인은 닫힙니다.')
     return ('<div class="card">%s<h1>ztgate 콘솔</h1><p class="lead">Zero Trust Gateway 관리</p>%s'
             '<form method="post" action="/login">%s<button class="btn primary">들어가기</button></form>'
-            '<p class="foot">%s</p></div>') % (LOGO % (48, 48), '<div class="msg err">%s</div>' % e(err) if err else "",
+            '<p class="foot">%s</p></div>') % (LOGO % (48, 48), note("err", err) if err else "",
                                               fields, foot)
 
 
@@ -781,21 +896,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(200 if url.path in ("/", "/login") else 401,
                       page("/login", login_view(accounts=bool(c.users()))))
             return
-        edit = s.csrf if s.admin else None      # 조회 전용이면 바꾸는 단추와 양식을 그리지 않는다
-        views = {"/": lambda: view_overview(c), "/devices": lambda: view_devices(c, edit),
+        st, edit, banner = self.state(s, url.path)
+        views = {"/": lambda: view_overview(c, st), "/devices": lambda: view_devices(c, edit, st),
                  "/enroll": lambda: view_enroll(c, edit), "/acl": lambda: view_acl(c, edit), "/audit": lambda: view_audit(c, q)}
-        if url.path == "/devices/edit" and s.admin:
+        if url.path == "/devices/edit" and edit:
             self.send(200, page("/devices", view_device_edit(c, s.csrf, q.get("id", "")), s.csrf, who=s.who))
             return
         if url.path not in views:
             self.send(404, page(url.path, empty("없는 페이지입니다."), s.csrf, who=s.who))
             return
-        msg = None
-        if q.get("ok"):
-            msg = ("ok", q["ok"])
-        elif q.get("err"):
-            msg = ("err", q["err"])
-        self.send(200, page(url.path, views[url.path](), s.csrf, msg, who=s.who))
+        msg = next(((k, q[k]) for k in ("err", "warn", "ok") if q.get(k)), None)
+        self.send(200, page(url.path, banner + views[url.path](), s.csrf, msg, who=s.who))
+
+    def state(self, s, path):
+        """(status 의 답, 바꾸는 양식에 넣을 CSRF 값 또는 None, 화면 위에 붙일 알림).
+
+        조회 전용 계정과 부 서버에서는 바꾸는 단추와 양식을 그리지 않는다. 부 서버의 ztgate_ctl 은 어차피
+        거절하고, 고쳐 봐야 다음 동기화가 덮는다."""
+        st = self.console.call("status") if path != "/audit" else {}
+        primary = st.get("sync_primary")
+        if primary:
+            return st, None, note("warn", "이 서버는 %s 의 설정을 받는 부 서버입니다. 설정은 주 서버에서 고칩니다." % primary)
+        return st, s.csrf if s.admin else None, ""
 
     def do_POST(self):
         c = self.console
@@ -852,6 +974,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if form.get("tunnel_ip", "").strip():
                 args["tunnel_ip"] = form["tunnel_ip"].strip()
             r = c.call("device_update", actor=s.user, **args)
+            if not r.get("ok"):
+                self.send(400, page("/devices", view_device_edit(c, csrf, args["id"], draft=form), csrf,
+                                    ("err", r["error"]), who=who))
+                return
             self.done("/devices", r, "기기를 고쳤습니다")
             return
         if path == "/enroll/revoke":
@@ -863,7 +989,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if err is None:
                 r = c.call("acl_set", actor=s.user, rules=rules)
                 if r.get("ok"):
-                    self.redirect("/acl?" + urllib.parse.urlencode({"ok": "ACL 을 저장했습니다 (%d 규칙)" % len(rules)}))
+                    self.done("/acl", r, "ACL 을 저장했습니다 (%d 규칙)" % len(rules))
                     return
                 err = r.get("error") or "실패"
             # 고친 글을 잃지 않게 그대로 다시 보여 준다.
@@ -871,10 +997,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if path == "/enroll/create":
             args = {"requirements": {k: True for k in ("firewall", "antivirus", "disk") if form.get(k)}}
-            if form.get("label"):
-                args["label"] = form["label"]
-            if form.get("tunnel_ip"):
-                args["tunnel_ip"] = form["tunnel_ip"].strip()
+            for k in ("label", "tunnel_ip"):
+                if form.get(k, "").strip():
+                    args[k] = form[k].strip()
             if form.get("tags", "").strip():
                 args["tags"] = form["tags"].split()
             try:
@@ -883,15 +1008,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 args["ttl_minutes"] = 15
             r = c.call("enroll_create", actor=s.user, **args)
             if not r.get("ok"):
-                self.done("/enroll", r, "")
+                self.send(400, page("/enroll", view_enroll(c, csrf, draft=form), csrf, ("err", r["error"]), who=who))
                 return
-            self.send(200, page("/enroll", view_enroll(c, csrf, made=r), csrf, who=who))
+            # 코드는 이 답에서 한 번만 나온다. 서버가 다시 읽지 못했어도 파일에는 들어갔으니 보여 준다.
+            self.send(200, page("/enroll", view_enroll(c, csrf, made=r), csrf, reload_warning(r), who=who))
             return
         self.send(404, page(path, empty("없는 동작입니다."), csrf, who=who))
 
     def done(self, where, r, ok_text):
-        key, text = ("ok", ok_text) if r.get("ok") else ("err", r.get("error") or "실패")
+        key, text = reload_warning(r) or (("ok", ok_text) if r.get("ok") else ("err", r.get("error") or "실패"))
         self.redirect("%s?%s" % (where, urllib.parse.urlencode({key: text})))
+
+
+def reload_warning(r):
+    """파일은 바꿨지만 서버가 다시 읽지 못한 답이면 ("warn", 글), 아니면 None."""
+    if r.get("ok") and r.get("reload_error"):
+        return "warn", "저장했지만 서버가 다시 읽지 못했습니다: %s" % ko_error(r["reload_error"], lead="")
+    return None
 
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
