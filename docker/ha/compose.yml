@@ -1,0 +1,34 @@
+# docker/ha.sh: 주 서버(vpn1), 부 서버(vpn2), 두 서버를 다 아는 Linux 클라이언트.
+name: ztha
+networks:
+  wan:
+    ipam:
+      config: [{subnet: 172.30.9.0/24}]
+x-srv: &srv
+  image: ztgate-ha
+  cap_add: [NET_ADMIN]
+  devices: ["/dev/net/tun:/dev/net/tun"]
+  # 부 서버의 "다시 띄우기" 는 서버를 끝내고 docker 가 다시 올리는 것으로 대신한다.
+  restart: unless-stopped
+services:
+  primary:
+    <<: *srv
+    hostname: vpn1
+    command: server
+    networks: {wan: {ipv4_address: 172.30.9.11}}
+    volumes: ["p-etc:/etc/ztgate"]
+  secondary:
+    <<: *srv
+    hostname: vpn2
+    entrypoint: ["sh", "/ha/secondary.sh"]
+    networks: {wan: {ipv4_address: 172.30.9.12}}
+    volumes: ["s-etc:/etc/ztgate", "./:/ha:ro"]
+  client:
+    image: ztgate-ha
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    entrypoint: ["sleep", "infinity"]
+    networks: {wan: {ipv4_address: 172.30.9.20}}
+volumes:
+  p-etc:
+  s-etc:

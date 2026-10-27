@@ -27,6 +27,11 @@ CONF=${ZTGATE_SYNC_CONF:-/etc/ztgate-sync/sync.conf}
 # 서버 키도 간다. 같은 서버 키라야 등록 때 고정한 서버 공개키로 어느 서버에나 붙는다. server.env 는
 # 서버마다 다르다 (FORWARD_OUT 의 인터페이스 이름 등).
 FILES="devices.conf acl.conf idp.conf jwks.json dns.conf server.key"
+# 폴더를 통째로 보내되 이 파일들만 고른다. --delete 는 고른 이름만 지우므로 부 서버의 server.env,
+# enroll.conf, .sync-primary 는 남는다. 파일 이름을 늘어놓고 --delete-missing-args 로 지우던 것은
+# 프로토콜 32 의 rsync(Debian 12 의 3.2.7)가 없는 파일에서 "invalid file mode 00" 으로 멈췄다.
+PICK=
+for f in $FILES; do PICK="$PICK --include=$f"; done
 
 if [ ! -r "$CONF" ]; then
 	echo "ztgate-sync: $CONF not found; write PEERS=\"user@host ...\" there (root, mode 600)" >&2
@@ -82,12 +87,12 @@ needs_restart() {
 cd "$ETC"
 failed=0
 for peer in $PEERS; do
-	# 주에 없는 파일(acl.conf 를 지웠다)은 부에서도 지운다 (--delete-missing-args). 파일마다 옆에 쓰고
+	# 주에 없는 파일(acl.conf 를 지웠다)은 부에서도 지운다 (--delete). 파일마다 옆에 쓰고
 	# 이름을 바꾸므로 부 서버가 반쯤 쓰인 파일을 읽지 않는다. 다시 읽기는 다 보낸 뒤 한 번. -c: 같은 초에
 	# 같은 크기로 바뀐 파일(이름표를 같은 길이로 고쳤다)도 내용으로 가려 보낸다.
 	case $peer in
 	/*)
-		if rsync -aci --delete-missing-args $FILES "$peer/" > "$changes" && cp "$mark" "$peer/.sync-primary"; then
+		if rsync -aci --delete $PICK --exclude='*' ./ "$peer/" > "$changes" && cp "$mark" "$peer/.sync-primary"; then
 			if needs_restart; then how=restarted; sh -c "$RESTART"; else how=reloaded; sh -c "$RELOAD"; fi &&
 				echo "ztgate-sync: $peer: done ($how)" && continue
 		fi
@@ -95,7 +100,7 @@ for peer in $PEERS; do
 		failed=1
 		;;
 	*)
-		if rsync -aci --delete-missing-args -e "$ssh_cmd" --rsync-path="$RSYNC_PATH" $FILES "$peer:$ETC/" > "$changes" &&
+		if rsync -aci --delete $PICK --exclude='*' -e "$ssh_cmd" --rsync-path="$RSYNC_PATH" ./ "$peer:$ETC/" > "$changes" &&
 				rsync -a -e "$ssh_cmd" --rsync-path="$RSYNC_PATH" "$mark" "$peer:$ETC/.sync-primary"; then
 			if needs_restart; then how=restarted; $ssh_cmd "$peer" "$RESTART"; else how=reloaded; $ssh_cmd "$peer" "$RELOAD"; fi &&
 				echo "ztgate-sync: $peer: done ($how)" && continue

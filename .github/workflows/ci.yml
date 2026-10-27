@@ -152,6 +152,11 @@ jobs:
       - name: Server + client containers (docker/demo.sh)
         run: docker/demo.sh
 
+      # Debian 12 의 rsync(프로토콜 32)로 실제 ssh 를 건너 동기화한다. sync_check.sh 는 러너의 rsync 로
+      # 폴더 사이만 본다.
+      - name: Two servers synced over ssh (docker/ha.sh)
+        run: docker/ha.sh
+
       - name: Image size
         run: docker image ls ztgate --format '{{.Repository}} {{.Size}}'
 
