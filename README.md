@@ -35,6 +35,8 @@ WireGuard나 IPsec이 하는 일(터널, 키 합의, 암호화)과 Tailscale·Ne
 
 > **상태: v0.9 개발 중 (프로토콜 v9), [변경 기록](CHANGELOG.md).** v7 에서 터널 설정에 내부 DNS 가, v8 에서 공개키 기기 신원이, v9 에서 핸드셰이크의 기기 ID / 포스처 감싸기가 더해져 이전 버전과는 통하지 않습니다. 0.6.0에서 이름을 my_vpn에서 ztgate로 바꿨습니다. Linux 서버, Linux 클라이언트, 앱 커넥터, Windows 클라이언트(서비스 + GUI)가 있습니다. CI가 푸시마다 서버 프로토콜 시험 346개, 전체 경로 시험 67개, 웹 콘솔 시험 47개, 운영 CLI 시험 16개, Keycloak 연동 시험(DPoP 포함)을 돌리고, 서버 패키지(DEB / RPM)와 Windows MSI 를 만듭니다. 암호 프로토콜은 아직 독립적인 보안 검토를 받지 않았습니다. 운영 환경에 두기 전에 [보안 모델](#보안-모델)과 [알려진 제약](#알려진-제약)을 먼저 읽어 주세요.
 
+운영자는 [운영자 안내서](docs/guide/admin.md), Windows 사용자는 [사용자 안내서](docs/guide/user.md)부터 읽으면 됩니다. 이 README 는 구조와 프로토콜, 모든 옵션을 다룹니다.
+
 ## 한눈에 보기
 
 <p align="center"><img src="docs/assets/architecture.svg" alt="ztgate 구조: 기기는 암호화 UDP 터널로 서버에 붙고, 서버는 패킷마다 ACL · 포스처 · 사용자 조건을 보고, 앱 커넥터가 내부망 자원을 내어 준다" width="100%"></p>
@@ -478,14 +480,14 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
 ### 업그레이드
 
 1. 저장소를 받고 `mcp/install.sh`를 다시 실행한 뒤 `sudo systemctl restart ztgate`. 패키지로 설치했으면 새 패키지를 설치하는 것으로 끝입니다 (서버를 스스로 다시 올립니다).
-2. **서버와 클라이언트의 프로토콜 버전은 같아야 합니다.** 서버는 버전이 다른 패킷을 헤더에서 버리므로(`[drop] bad header`), 클라이언트에는 서버가 응답하지 않는 것처럼 보입니다. 프로토콜 버전이 바뀌는 업그레이드는 서버와 모든 클라이언트를 함께 올립니다.
+2. **서버를 먼저 올립니다** ([ADR 0012](docs/decisions/0012-version-compat.md)). 서버는 받지 않는 버전의 클라이언트에게 받는 범위를 `VERSION` 으로 알려 주고 `version_mismatch` 로 셉니다. Windows 는 "업데이트가 필요합니다"를 보여 주고 업데이트 확인을 바로 띄웁니다. Linux 클라이언트에는 응답이 없는 것처럼 보입니다.
 3. 서버를 다시 시작하면 세션은 모두 사라집니다. 클라이언트는 서버에서 30초 동안 아무것도 받지 못하면 스스로 다시 핸드셰이크합니다.
 
 ### 문제 해결
 
 | 증상 | 원인과 해결 |
 |---|---|
-| 클라이언트가 `[HS] no response from server` | UDP 포트가 막혔거나(호스트 방화벽, 클라우드 보안 그룹) 서버가 꺼져 있습니다. 서버 로그에 `[drop] bad header`가 찍히면 프로토콜 버전이 다릅니다 |
+| 클라이언트가 `[HS] no response from server` | UDP 포트가 막혔거나(호스트 방화벽, 클라우드 보안 그룹) 서버가 꺼져 있습니다. 서버 로그에 `[drop] protocol vN from a client` 가 찍히면 프로토콜 버전이 다릅니다 |
 | `[HS] denied: unknown device` | 등록되지 않았거나 코드가 만료됐습니다. 감사 로그에서 `enrolled`를 찾습니다 |
 | `[deny] posture does not meet policy` | 기기의 포스처가 정책에 못 미칩니다. 클라이언트에서 `vpn_client posture`로 보고할 값을 보고 `devices.conf`의 조건과 비교합니다 |
 | 연결은 되는데 특정 목적지만 안 됨 | 그 목적지의 `allow` 규칙이 없거나 규칙의 조건(포스처, `user=`, `group=`)이 맞지 않습니다. 감사 로그의 `access` 줄에서 판정을 봅니다 |
