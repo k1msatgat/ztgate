@@ -390,12 +390,13 @@ sudo ./client/bin/vpn_client connector <서버 IP> 9000 eth0
 
 ### 서비스로 설치하기
 
+서버는 패키지(`ztgate-server`, 아래 절)로 깔고 `sudo ztgate setup` 으로 켭니다. 저장소의 `mcp/install.sh` 는 서버를 깔지 않고, AI 에이전트용 MCP 서버와 배포기(`ztgate-deploy`)만 `/opt/ztgate-mcp` 에 깝니다.
+
 ```bash
-mcp/install.sh                 # 일반 계정으로 실행한다. 필요한 곳에서 sudo 를 스스로 부른다
-sudo systemctl enable --now ztgate
+mcp/install.sh                 # 일반 계정으로 실행한다. 필요한 곳에서 sudo 를 스스로 부른다 (Node.js 18 이상, /usr/bin/node)
 ```
 
-설치 스크립트는 서버를 빌드해 `/opt/ztgate`에 root 소유로 복사하고, 처음 한 번만 `/etc/ztgate`에 설정을 만듭니다. 다시 실행하면 실행 파일만 바꾸고 설정과 기기 목록은 건드리지 않습니다. 관리 헬퍼 `ztgate_ctl`과 MCP 서버도 함께 설치하므로 Node.js(npm)가 필요합니다.
+예전 `mcp/install.sh` 로 서버까지 깐 장비는 `packaging/migrate-to-package.sh` 로 패키지 배치로 옮깁니다. 기본은 할 일만 보여 주고, `--apply` 로 옮기고, `--undo` 로 되돌립니다. 옮기는 동안 `/etc/ztgate` 와 `/etc/ztgate-console` 은 건드리지 않고 앞뒤의 sha256 을 견줍니다.
 
 | 경로 | 내용 |
 |---|---|
@@ -490,9 +491,20 @@ vpn_client ztgate 203.0.113.10,203.0.113.11 9000     # Windows 콘솔. GUI 는 �
 
 ### 업그레이드
 
-1. 저장소를 받고 `mcp/install.sh`를 다시 실행한 뒤 `sudo systemctl restart ztgate`. 패키지로 설치했으면 새 패키지를 설치하는 것으로 끝입니다 (서버를 스스로 다시 올립니다).
+1. 새 패키지를 설치합니다. 서버를 스스로 다시 올립니다. MCP 를 쓰면 `deploy {"ref": "main"}` 한 번으로 됩니다 (아래).
 2. **서버를 먼저 올립니다** ([ADR 0012](docs/decisions/0012-version-compat.md)). 서버는 받지 않는 버전의 클라이언트에게 받는 범위를 `VERSION` 으로 알려 주고 `version_mismatch` 로 셉니다. Windows 는 "업데이트가 필요합니다"를 보여 주고 업데이트 확인을 바로 띄웁니다. Linux 클라이언트에는 응답이 없는 것처럼 보입니다.
 3. 서버를 다시 시작하면 세션은 모두 사라집니다. 클라이언트는 서버에서 30초 동안 아무것도 받지 못하면 스스로 다시 핸드셰이크합니다.
+
+#### MCP 로 배포하기
+
+MCP 의 `deploy {"ref": "<브랜치, 태그 또는 커밋>"}` 은 배포기(`ztgate-deploy`, [ADR 0014](docs/decisions/0014-deploy-from-remote.md))에 일을 맡기고 작업 id 를 바로 돌려줍니다. `deploy_status` 는 그 작업이 끝날 때까지(최대 150초씩) 기다렸다 답하고, `deploy_rollback` 은 이전 패키지나 보관된 커밋으로 되돌립니다.
+
+- **어디서 받나.** `/etc/ztgate-deploy/deploy.conf`(root 600)의 `REPO` 에서, `BRANCHES`(기본 `*`)와 `TAGS`(기본 `v*`)에 맞는 ref 만 받습니다. 커밋 id 는 그 ref 에서 닿을 때만 받습니다. `allowed_signers` 파일을 두면 서명한 커밋만 받습니다. 신뢰의 뿌리는 그 원격에 push 할 수 있는 사람입니다.
+- **빌드.** root 소유 bare 저장소에서 `git archive` 를 떠, 네트워크 없는 일회성 유닛에서 `ztgate-build` 계정이 빌드합니다(`MemoryMax=450M`, `CPUWeight=10`). 패키지 판에는 커밋이 들어갑니다(`0.9.4-0.<시각>.g<커밋>`). 최근 5개를 보관합니다.
+- **검사와 되돌리기.** 설치 전에 `ztgate-backup` 을 하고 `rpm -U` / `dpkg -i` 로 깝니다. 서비스가 15초 동안 같은 pid 로 도는지, 실행 중인 파일이 패키지 안의 것과 같은지, `ztgate_ctl status`, UDP 포트의 `VERSION` 응답, 서버 키가 그대로인지를 봅니다. 하나라도 떨어지면 이전 패키지로 되돌리고 같은 검사를 다시 합니다 (`reverted`). 이 사이에는 `ztgate_ctl` 의 start / stop / restart / auth_check 를 거절합니다.
+- **끊김에 강하다.** 작업은 일회성 systemd 유닛(`ztgate-deploy.service`)에서 돌아 ssh 가 끊기거나 ztgate 가 다시 떠도 이어집니다. 한 번에 하나만 돌고, 같은 커밋을 다시 배포하면 `unchanged` 로 끝납니다. 재부팅으로 끊긴 작업은 `interrupted` 로 보이고 스스로 되돌리지 않습니다.
+
+시험은 `test/deploy_check.sh` 입니다. CI 가 Ubuntu 러너의 systemd(deb)와 Rocky 9 systemd 컨테이너(rpm)에서 좋은 커밋, 같은 커밋, 뜨자마자 죽는 커밋의 자동 되돌리기, 명시적 되돌리기, 겹침, 허용 밖 ref, 빌드 중 강제 종료를 돌립니다.
 
 ### 문제 해결
 

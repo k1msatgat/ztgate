@@ -23,6 +23,8 @@
 - **서버 한 대가 받는 수를 늘렸습니다.** 동시 세션 8 → 4096, 기기 16 → 4096, ACL 규칙 32 → 1024, 등록 대기 16 → 256. 세션과 기기는 해시 색인으로 찾아 수가 늘어도 패킷마다의 비용이 그대로이고, 상태 소켓은 크기 제한 없이 루프를 막지 않고 끝까지 씁니다. 세션 번호의 자리 번호가 8bit 에서 16bit 로 바뀌었지만 클라이언트는 번호를 그대로 돌려줄 뿐이라 프로토콜은 v6 그대로입니다. 관리 도구(`ztgate_ctl`)의 상한도 같이 올렸습니다.
 
 ### 추가
+- **MCP 로 서버 배포 (`deploy`, `deploy_status`, `deploy_rollback`).** 원격의 브랜치, 태그 또는 커밋을 장비에서 패키지로 빌드해 깔고, 검사에 떨어지면 이전 패키지로 스스로 되돌립니다. 배포기 `ztgate-deploy` 는 패키지 밖(`/opt/ztgate-mcp`)에 있어 어느 판으로 내려가도 남습니다. 받을 ref 는 root 의 `/etc/ztgate-deploy/deploy.conf` 가 정하고, 빌드는 네트워크 없는 일회성 유닛에서 빌드 전용 계정이 합니다. 패키지 판에 커밋이 들어갑니다 (`build.sh` 의 `SNAPSHOT`). [ADR 0014](docs/decisions/0014-deploy-from-remote.md).
+- **패키지 배치로 옮기기 (`packaging/migrate-to-package.sh`).** 예전 `mcp/install.sh` 로 깐 서버를 `ztgate-server` 패키지로 옮깁니다. 기본은 할 일만 보여 주고 `--apply`, `--undo`. 콘솔의 듣는 주소 같은 손댄 유닛 값은 drop-in 으로 옮깁니다. `mcp/install.sh` 는 이제 MCP 와 배포기만 깝니다.
 - **`ztgate setup`.** 패키지를 깐 서버를 명령 하나로 기기가 붙는 상태까지 만듭니다. 공개 주소, 포트, 터널 대역, 사내망 인터페이스, 내부 DNS 를 묻거나 옵션으로 받아 `server.env` / `dns.conf` 의 바뀐 줄만 고치고, 켜진 firewalld 나 ufw 에 그 포트만 열고, 서비스를 켠 뒤 떴는지 확인합니다. `--enroll` 은 첫 기기의 코드와 초대 링크를 만듭니다. 같은 값으로 다시 돌리면 아무것도 바꾸지 않습니다. 패키지는 설치가 끝나면 setup 을 안내합니다.
 - **앱 커넥터 패키지 `ztgate-connector` (DEB / RPM).** `ztgate-connector enroll <초대 링크> --lan-if <장치>` 로 등록하면 systemd 서비스(`CAP_NET_ADMIN` 만)로 뜨고 스스로 다시 붙습니다. `status`, `unenroll`. 신원과 설정은 업그레이드와 제거 뒤에도 남습니다.
 - **MSI 설치 속성 `SERVER` / `PORT` / `CODE`.** `msiexec /i ztgate.msi SERVER=… PORT=… CODE=…` 한 줄로 기본 서버를 정하고 등록까지 맡깁니다. 두 번 눌러 설치하면 같은 칸을 묻는 창이 나옵니다. 코드는 설치 기록에 남지 않고(MsiHiddenProperties), SYSTEM 과 관리자만 읽는 키에 적혀 서비스가 등록한 뒤 지웁니다. 서버에 닿지 않으면 다시 시도하고, 거절되면 GUI 가 새 코드를 받으라고 알립니다. 이미 등록된 PC 에서는 코드를 쓰지 않습니다. 형식이 틀린 값은 설치를 되돌립니다. IPC 가 v9 로 올라갔습니다.
