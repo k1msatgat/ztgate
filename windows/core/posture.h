@@ -13,6 +13,8 @@
 
 #include <stdint.h>
 
+#include "proto.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,6 +49,12 @@ typedef struct posture {
 /* 현재 상태를 읽어 out 을 채운다. 항목별로 실패할 수 있고, 실패한 항목은
  * "모름" 값으로 남는다. 한 항목을 못 읽었다고 나머지를 버리지 않는다. */
 void posture_collect(posture_t *out);
+
+/* 화면에 보일 상태. 서비스가 서버에 보낸 값(sent)이 있으면 그것을, 없으면(NULL) 이 프로세스가
+ * 읽은 local 을 쓴다. 권한 없는 GUI 는 BitLocker 를 "모름"으로 읽는데 서버는 서비스가 읽은
+ * "꺼짐"으로 판정한다 — 화면이 그것과 달라서는 무엇을 고칠지 알 수 없다. sent 에 없는 OS 의
+ * 주 / 부 버전만 local 에서 가져온다. */
+void posture_pick(posture_t *out, const posture_t *local, const posture_report_t *sent);
 
 #ifdef __cplusplus
 }

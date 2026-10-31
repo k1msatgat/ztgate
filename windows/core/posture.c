@@ -342,3 +342,29 @@ void posture_collect(posture_t *out)
 	out->antivirus = collect_antivirus();
 	out->disk = collect_disk();
 }
+
+static uint8_t from_wire(uint8_t state)
+{
+	switch (state) {
+	case POSTURE_STATE_ON:	return POSTURE_ON;
+	case POSTURE_STATE_OFF:	return POSTURE_OFF;
+	default:		return POSTURE_UNKNOWN;
+	}
+}
+
+void posture_pick(posture_t *out, const posture_t *local, const posture_report_t *sent)
+{
+	*out = *local;
+	if (!sent) {
+		return;
+	}
+
+	out->os_build = sent->os_build;
+	if (sent->os_build == 0) {
+		out->os_major = 0;
+		out->os_minor = 0;
+	}
+	out->firewall = from_wire(sent->firewall);
+	out->antivirus = from_wire(sent->antivirus);
+	out->disk = from_wire(sent->disk);
+}

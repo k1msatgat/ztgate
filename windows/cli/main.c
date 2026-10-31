@@ -103,9 +103,32 @@ static int parse_selftest(void)
 	return failed;
 }
 
+/* GUI 가 화면에 무엇을 보이는가. 서버가 판정한 값과 화면이 다르면 사용자는 무엇을 고칠지 모른다. */
+static int pick_selftest(void)
+{
+	const posture_t local = { 10, 0, 26200, POSTURE_ON, POSTURE_ON, POSTURE_UNKNOWN };
+	posture_report_t sent = { 26200, POSTURE_STATE_ON, POSTURE_STATE_OFF, POSTURE_STATE_OFF, 0 };
+	posture_t out;
+	int failed = 0;
+
+	posture_pick(&out, &local, &sent);
+	failed |= st("posture: service value wins", out.disk == POSTURE_OFF && out.antivirus == POSTURE_OFF &&
+			out.firewall == POSTURE_ON && out.os_build == 26200);
+	failed |= st("posture: os version kept", out.os_major == 10 && out.os_minor == 0);
+
+	posture_pick(&out, &local, NULL);
+	failed |= st("posture: local without service", memcmp(&out, &local, sizeof(out)) == 0);
+
+	sent.os_build = 0;
+	sent.disk = 7;
+	posture_pick(&out, &local, &sent);
+	failed |= st("posture: service unknowns", out.os_build == 0 && out.os_major == 0 && out.disk == POSTURE_UNKNOWN);
+	return failed;
+}
+
 static int selftest(void)
 {
-	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest();
+	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest() | pick_selftest();
 }
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len)
