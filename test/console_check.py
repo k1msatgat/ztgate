@@ -291,7 +291,8 @@ def main():
         _, body = get("/audit", sid)
         chips = set(re.findall(r'href="/audit\?event=(\w+)"', body))
         expect("every event the server writes can be asked of ztgate_ctl", sorted(written - ctl_events), [])
-        expect("...and has a filter chip", sorted(written - chips), [])
+        # 서버 말고도 감사 로그에 쓰는 것이 있다 (배포기의 deploy). ztgate_ctl 이 받는 사건이면 모두 단추가 있어야 한다.
+        expect("...and every event ztgate_ctl takes has a filter chip", sorted(ctl_events - chips), [])
         for event in ("login", "logout"):
             get("/audit?event=" + event, sid)
             expect("audit filter %s reaches ztgate_ctl" % event, ctl_cmds()[-1], {"lines": 200, "event": event, "cmd": "audit"})
@@ -300,6 +301,12 @@ def main():
         _, body = get("/audit", sid)
         expect("audit: a failed admin event is a bad badge, ok:false reads 실패",
                ('badge bad">관리 작업' in body, "<code>실패</code>" in body, "<code>False</code>" in body), (True, True, False))
+        answer(audit={"ok": True, "events": [
+            {"time": "2026-10-25T00:00:00Z", "event": "deploy", "job": "d-1", "outcome": "installed"},
+            {"time": "2026-10-25T00:01:00Z", "event": "deploy", "job": "d-2", "outcome": "broken"}]})
+        _, body = get("/audit", sid)
+        expect("audit: deploy reads 배포, colored by its outcome",
+               ('badge ok">배포' in body, 'badge bad">배포' in body), (True, True))
         answer()
 
         st, h, _ = req("POST", "/login", {"token": token})

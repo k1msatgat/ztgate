@@ -782,9 +782,12 @@ def view_acl(c, csrf=None, draft=None):
 
 EVENTS = [("", "전체"), ("session_open", "세션 시작"), ("session_close", "세션 끝"), ("auth_denied", "인증 거절"),
           ("enrolled", "기기 등록"), ("access", "ACL 판정"), ("login", "사용자 로그인"), ("logout", "사용자 로그아웃"),
-          ("reload", "정책 다시 읽기"), ("admin", "관리 작업")]
+          ("reload", "정책 다시 읽기"), ("admin", "관리 작업"), ("deploy", "배포")]
 EVENT_KIND = {"session_open": "ok", "session_close": "idle", "auth_denied": "bad", "enrolled": "info",
-              "access": "warn", "login": "info", "logout": "idle", "reload": "info", "admin": "info"}
+              "access": "warn", "login": "info", "logout": "idle", "reload": "info", "admin": "info", "deploy": "info"}
+# 배포 사건은 끝난 모양에 따라 (mcp/deploy.cjs 의 outcome).
+DEPLOY_TONE = {"installed": "ok", "unchanged": "idle", "built": "info", "failed": "warn", "reverted": "warn",
+               "interrupted": "warn", "broken": "bad"}
 
 
 def audit_value(v):
@@ -809,7 +812,12 @@ def view_audit(c, q):
         kind = ev.get("event") or ""
         rest = "".join('<span class="kv"><i>%s</i> <code>%s</code></span>' % (e(k), e(audit_value(v)))
                        for k, v in ev.items() if k not in ("time", "event"))
-        tone = "bad" if kind == "admin" and ev.get("ok") is False else EVENT_KIND.get(kind, "idle")
+        if kind == "admin" and ev.get("ok") is False:
+            tone = "bad"
+        elif kind == "deploy":
+            tone = DEPLOY_TONE.get(ev.get("outcome"), "idle")
+        else:
+            tone = EVENT_KIND.get(kind, "idle")
         rows.append('<tr><td class="mono" style="white-space:nowrap">%s</td><td>%s<div class="id">%s</div></td><td>%s</td></tr>' % (
             e((ev.get("time") or "").replace("T", " ").rstrip("Z")), badge(tone, names.get(kind, kind)),
             e(kind), rest))
