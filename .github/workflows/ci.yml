@@ -62,6 +62,9 @@ jobs:
       - name: Operator CLI (test/cli_check.py)
         run: python3 test/cli_check.py
 
+      - name: First-time setup (test/setup_check.py)
+        run: python3 test/setup_check.py
+
       - name: Backup and restore (test/backup_check.sh)
         run: test/backup_check.sh
 
@@ -232,14 +235,22 @@ jobs:
           sudo apt-get install -y -qq ./out/ztgate-server_*.deb > /dev/null
           sudo test -s /etc/ztgate/server.key
           key=$(sudo sha256sum /etc/ztgate/server.key)
-          sudo systemctl start ztgate
-          sleep 2
+          # 처음 설정: 묻지 않고 서비스를 켜고 부팅 때도 뜨게 한다. ztgate_ctl status 로 tun 까지 본다.
+          sudo ztgate setup --yes --no-firewall
           systemctl is-active ztgate
+          systemctl is-enabled ztgate
           echo '{"cmd":"status"}' | sudo /usr/sbin/ztgate_ctl
           sudo ztgate status
           # 초대 링크: server.env 의 PUBLIC_ADDRESS 가 있을 때만, 서버 목록은 %XX 로.
           echo '{"cmd":"enroll_create"}' | sudo /usr/sbin/ztgate_ctl | python3 -c 'import json,sys; assert "invite" not in json.load(sys.stdin)'
-          echo 'PUBLIC_ADDRESS=vpn1.example.com,vpn2.example.com' | sudo tee -a /etc/ztgate/server.env > /dev/null
+          sudo ztgate setup --yes --no-firewall --public-address vpn1.example.com,vpn2.example.com
+          sudo grep -qx 'PUBLIC_ADDRESS=vpn1.example.com,vpn2.example.com' /etc/ztgate/server.env
+          [ "$(sudo stat -c %U:%a /etc/ztgate/server.env)" = ztgate:600 ]
+          # 같은 값으로 다시: 아무것도 쓰지 않고 서버도 그대로 (같은 PID).
+          pid=$(systemctl show -p MainPID --value ztgate)
+          sudo ztgate setup --yes --no-firewall --public-address vpn1.example.com,vpn2.example.com | grep -q '설정은 그대로입니다'
+          [ "$(systemctl show -p MainPID --value ztgate)" = "$pid" ]
+          sudo ztgate setup --yes --no-firewall --enroll ci-pc | grep -q 'ztgate://enroll?server=vpn1.example.com%2Cvpn2.example.com&port=9000&code='
           echo '{"cmd":"enroll_create"}' | sudo /usr/sbin/ztgate_ctl | python3 -c 'import json,re,sys; r=json.load(sys.stdin); assert re.fullmatch(r"ztgate://enroll\?server=vpn1\.example\.com%2Cvpn2\.example\.com&port=9000&code=" + re.escape(r["code"]), r["invite"]), r'
           [ "$(ps -o user= -C vpn_server | head -n 1)" = ztgate ]
           [ "$(sudo stat -c %U:%a /etc/ztgate/server.key)" = ztgate:600 ]
@@ -282,6 +293,9 @@ jobs:
             dnf -y -q install ./out/ztgate-server-*.rpm > /dev/null
             test -s /etc/ztgate/server.key
             /opt/ztgate/server/bin/vpn_server selftest | tail -n 1
+            ztgate setup --yes --no-firewall --public-address vpn.example.com | grep -q "systemd 가 없어"
+            grep -qx PUBLIC_ADDRESS=vpn.example.com /etc/ztgate/server.env
+            [ "$(stat -c %U:%a /etc/ztgate/server.env)" = ztgate:600 ]
             rpm -e ztgate-server
             test -s /etc/ztgate/server.key
             test ! -e /opt/ztgate/server/bin/vpn_server
