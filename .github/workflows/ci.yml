@@ -473,6 +473,14 @@ jobs:
           Expand-Archive wix.zip -DestinationPath wix
           windows\installer\build.ps1 -Wix "$env:GITHUB_WORKSPACE\wix"
 
+      # 설치 속성 SERVER, PORT, CODE 의 약속. 표만 읽고(check.ps1), 버려도 되는 러너에 실제로 설치해 서비스가
+      # 코드를 받아 두고 다시 시도하는지, 기록에 코드가 없는지, 복구와 제거가 무엇을 남기는지 본다.
+      - name: Installer properties (windows/installer/check.ps1, windows/test/msi_install.ps1)
+        shell: powershell
+        run: |
+          windows\installer\check.ps1
+          windows\test\msi_install.ps1 -Uninstall
+
       - name: Sign the installer
         shell: pwsh
         env:
