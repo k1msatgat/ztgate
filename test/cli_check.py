@@ -89,6 +89,8 @@ def main():
     code, out, _ = run("--color", "always", "status")
     expect("--color always: teal for running, red for the posture miss",
            "\033[36m● 실행 중\033[0m" in out and "\033[31m디스크\033[0m" in out, True)
+    code, out, _ = run("--color", "never", "status")
+    expect("--color never: the posture miss is marked in text", "방화벽 백신 디스크✗" in out, True)
     code, out, _ = run("--color", "always", "status", extra={"NO_COLOR": "1"})
     expect("--color always wins over NO_COLOR", "\033[" in out, True)
 

@@ -118,7 +118,13 @@ def posture(p, paint):
     out = []
     for key, name in (("firewall", "방화벽"), ("antivirus", "백신"), ("disk", "디스크")):
         v = p.get(key)
-        out.append(paint("ok", name) if v == "on" else paint("bad", name) if v == "off" else paint("dim", name))
+        if v == "on":
+            out.append(paint("ok", name))
+        # 색이 없으면 켜짐과 꺼짐이 같은 글자가 된다. 꺼짐과 모름은 글자로도 가른다.
+        elif v == "off":
+            out.append(paint("bad", name if paint.on else name + "✗"))
+        else:
+            out.append(paint("dim", name if paint.on else name + "?"))
     return " ".join(out)
 
 
