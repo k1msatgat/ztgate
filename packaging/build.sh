@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# 서버 패키지를 만든다.
+# 서버 패키지와 앱 커넥터 패키지를 만든다.
 #
 #   packaging/build.sh deb [out-dir]      dpkg-deb 로 ztgate-server_<ver>_<arch>.deb
 #   packaging/build.sh rpm [out-dir]      rpmbuild 로 ztgate-server-<ver>-1.<arch>.rpm
+#   packaging/build.sh connector-deb|connector-rpm [out-dir]
+#                                         ztgate-connector (먼저 make client). 의존은 libssl, nftables
 #
 # 먼저 make server 로 빌드해 둔다. 버전은 CHANGELOG 와 같게 VERSION 으로 준다 (기본 0.9.2).
 # 의존: libssl (OpenSSL 3 의 libcrypto), iproute2(ip), nftables(서버 뒤로 내보낼 때), python3(도구).
@@ -10,7 +12,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-KIND=${1:?usage: build.sh deb|rpm [out-dir]}
+KIND=${1:?usage: build.sh deb|rpm|connector-deb|connector-rpm [out-dir]}
 OUT=${2:-$ROOT/packaging/out}
 VERSION=${VERSION:-$(tr -d '[:space:]' < "$ROOT/VERSION")}
 WORK=$(mktemp -d)
@@ -51,8 +53,39 @@ rpm)
 	rpmbuild --define "_topdir $WORK/rpm" -bb "$WORK/rpm/SPECS/ztgate-server.spec"
 	find "$WORK/rpm/RPMS" -name '*.rpm' -exec cp {} "$OUT/" \;
 	;;
+connector-deb)
+	ARCH=$(dpkg --print-architecture)
+	S="$WORK/ztgate-connector"
+	"$ROOT/packaging/connector-stage.sh" "$S"
+	install -d "$S/DEBIAN"
+	cat > "$S/DEBIAN/control" <<EOF
+Package: ztgate-connector
+Version: $VERSION
+Architecture: $ARCH
+Maintainer: ztgate <noreply@example.invalid>
+Depends: libssl3 | libssl3t64, nftables
+Section: net
+Priority: optional
+Description: ztgate app connector
+ Runs inside a protected network and opens an outbound session to the ztgate
+ server, which relays traffic for that network to it. No inbound port is opened.
+EOF
+	printf '#!/bin/sh\nset -e\n/opt/ztgate-connector/libexec/postinst.sh\n' > "$S/DEBIAN/postinst"
+	# 지울 때 서비스를 멈춘다. 신원과 connector.env 는 남긴다 (purge 에서도).
+	printf '#!/bin/sh\nset -e\nif [ "$1" = remove ] && command -v systemctl >/dev/null 2>&1; then\n\tsystemctl disable --now ztgate-connector.service 2>/dev/null || true\nfi\n' > "$S/DEBIAN/prerm"
+	chmod 755 "$S/DEBIAN/postinst" "$S/DEBIAN/prerm"
+	dpkg-deb --root-owner-group --build "$S" "$OUT/ztgate-connector_${VERSION}_${ARCH}.deb"
+	;;
+connector-rpm)
+	S="$WORK/stage"
+	"$ROOT/packaging/connector-stage.sh" "$S"
+	install -d "$WORK/rpm/SPECS"
+	sed -e "s|@VERSION@|$VERSION|" -e "s|@STAGE@|$S|" "$ROOT/packaging/ztgate-connector.spec" > "$WORK/rpm/SPECS/ztgate-connector.spec"
+	rpmbuild --define "_topdir $WORK/rpm" -bb "$WORK/rpm/SPECS/ztgate-connector.spec"
+	find "$WORK/rpm/RPMS" -name '*.rpm' -exec cp {} "$OUT/" \;
+	;;
 *)
-	echo "usage: build.sh deb|rpm [out-dir]" >&2
+	echo "usage: build.sh deb|rpm|connector-deb|connector-rpm [out-dir]" >&2
 	exit 1
 	;;
 esac
