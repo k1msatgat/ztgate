@@ -37,7 +37,7 @@ const SERVER_BIN = '/opt/ztgate/server/bin/vpn_server';
 const AUTH_CHECK = '/opt/ztgate/test/auth_check.py';
 const AUDIT_FILE = '/var/log/ztgate/audit.log';
 const AUDIT_EVENTS = ['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled', 'login', 'logout',
-	'admin'];
+	'admin', 'deploy'];
 
 /* 감사 로그는 계속 자란다. 통째로 읽지 않고 끝에서 이만큼만 본다. */
 const AUDIT_TAIL_BYTES = 4 * 1024 * 1024;
@@ -1437,4 +1437,9 @@ async function main() {
 	return out.ok ? 0 : 1;
 }
 
-main().then((code) => { process.exitCode = code; });
+if (require.main === module) {
+	main().then((code) => { process.exitCode = code; });
+}
+
+/* 시험이 MCP 서버(server.js)의 도구 목록과 맞춰 본다 (mcp/surface.test.cjs). */
+module.exports = { COMMANDS, AUDIT_EVENTS };

@@ -2,24 +2,33 @@
 /* ztgate MCP 서버 (stdio).
  *
  * AI 클라이언트가 ssh 로 이 프로그램을 띄우고 stdin/stdout 으로 MCP 를 말한다.
- * 여기에는 권한도 로직도 없다. 도구의 입력 형식을 선언하고, 요청을 그대로
- * ztgate_ctl(root 헬퍼)에 넘기고, 답을 돌려줄 뿐이다. 검증과 실제 동작은 ctl.cjs 에 있다.
+ * 여기에는 권한도 로직도 없다. 도구의 입력 형식을 선언하고, 요청을 그대로 root 헬퍼 둘
+ * (ztgate_ctl, 배포기 ztgate-deploy) 가운데 하나에 넘기고, 답을 돌려줄 뿐이다. 검증과 실제 동작은
+ * ctl.cjs 와 deploy.cjs 에 있다.
  *
  * stdout 은 프로토콜 전용이다. 사람이 볼 메시지는 stderr 로만 보낸다. */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const CTL = '/usr/local/sbin/ztgate_ctl';
 const CTL_TIMEOUT_MS = 200000;	/* auth_check 가 가장 길다 */
+const DEPLOY = '/opt/ztgate-mcp/libexec/ztgate-deploy';
 
-function ctl(request) {
+/* 패키지의 자리. 예전 mcp/install.sh 로 서버를 깐 장비는 패키지로 옮기기 전까지 /usr/local/sbin 이다.
+ * 옮기는 동안에도 이 프로세스는 떠 있으므로 부를 때마다 본다. */
+function ctlPath() {
+	return existsSync('/usr/sbin/ztgate_ctl') ? '/usr/sbin/ztgate_ctl' : '/usr/local/sbin/ztgate_ctl';
+}
+
+function helper(path, request, timeoutMs) {
 	const root = process.getuid() === 0;
-	const child = spawn(root ? CTL : 'sudo', root ? [] : ['-n', CTL], {
+	const name = path.split('/').pop();
+	const child = spawn(root ? path : 'sudo', root ? [] : ['-n', path], {
 		stdio: ['pipe', 'pipe', 'pipe'],
-		timeout: CTL_TIMEOUT_MS,
+		timeout: timeoutMs,
 	});
 
 	return new Promise((resolve) => {
@@ -28,12 +37,12 @@ function ctl(request) {
 
 		child.stdout.on('data', (d) => { out += d; });
 		child.stderr.on('data', (d) => { err += d; });
-		child.on('error', (e) => resolve({ ok: false, error: `cannot run ztgate_ctl: ${e.message}` }));
+		child.on('error', (e) => resolve({ ok: false, error: `cannot run ${name}: ${e.message}` }));
 		child.on('close', () => {
 			try {
 				resolve(JSON.parse(out));
 			} catch (e) {
-				resolve({ ok: false, error: `ztgate_ctl gave no answer: ${err.trim() || 'no output'}` });
+				resolve({ ok: false, error: `${name} gave no answer: ${err.trim() || 'no output'}` });
 			}
 		});
 		child.stdin.end(JSON.stringify(request));
@@ -41,7 +50,16 @@ function ctl(request) {
 }
 
 async function call(cmd, args = {}) {
-	const { ok, error, ...result } = await ctl({ cmd, ...args, actor: 'mcp' });
+	return answer(await helper(ctlPath(), { cmd, ...args, actor: 'mcp' }, CTL_TIMEOUT_MS));
+}
+
+/* deploy 와 deploy_rollback 은 작업을 적고 바로 답한다. deploy_status 는 wait_seconds 만큼 기다린 뒤 답한다. */
+async function deploy(cmd, args = {}) {
+	return answer(await helper(DEPLOY, { cmd, ...args, actor: 'mcp' }, ((args.wait_seconds ?? 0) + 30) * 1000));
+}
+
+function answer(reply) {
+	const { ok, error, ...result } = reply;
 
 	if (!ok) {
 		return { isError: true, content: [{ type: 'text', text: error }] };
@@ -72,6 +90,7 @@ const server = new McpServer({ name: 'ztgate', version: '0.1.0' }, {
 		'Clients are separate Windows machines and are not controlled from here; a client is cut off or admitted by changing its entry in the device list.',
 		'Device changes (device_add / device_update / device_remove) and ACL rule changes apply to the running server immediately without dropping sessions. Only turning the ACL on for the first time or off (acl_clear) needs server_restart; restart_required tells you when.',
 		'Call server_status first: it shows whether the server is up, who is connected and why a device was recently rejected.',
+		'To change the server software use deploy; it puts the previous package back by itself when the new server fails its checks.',
 	].join(' '),
 });
 
@@ -118,10 +137,10 @@ server.registerTool('server_logs', {
 }, (a) => call('logs', a));
 
 server.registerTool('audit_log', {
-	description: 'Read the audit log, oldest first: one JSON event per thing that happened. session_open (device, tunnel ip, endpoint, posture), session_close (reason: expired / posture / device_removed / replaced / evicted / closed (the client said it was leaving) / shutdown (the server stopped) / rekey (the session key reached its lifetime and the client was asked to re-handshake), with packet and byte counts), auth_denied (reason: unknown_device / bad_auth / posture), access (the first packet a session sends to each destination: dst, proto, dport, allow or deny and why), reload, enrolled (a device registered itself with an enrollment code). Use it to answer "who connected, what did they reach, why were they refused". Unlike server_logs it is per event rather than per packet and it survives server restarts.',
+	description: 'Read the audit log, oldest first: one JSON event per thing that happened. session_open (device, tunnel ip, endpoint, posture), session_close (reason: expired / posture / device_removed / replaced / evicted / closed (the client said it was leaving) / shutdown (the server stopped) / rekey (the session key reached its lifetime and the client was asked to re-handshake), with packet and byte counts), auth_denied (reason: unknown_device / bad_auth / posture), access (the first packet a session sends to each destination: dst, proto, dport, allow or deny and why), reload, enrolled (a device registered itself with an enrollment code), login / logout (a user token on a session), admin (a change made through this MCP, the web console or ztgate_ctl: who, which command, ok or the error), deploy (the end of a deploy or rollback job: outcome, from and to commit). Use it to answer "who connected, what did they reach, why were they refused, who changed what". Unlike server_logs it is per event rather than per packet and it survives server restarts.',
 	inputSchema: {
 		lines: z.number().int().min(1).max(500).optional().describe('how many events to return (default 50)'),
-		event: z.enum(['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled']).optional().describe('only this kind of event'),
+		event: z.enum(['session_open', 'session_close', 'auth_denied', 'access', 'reload', 'enrolled', 'login', 'logout', 'admin', 'deploy']).optional().describe('only this kind of event'),
 		device: deviceId.optional().describe('only events of this device (32 hex digits)'),
 		since_seconds: z.number().int().min(1).max(2592000).optional().describe('only events from the last N seconds'),
 	},
@@ -233,5 +252,38 @@ server.registerTool('auth_check', {
 	inputSchema: {},
 	annotations: WRITE,
 }, () => call('auth_check'));
+
+/* ---- 배포 ------------------------------------------------------------------ */
+
+const accept = z.array(z.enum(['protocol_break', 'no_revert'])).max(2).optional()
+	.describe('risks you accept, otherwise the job refuses them: protocol_break = the target accepts no client protocol version that the running server accepts, so every connected client is cut off (docs/decisions/0012-version-compat.md); no_revert = the installed server was not installed by this deployer (or nothing is installed), so a failed check cannot be undone automatically');
+const jobId = z.string().regex(/^d-\d{8}T\d{6}Z-[0-9a-f]{4}$/).describe('job id from deploy or deploy_rollback');
+
+server.registerTool('deploy', {
+	description: 'Build the given ref of the ztgate server from the git remote configured on this host into a package, install it, and check that the new server comes back healthy (service steady for 15s without restarts, the running binary is the one from the package, ztgate_ctl status works, it answers on its UDP port, the server key is unchanged); if the check fails, the previously installed package is reinstalled and checked automatically. Returns a job at once; the whole job (fetch, build, install, a 15 second check, and a revert with a second check if needed) takes from under a minute to a few minutes on a small host, so follow it with deploy_status(job, wait_seconds: 150) until outcome is set. Outcomes: installed; unchanged (that commit was already installed: nothing happened); failed (stopped before the install, or the package manager refused it: nothing changed; see error and log_tail); reverted (the target failed its check and the previous package is back and healthy); broken (needs a human: see note); interrupted (the job died, e.g. a reboot; it is not undone by itself). A commit built before is reused without rebuilding. Sessions drop once when the server restarts and clients reconnect within about 30 seconds. A stopped server stays stopped. Only branches and tags allowed in /etc/ztgate-deploy/deploy.conf can be deployed; a commit id must be reachable from one of them. One job runs at a time.',
+	inputSchema: {
+		ref: z.string().min(1).max(100).describe('branch, tag or commit id (7-40 hex) on the configured remote, e.g. "main", "fix/icmp-frag", "v0.9.4", "9272113"'),
+		accept,
+	},
+	annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+}, (a) => deploy('deploy', a));
+
+server.registerTool('deploy_status', {
+	description: 'Show the installed server package (commit, version), the one before it (what deploy_rollback goes back to), the kept packages, the allowed remote, branches and tags, and a deploy job: phase (queued, fetching, building, backing_up, installing, checking, reverting, done), outcome (null while it runs), the time spent per phase, the health check (and the check after a revert), the backup taken before the install, and the log tail while it builds or after a failure. Without job: the running job, or else the latest one. wait_seconds blocks until that job has an outcome or the time runs out.',
+	inputSchema: {
+		job: jobId.optional(),
+		wait_seconds: z.number().int().min(0).max(150).optional().describe('wait up to this many seconds for the job to finish (default 0)'),
+	},
+	annotations: READ,
+}, (a) => deploy('deploy_status', a));
+
+server.registerTool('deploy_rollback', {
+	description: 'Reinstall a kept package: by default the one installed before the current one, or the kept package of the given commit. It is a job like deploy (backup, install, the same health check, and back to the current package if the check fails), without fetching or building, so it usually ends within one deploy_status(job, wait_seconds: 60).',
+	inputSchema: {
+		to: z.string().regex(/^[0-9a-f]{7,40}$/).optional().describe('commit of a kept package (deploy_status lists them); default: the previous one'),
+		accept,
+	},
+	annotations: DISRUPT,
+}, (a) => deploy('deploy_rollback', a));
 
 await server.connect(new StdioServerTransport());
