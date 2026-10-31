@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	8	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로, 8: 상태에 터널이 도는지 */
+#define IPC_VERSION	9	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로, 8: 상태에 터널이 도는지, 9: 기기에 설치 때 받은 코드의 등록 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -109,6 +109,8 @@ typedef struct ipc_state {
 typedef struct ipc_device {
 	uint32_t enrolled;
 	uint8_t id[DEVICE_ID_LEN];
+	uint32_t preset;	/* preset_phase_t: 설치할 때 받은 등록 코드를 어디까지 했나 (v9) */
+	uint32_t preset_result;	/* 그 마지막 시도의 tunnel_enroll_result_t. 아직 해 보지 않았으면 TUNNEL_ENROLL_OK */
 } ipc_device_t;
 
 typedef struct ipc_packets {

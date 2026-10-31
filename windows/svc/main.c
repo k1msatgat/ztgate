@@ -4,6 +4,7 @@
  *   vpn_service uninstall    멈추고 지운다 (관리자)
  *   vpn_service run          서비스로 등록하지 않고 이 콘솔에서 돈다 (관리자, 디버깅용)
  *   vpn_service ctl ...      돌고 있는 서비스에 말을 건다 (권한 필요 없음, 확인용)
+ *   vpn_service preset ...   설치할 때 받은 서버와 등록 코드를 적어 둔다 (관리자, MSI 가 부른다. preset.h)
  *
  * 인자 없이 뜨는 것은 서비스 관리자가 띄웠을 때뿐이다.
  *
@@ -34,6 +35,9 @@
 #include "wfp.h"
 #include "update.h"
 #include "dpop.h"
+#include "preset.h"
+
+_Static_assert(PRESET_CODE_LEN == IPC_CODE_LEN, "preset.code goes to the same enroll path as ipc_enroll.code");
 
 #define SERVICE_NAME	L"ztgate"
 #define SERVICE_DISPLAY	L"ztgate tunnel"
@@ -112,6 +116,13 @@ static uint64_t pkt_seq;
 static tunnel_login_t login;
 static ipc_login_t login_info;	/* lock 이 지킨다 */
 static int login_dirty;
+
+/* 설치할 때 받은 등록 코드 (preset.h). 서비스 스레드만 쓴다. */
+static ULONGLONG preset_at;		/* 0 이 아니면 그때 해 본다 */
+static unsigned preset_tries;		/* 서버에 닿지 못한 횟수 */
+static uint32_t preset_phase = PRESET_NONE;
+static uint32_t preset_result;
+static int device_dirty;		/* GUI 에게 ipc_device 를 다시 보낸다 */
 
 /* 붙어 있는 GUI. 한 번에 하나다. */
 static HANDLE pipe = INVALID_HANDLE_VALUE;
@@ -600,6 +611,9 @@ static int send_device(void)
 		memcpy(d.id, dev.id, sizeof(d.id));
 	}
 	SecureZeroMemory(&dev, sizeof(dev));
+	d.preset = preset_phase;
+	d.preset_result = preset_result;
+	device_dirty = 0;
 
 	return send_msg(IPC_EVT_DEVICE, &d, sizeof(d));
 }
@@ -659,6 +673,9 @@ static int client_flush(void)
 	dirty = login_dirty;
 	LeaveCriticalSection(&lock);
 	if (dirty && send_login() < 0) {
+		return -1;
+	}
+	if (device_dirty && send_device() < 0) {
 		return -1;
 	}
 
@@ -752,6 +769,12 @@ static int cmd_hello(const uint8_t *body, uint32_t len)
 	c_lost = 0;
 	client_ready = 1;
 
+	/* 누가 화면을 열었다. 설치 때 받은 코드가 기다리고 있으면 지금 해 본다 — 그사이 네트워크가
+	 * 돌아왔을 수 있고, 30분을 기다리게 두지 않는다. */
+	if (preset_phase == PRESET_WAITING && preset_at != 0) {
+		preset_at = GetTickCount64();
+	}
+
 	if (send_state() < 0 || send_device() < 0 || send_login() < 0) {
 		return -1;
 	}
@@ -839,12 +862,76 @@ static int send_enroll_result(int result, const device_t *dev, int with_key)
 	return ret;
 }
 
-/* 등록 코드로 서버에 이 PC 를 올린다. 신원은 서비스가 만들고 서비스만 읽을 수 있는 곳에
- * 둔다. GUI 로는 기기 ID 만 돌아간다. 답을 기다리는 동안(길어야 십여 초) 서비스 스레드가
- * 멈추지만, 터널이 열려 있을 때에는 받지 않으므로 그 사이에 놓치는 것이 없다. */
-static int cmd_enroll(const uint8_t *body, uint32_t len)
+/* 설치 때 받은 코드를 서버가 받지 않았다는 것은 서비스를 다시 띄워도 GUI 에 보여야 한다. 기기가
+ * 등록되면 (어느 길로든) 지운다. */
+static void preset_failed_set(int result)
+{
+	const DWORD v = (DWORD)result;
+	HKEY key;
+
+	if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, 0, NULL, 0, KEY_SET_VALUE,
+				NULL, &key, NULL) != ERROR_SUCCESS) {
+		return;
+	}
+	if (result < 0) {
+		RegDeleteValueW(key, L"install_enroll");
+	}
+	else {
+		RegSetValueExW(key, L"install_enroll", 0, REG_DWORD, (const BYTE *)&v, sizeof(v));
+	}
+	RegCloseKey(key);
+}
+
+/* 이 서버에 이 코드로 이 PC 를 올린다. 신원은 서비스가 만들고 서비스만 읽을 수 있는 곳에 둔다.
+ * tunnel_enroll_result_t. 성공이면 dev 에 새 신원이 있다. 답을 기다리는 동안(길어야 십여 초)
+ * 서비스 스레드가 멈추지만, 터널이 돌 때에는 부르지 않으므로 그 사이에 놓치는 것이 없다. */
+static int enroll_with(const wchar_t *servers, uint16_t port, const char *code, device_t *dev)
 {
 	tunnel_config_t cfg;
+	int result = TUNNEL_ENROLL_ERROR;
+
+	memset(&cfg, 0, sizeof(cfg));
+	wcscpy(cfg.servers, servers);
+	cfg.server_port = port;
+	cfg.on_log = on_log;
+
+	if (device_generate(dev) == DEVICE_OK) {
+		uint8_t tpub[VPN_PUB_LEN_WIRE];
+		const int tpm = device_tpm_begin(dev, tpub) == 0;
+
+		slog("enroll: device key %s", tpm ? "in the TPM" : "software (no TPM), kept with DPAPI");
+		result = tunnel_enroll(&cfg, code, dev->id, dev->key, dev->server_pub, tpm ? tpub : NULL, stop_all);
+		dev->has_server_pub = result == TUNNEL_ENROLL_OK;
+		if (device_tpm_finish(dev, result == TUNNEL_ENROLL_OK) < 0) {
+			slog("enroll: the TPM could not derive the device key");
+			result = TUNNEL_ENROLL_ERROR;
+		}
+
+		/* 서버가 받아 준 뒤에 저장한다. 먼저 저장하면 서버에 닿지 못했을 때 예전 신원만 잃는다. */
+		if (result == TUNNEL_ENROLL_OK && device_save(dev) != DEVICE_OK) {
+			slog("the server accepted the device but it could not be stored here");
+			result = TUNNEL_ENROLL_ERROR;
+		}
+	}
+
+	slog("enroll: result %d", result);
+	if (result == TUNNEL_ENROLL_OK) {
+		/* 어느 길로든 등록됐다. 설치 때 받은 코드는 더 쓸 일이 없다. */
+		preset_enroll_drop();
+		preset_failed_set(-1);
+		preset_at = 0;
+		preset_tries = 0;
+		preset_phase = PRESET_NONE;
+		/* AlwaysOn 은 등록되기를 기다리고 있었다. 바로 붙어 본다. */
+		if (wanted && !worker) {
+			retry_at = GetTickCount64();
+		}
+	}
+	return result;
+}
+
+static int cmd_enroll(const uint8_t *body, uint32_t len)
+{
 	ipc_enroll_t e;
 	device_t dev;
 	int result;
@@ -868,41 +955,106 @@ static int cmd_enroll(const uint8_t *body, uint32_t len)
 		return send_error(IPC_ERR_BUSY);
 	}
 
-	memset(&cfg, 0, sizeof(cfg));
-	wcscpy(cfg.servers, e.servers);
-	cfg.server_port = e.server_port;
-	cfg.on_log = on_log;
-
-	result = TUNNEL_ENROLL_ERROR;
-	if (device_generate(&dev) == DEVICE_OK) {
-		uint8_t tpub[VPN_PUB_LEN_WIRE];
-		const int tpm = device_tpm_begin(&dev, tpub) == 0;
-
-		slog("enroll: device key %s", tpm ? "in the TPM" : "software (no TPM), kept with DPAPI");
-		result = tunnel_enroll(&cfg, e.code, dev.id, dev.key, dev.server_pub, tpm ? tpub : NULL, stop_all);
-		dev.has_server_pub = result == TUNNEL_ENROLL_OK;
-		if (device_tpm_finish(&dev, result == TUNNEL_ENROLL_OK) < 0) {
-			slog("enroll: the TPM could not derive the device key");
-			result = TUNNEL_ENROLL_ERROR;
-		}
-
-		/* 서버가 받아 준 뒤에 저장한다. 먼저 저장하면 서버에 닿지 못했을 때 예전 신원만 잃는다. */
-		if (result == TUNNEL_ENROLL_OK && device_save(&dev) != DEVICE_OK) {
-			slog("the server accepted the device but it could not be stored here");
-			result = TUNNEL_ENROLL_ERROR;
-		}
-	}
+	memset(&dev, 0, sizeof(dev));
+	result = enroll_with(e.servers, e.server_port, e.code, &dev);
 	SecureZeroMemory(&e, sizeof(e));
 
-	slog("enroll: result %d", result);
-	/* AlwaysOn 은 등록되기를 기다리고 있었다. 바로 붙어 본다. */
-	if (result == TUNNEL_ENROLL_OK && wanted && !worker) {
-		retry_at = GetTickCount64();
-	}
 	ret = send_enroll_result(result, &dev, 0);
 	SecureZeroMemory(&dev, sizeof(dev));
 
 	return ret < 0 ? -1 : send_device();
+}
+
+/* 설치할 때 받은 코드로 등록해 본다 (preset.h). 서비스 스레드에서, preset_at 이 됐을 때. */
+static void preset_try(void)
+{
+	preset_t p;
+	device_t dev;
+	preset_step_t step;
+	int enrolled, have, result = TUNNEL_ENROLL_OK;
+
+	preset_at = 0;
+	have = preset_enroll_load(&p);
+	if (have == 0) {
+		return;
+	}
+	device_dirty = 1;
+	if (have < 0) {
+		slog("install: the enrollment the installer left cannot be read, dropping it");
+		preset_enroll_drop();
+		preset_failed_set(TUNNEL_ENROLL_BAD_CODE);
+		preset_phase = PRESET_FAILED;
+		preset_result = TUNNEL_ENROLL_BAD_CODE;
+		return;
+	}
+	enrolled = device_load(&dev) == DEVICE_OK;
+	SecureZeroMemory(&dev, sizeof(dev));
+	if (!enrolled && worker) {
+		preset_at = GetTickCount64() + preset_retry_ms(1);
+		SecureZeroMemory(&p, sizeof(p));
+		return;
+	}
+	if (enrolled) {
+		slog("install: this PC is already enrolled, the enrollment code from the installer is not used");
+		preset_failed_set(-1);
+	}
+	else {
+		slog("install: enrolling with the code from the installer (%ls port %u)", p.servers, (unsigned)p.port);
+		memset(&dev, 0, sizeof(dev));
+		result = enroll_with(p.servers, p.port, p.code, &dev);
+		SecureZeroMemory(&dev, sizeof(dev));
+	}
+	SecureZeroMemory(&p, sizeof(p));
+
+	step = preset_after(enrolled, result);
+	if (step.drop) {
+		preset_enroll_drop();
+		preset_tries = 0;
+	}
+	if (step.phase == PRESET_FAILED) {
+		slog("install: the server did not take the code from the installer (%d), a new code is needed", result);
+		preset_failed_set(result);
+	}
+	if (step.phase == PRESET_WAITING) {
+		preset_at = GetTickCount64() + preset_retry_ms(++preset_tries);
+		slog("install: enrollment will be tried again in %llu s", (preset_at - GetTickCount64()) / 1000);
+	}
+	preset_phase = step.phase;
+	preset_result = (uint32_t)result;
+}
+
+/* 다음에 해 볼 때까지 남은 ms (없으면 INFINITE). 때가 됐으면 해 본다. */
+static DWORD preset_tick(void)
+{
+	ULONGLONG now = GetTickCount64();
+
+	if (preset_at != 0 && now >= preset_at) {
+		preset_try();
+		now = GetTickCount64();
+	}
+	if (preset_at == 0) {
+		return INFINITE;
+	}
+	return preset_at > now ? (DWORD)(preset_at - now) : 0;
+}
+
+/* 서비스가 뜰 때: 지난번에 서버가 받지 않은 것을 GUI 에 다시 보이고, 기다리는 코드가 있으면 해 본다. */
+static void preset_init(void)
+{
+	preset_t p;
+	DWORD v = 0, len = sizeof(v);
+
+	if (RegGetValueW(HKEY_LOCAL_MACHINE, STATE_REG_PATH, L"install_enroll", RRF_RT_REG_DWORD, NULL, &v, &len) ==
+			ERROR_SUCCESS) {
+		preset_phase = PRESET_FAILED;
+		preset_result = v;
+	}
+	if (preset_enroll_load(&p) != 0) {
+		preset_phase = PRESET_WAITING;
+		preset_result = TUNNEL_ENROLL_OK;
+		preset_at = GetTickCount64();
+	}
+	SecureZeroMemory(&p, sizeof(p));
 }
 
 /* 코드 없이: 신원을 만들어 저장하고 ID 와 키를 돌려준다. 관리자가 서버에 손으로 옮긴다.
@@ -921,6 +1073,11 @@ static int cmd_enroll_manual(void)
 	}
 
 	slog("a new identity was created for manual registration");
+	preset_enroll_drop();
+	preset_failed_set(-1);
+	preset_at = 0;
+	preset_tries = 0;
+	preset_phase = PRESET_NONE;
 	if (wanted) {
 		retry_at = GetTickCount64();
 	}
@@ -1237,7 +1394,11 @@ static void service_run(void)
 	policy_apply(1);
 	block_sync();
 
+	preset_init();
+
 	for (;;) {
+		DWORD pt = preset_tick();
+
 		nwaits = 0;
 		waits[nwaits++] = stop_all;
 		waits[nwaits++] = pipe_ov.hEvent;
@@ -1249,6 +1410,7 @@ static void service_run(void)
 		}
 
 		timeout = update_tick();
+		timeout = pt < timeout ? pt : timeout;
 		if (retry_at != 0) {
 			DWORD r;
 
@@ -1624,6 +1786,10 @@ static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 		ipc_device_t d;
 
 		memcpy(&d, body, sizeof(d));
+		if (d.preset != PRESET_NONE) {
+			printf("install enrollment: %s (last result %u)\n",
+					d.preset == PRESET_WAITING ? "waiting" : "failed, needs a new code", d.preset_result);
+		}
 		if (!d.enrolled) {
 			printf("device: not enrolled\n");
 			break;
@@ -1840,6 +2006,48 @@ usage:
 	return 1;
 }
 
+/* vpn_service preset <servers> <port> <code> — MSI 가 시스템 계정으로 부른다 (ztgate.wxs 의 Preset).
+ * 서버를 GUI 의 기본값으로 적고, 코드가 있으면 서비스가 등록하도록 남긴다. 빈 칸은 바꾸지 않는다:
+ * 서버 없이 코드만 오면(업그레이드) 이미 적힌 서버로 등록한다. 종료 코드는 preset_error_t 다. */
+static int preset_command(int argc, wchar_t **argv)
+{
+	const wchar_t *servers = argc > 0 ? argv[0] : L"";
+	const wchar_t *port = argc > 1 ? argv[1] : L"";
+	const wchar_t *code = argc > 2 ? argv[2] : L"";
+	wchar_t known[TUNNEL_SERVERS_LEN], known_port[8];
+	uint16_t kport;
+	preset_t p;
+	int err;
+
+	if (servers[0] == L'\0' && code[0] == L'\0') {
+		return PRESET_OK;
+	}
+	if (servers[0] == L'\0' && preset_defaults_load(known, &kport)) {
+		swprintf(known_port, sizeof(known_port) / sizeof(known_port[0]), L"%u", (unsigned)kport);
+		servers = known;
+		port = known_port;
+	}
+
+	err = preset_parse(servers, port, code, &p);
+	if (err == PRESET_OK && servers != known && preset_defaults_save(&p) < 0) {
+		err = PRESET_CANNOT_WRITE;
+	}
+	if (err == PRESET_OK && p.code[0] != '\0' && preset_enroll_save(&p) < 0) {
+		err = PRESET_CANNOT_WRITE;
+	}
+	SecureZeroMemory(&p, sizeof(p));
+
+	if (err != PRESET_OK) {
+		fprintf(stderr, "preset: %s\n",
+				err == PRESET_BAD_SERVER ? "SERVER is not a host name or address list" :
+				err == PRESET_BAD_PORT ? "PORT is not 1-65535" :
+				err == PRESET_BAD_CODE ? "CODE is not an enrollment code" :
+				err == PRESET_NO_SERVER ? "CODE needs SERVER (no server is set on this PC yet)" :
+				"cannot write HKLM\\SOFTWARE\\ztgate (run as administrator)");
+	}
+	return err;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
 	static const SERVICE_TABLE_ENTRYW table[] = {
@@ -1859,12 +2067,15 @@ int wmain(int argc, wchar_t **argv)
 	if (argc >= 2 && wcscmp(argv[1], L"ctl") == 0) {
 		return ctl(argc - 2, argv + 2);
 	}
+	if (argc >= 2 && wcscmp(argv[1], L"preset") == 0) {
+		return preset_command(argc - 2, argv + 2);
+	}
 
 	/* 인자가 없다. 서비스 관리자가 띄운 것이면 여기서 서비스 스레드가 끝날 때까지 머문다.
 	 * 사람이 콘솔에서 그냥 실행했으면 관리자에 붙지 못하고 곧바로 돌아온다. */
 	if (!StartServiceCtrlDispatcherW(table)) {
 		if (GetLastError() == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-			fprintf(stderr, "usage: vpn_service install | uninstall | run | ctl ...\n");
+			fprintf(stderr, "usage: vpn_service install | uninstall | run | ctl ... | preset <server> <port> <code>\n");
 		}
 		return 1;
 	}

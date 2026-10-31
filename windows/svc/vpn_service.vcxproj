@@ -115,6 +115,7 @@
     <ClCompile Include="..\core\policy.c" />
     <ClCompile Include="..\core\crypt.c" />
     <ClCompile Include="..\core\device.c" />
+    <ClCompile Include="..\core\preset.c" />
     <ClCompile Include="..\core\ipc.c" />
     <ClCompile Include="..\core\filelog.c" />
     <ClCompile Include="..\..\lib\common\src\proto.c" />
@@ -131,6 +132,7 @@
     <ClInclude Include="..\..\lib\common\include\crypt.h" />
     <ClInclude Include="..\..\lib\common\include\secure.h" />
     <ClInclude Include="..\core\device.h" />
+    <ClInclude Include="..\core\preset.h" />
     <ClInclude Include="..\core\ipc.h" />
     <ClInclude Include="..\..\lib\common\include\proto.h" />
   </ItemGroup>

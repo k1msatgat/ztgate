@@ -13,6 +13,7 @@
 #include "dpop.h"
 #include "update.h"
 #include "invite.h"
+#include "preset.h"
 
 static HANDLE stop_event;
 
@@ -104,7 +105,7 @@ static int parse_selftest(void)
 
 static int selftest(void)
 {
-	return crypt_selftest() | update_selftest() | parse_selftest();
+	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest();
 }
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len)
