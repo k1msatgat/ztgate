@@ -1,4 +1,4 @@
-# 만든 ztgate.msi 의 표를 읽어 설치 속성(SERVER, PORT, CODE)이 약속대로 들어 있는지 본다. 설치하지 않는다.
+﻿# 만든 ztgate.msi 의 표를 읽어 설치 속성(SERVER, PORT, CODE)이 약속대로 들어 있는지 본다. 설치하지 않는다.
 #
 #   powershell -File windows\installer\check.ps1 [windows\build\Release\ztgate.msi]
 param(
@@ -58,5 +58,17 @@ $reg = Query 'SELECT `Key`, `Root`, `Name`, `Value` FROM `Registry`'
 $ours = @($reg | Where-Object { $_[0] -like 'Software\ztgate\*' })
 Check 'uninstall drops an unused code' (@($ours | Where-Object { $_[0] -eq 'Software\ztgate\enroll' -and $_[1] -eq '2' -and $_[2] -eq '-' -and $_[3] -eq '' }).Count -eq 1) ($ours | Out-String)
 Check 'no registry row writes settings' ($ours.Count -eq 1) ($ours | Out-String)
+
+$ctl = @{}
+foreach ($r in (Query 'SELECT `Control`, `Type`, `Property`, `Text` FROM `Control` WHERE `Dialog_` = ''ConnectDlg''')) { $ctl[$r[0]] = $r }
+Check 'dialog edits SERVER, PORT, CODE' ($ctl['Server'][2] -eq 'SERVER' -and $ctl['Port'][2] -eq 'PORT' -and $ctl['Code'][2] -eq 'CODE' -and
+	$ctl['Server'][1] -eq 'Edit' -and $ctl['Code'][1] -eq 'Edit')
+# 코드 페이지가 맞지 않으면 한글이 ? 로 바뀌어 들어간다.
+Check 'dialog labels are Korean' ($ctl['ServerLabel'][3] -eq '서버 주소' -and $ctl['PortLabel'][3] -eq '포트' -and $ctl['CodeLabel'][3] -eq '등록 코드') ($ctl['ServerLabel'][3])
+$ev = Query 'SELECT `Dialog_`, `Control_`, `Event`, `Argument`, `Condition` FROM `ControlEvent` WHERE `Event` = ''NewDialog'''
+Check 'welcome leads to the dialog' (@($ev | Where-Object { $_[0] -eq 'WelcomeDlg' -and $_[3] -eq 'ConnectDlg' -and $_[4] -eq 'NOT Installed' }).Count -eq 1)
+Check 'the dialog leads to install' (@($ev | Where-Object { $_[0] -eq 'ConnectDlg' -and $_[1] -eq 'Next' -and $_[3] -eq 'VerifyReadyDlg' }).Count -eq 1)
+$ui = @((Query 'SELECT `Action` FROM `InstallUISequence`') | ForEach-Object { $_[0] })
+Check 'install UI starts at the welcome page' (($ui -contains 'WelcomeDlg') -and ($ui -contains 'MaintenanceWelcomeDlg'))
 
 if ($failed) { throw "$failed checks failed" }

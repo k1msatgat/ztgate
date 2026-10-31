@@ -38,12 +38,13 @@ foreach ($f in 'vpn_service.exe', 'vpn_gui.exe', 'vpn_client.exe', 'wintun.dll')
 	if (-not (Test-Path (Join-Path $bin $f))) { throw "missing $f in $bin (build the solution first)" }
 }
 
-& $candle -nologo -arch x64 -ext WixUtilExtension "-dVersion=$Version" "-dBinDir=$bin" `
+& $candle -nologo -arch x64 -ext WixUtilExtension -ext WixUIExtension "-dVersion=$Version" "-dBinDir=$bin" `
 	-out (Join-Path $obj 'ztgate.wixobj') (Join-Path $here 'ztgate.wxs')
 if ($LASTEXITCODE -ne 0) { throw "candle failed ($LASTEXITCODE)" }
 
 # ICE 검사 중 서비스와 바로가기에 관한 것은 per-machine 설치에서 그대로 맞는 경고다.
-& $light -nologo -ext WixUtilExtension -spdb -out (Join-Path $bin 'ztgate.msi') (Join-Path $obj 'ztgate.wixobj')
+# 설치 창은 한국어다 (WixUIExtension 의 ko-KR, 코드 페이지 949).
+& $light -nologo -ext WixUtilExtension -ext WixUIExtension -cultures:ko-KR -spdb -out (Join-Path $bin 'ztgate.msi') (Join-Path $obj 'ztgate.wixobj')
 if ($LASTEXITCODE -ne 0) { throw "light failed ($LASTEXITCODE)" }
 
 Write-Output "built $(Join-Path $bin 'ztgate.msi')"

@@ -125,6 +125,70 @@
       </Component>
     </DirectoryRef>
 
+    <!-- 두 번 눌러 설치하는 사람에게도 같은 셋을 묻는다. 시작 → 연결 설정 → 설치 준비 → 진행 → 끝.
+         나머지는 WixUIExtension 의 표준 창이고, 바꾼 것은 연결 설정 창 하나다 (WixUI_InstallDir 에서
+         폴더와 라이선스 창을 뺀 흐름). 비워 두고 [다음] 을 눌러도 된다. -->
+    <UI Id="ZtgateUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="!(loc.Advanced_Font_FaceName)" Size="!(loc.Advanced_Font_Normal_Size)" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="!(loc.Advanced_Font_FaceName)" Size="!(loc.Advanced_Font_Bigger_Size)" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="!(loc.Advanced_Font_FaceName)" Size="!(loc.Advanced_Font_Title_Size)" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="InstallDir" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="ConnectDlg" Width="370" Height="270" Title="!(loc.WelcomeDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}연결 설정" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="관리자에게 받은 서버와 등록 코드 (선택)" />
+
+        <Control Id="Intro" Type="Text" X="20" Y="56" Width="330" Height="40" NoPrefix="yes"
+                 Text="서버 주소와 등록 코드를 적으면 설치하면서 이 PC 를 등록합니다. 비워 두면 설치한 뒤 관리자에게 받은 초대 링크를 누르거나 ztgate 의 [\[]기기 등록[\]] 에서 할 수 있습니다." />
+        <Control Id="ServerLabel" Type="Text" X="20" Y="104" Width="80" Height="12" NoPrefix="yes" Text="서버 주소" />
+        <Control Id="Server" Type="Edit" X="105" Y="102" Width="245" Height="17" Property="SERVER" />
+        <Control Id="PortLabel" Type="Text" X="20" Y="128" Width="80" Height="12" NoPrefix="yes" Text="포트" />
+        <Control Id="Port" Type="Edit" X="105" Y="126" Width="60" Height="17" Property="PORT" />
+        <Control Id="CodeLabel" Type="Text" X="20" Y="152" Width="80" Height="12" NoPrefix="yes" Text="등록 코드" />
+        <Control Id="Code" Type="Edit" X="105" Y="150" Width="245" Height="17" Property="CODE" />
+        <Control Id="Hint" Type="Text" X="105" Y="172" Width="245" Height="40" NoPrefix="yes"
+                 Text="서버가 여럿이면 쉼표로 나눠 적습니다. 코드는 한 번만 쓰이며, 이미 등록된 PC 에서는 쓰지 않습니다. 서버에 닿지 않으면 나중에 다시 시도합니다." />
+
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)" />
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="ConnectDlg">NOT Installed</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+      <Publish Dialog="ConnectDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
+      <Publish Dialog="ConnectDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="ConnectDlg" Order="1">NOT Installed</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">Installed AND PATCH</Publish>
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg">1</Publish>
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+    <UIRef Id="WixUI_Common" />
+
     <Feature Id="Main" Title="ztgate" Level="1">
       <ComponentRef Id="Service" />
       <ComponentRef Id="Wintun" />
