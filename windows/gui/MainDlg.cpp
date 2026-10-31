@@ -52,6 +52,7 @@ CMainDlg::CMainDlg(CWnd *parent)
 {
 	ZeroMemory(&m_fonts, sizeof(m_fonts));
 	ZeroMemory(&m_local, sizeof(m_local));
+	ZeroMemory(&m_posture, sizeof(m_posture));
 	ZeroMemory(&m_login, sizeof(m_login));
 	m_tokens.expires_at = 0;
 
@@ -1627,27 +1628,29 @@ void CMainDlg::RefreshPosture(bool collect)
 {
 	HomeRow rows[CHECK_COUNT];
 	CString s;
+	posture_report_t sent;
 
 	if (collect) {
 		posture_collect(&m_local);
 	}
+	posture_pick(&m_posture, &m_local, vpn_remote_posture(m_session, &sent) ? &sent : NULL);
 
 	for (int i = 0; i < CHECK_COUNT; i++) {
 		rows[i].name = m_checks[i].name;
 	}
 
-	rows[CHECK_FIREWALL].value = LocalStateName(m_local.firewall);
-	rows[CHECK_FIREWALL].level = m_local.firewall == POSTURE_ON ? LEVEL_OK :
-			m_local.firewall == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
-	rows[CHECK_ANTIVIRUS].value = LocalStateName(m_local.antivirus);
-	rows[CHECK_ANTIVIRUS].level = m_local.antivirus == POSTURE_ON ? LEVEL_OK :
-			m_local.antivirus == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
-	rows[CHECK_DISK].value = LocalStateName(m_local.disk);
-	rows[CHECK_DISK].level = m_local.disk == POSTURE_ON ? LEVEL_OK :
-			m_local.disk == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
+	rows[CHECK_FIREWALL].value = LocalStateName(m_posture.firewall);
+	rows[CHECK_FIREWALL].level = m_posture.firewall == POSTURE_ON ? LEVEL_OK :
+			m_posture.firewall == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
+	rows[CHECK_ANTIVIRUS].value = LocalStateName(m_posture.antivirus);
+	rows[CHECK_ANTIVIRUS].level = m_posture.antivirus == POSTURE_ON ? LEVEL_OK :
+			m_posture.antivirus == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
+	rows[CHECK_DISK].value = LocalStateName(m_posture.disk);
+	rows[CHECK_DISK].level = m_posture.disk == POSTURE_ON ? LEVEL_OK :
+			m_posture.disk == POSTURE_OFF ? LEVEL_BAD : LEVEL_NONE;
 
-	if (m_local.os_build != 0) {
-		s.Format(_T("%u.%u.%u"), m_local.os_major, m_local.os_minor, m_local.os_build);
+	if (m_posture.os_build != 0) {
+		s.Format(_T("%u.%u.%u"), m_posture.os_major, m_posture.os_minor, m_posture.os_build);
 		rows[CHECK_OS].level = LEVEL_OK;
 	}
 	else {
@@ -1842,13 +1845,13 @@ CString CMainDlg::DenyHint() const
 {
 	switch (m_deny_reason) {
 	case DENY_POSTURE:
-		if (m_local.firewall == POSTURE_OFF) {
+		if (m_posture.firewall == POSTURE_OFF) {
 			return _T("Windows 방화벽이 꺼져 있습니다. 켜면 자동으로 다시 연결됩니다.");
 		}
-		if (m_local.antivirus == POSTURE_OFF) {
+		if (m_posture.antivirus == POSTURE_OFF) {
 			return _T("백신의 실시간 보호가 꺼져 있습니다. 켜면 자동으로 다시 연결됩니다.");
 		}
-		if (m_local.disk == POSTURE_OFF) {
+		if (m_posture.disk == POSTURE_OFF) {
 			return _T("시스템 드라이브의 BitLocker 가 꺼져 있습니다. 켜면 자동으로 다시 연결됩니다.");
 		}
 		return _T("이 PC 가 회사 보안 정책에 맞지 않습니다. 관리자에게 문의하세요.");

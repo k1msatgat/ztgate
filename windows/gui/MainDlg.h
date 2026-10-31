@@ -209,9 +209,10 @@ private:
 	tunnel_state_t m_state;
 	ULONGLONG m_connected_at;	/* GetTickCount64, 0 이면 미연결 */
 
-	/* 이 PC 의 지금 상태. UI 가 직접 읽는다 (연결하지 않아도 보인다). 서버에 실제로
-	 * 보고한 값은 진단 창의 KEEPALIVE 행에 있다. */
+	/* 이 PC 의 지금 상태. UI 가 직접 읽는다 (연결하지 않아도 보인다). 권한이 없어 서비스가
+	 * 읽는 것과 다를 수 있다 (BitLocker). */
 	posture_t m_local;
+	posture_t m_posture;		/* 화면에 보이는 것: 서비스가 서버에 보낸 값, 없으면 m_local */
 	int m_deny_reason;		/* 마지막 거부 사유, 없으면 0 */
 	CString m_device_id;		/* 비어 있으면 미등록 */
 	bool m_device_known = false;	/* 서비스가 등록 상태를 알려 줬다. 그 전의 m_device_id 는 모르는 것이다 */
