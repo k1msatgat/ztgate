@@ -556,7 +556,7 @@ def view_overview(c, st):
                         tag_chips(s.get("tags")), posture_chips(s.get("posture", {})),
                         size(s.get("rx_bytes", 0)), size(s.get("tx_bytes", 0)), ago(s.get("age_sec"))))
     if rows:
-        table = card_table(["터널 주소", "기기", "사용자", "출발지", "태그", "포스처", ">받음 / 보냄", ">연결된 지"], rows)
+        table = card_table(["터널 주소", "기기", "사용자", "출발지", "태그", "포스처", ">받음 / 보냄", ">연결 시간"], rows)
     elif not st.get("running"):
         table = empty("서버가 멈춰 있어 세션이 없습니다.")
     elif st.get("sessions_error"):
