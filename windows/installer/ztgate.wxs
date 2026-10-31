@@ -42,6 +42,32 @@
       <![CDATA[Installed OR VersionNT >= 603]]>
     </Condition>
 
+    <!-- 설치하며 설정한다: msiexec /i ztgate.msi SERVER=vpn.example.com PORT=9000 CODE=7K2QF-...
+         셋 다 비워 두면 지금처럼 초대 링크나 GUI 로 나중에 정한다.
+
+         SERVER, PORT   GUI 서버 칸의 기본값이 된다 (HKLM\SOFTWARE\ztgate\install). 정책의 Servers 와
+                        사용자가 GUI 에 적은 값이 앞선다. 업그레이드에서 SERVER 를 주면 바꾸고, 주지 않으면
+                        있던 값을 둔다. 제거해도 남는다 (신원과 같이, 다시 설치하면 그대로 붙는다).
+         CODE           등록 코드. 서비스가 뜨면서 그 코드로 이 PC 를 등록한다 (HKLM\SOFTWARE\ztgate\enroll,
+                        SYSTEM 과 Administrators 만 읽는다). SERVER 없이 주면 이미 적힌 서버로 한다.
+                        이미 등록된 PC 에서는 쓰지 않는다. 한 번 쓰이면 끝나는 비밀이라 Hidden 으로
+                        자세한 설치 기록(/l*v)에 남기지 않는다.
+
+         Secure 여야 관리자 권한으로 도는 설치 단계까지 값이 넘어간다. -->
+    <Property Id="SERVER" Secure="yes" />
+    <Property Id="PORT" Value="9000" Secure="yes" />
+    <Property Id="CODE" Secure="yes" Hidden="yes" />
+
+    <!-- vpn_service preset 이 형식을 보고 적는다 (windows/core/preset.h). 틀리면 설치를 되돌린다:
+         설치 기록의 "returned actual error code" 가 2 SERVER, 3 PORT, 4 CODE, 5 서버 없는 CODE 다.
+         HideTarget 은 명령 줄(코드가 들어 있다)을 기록에 남기지 않는다. 서비스가 뜨기 전이어야
+         뜨자마자 코드를 본다. -->
+    <CustomAction Id="Preset" FileKey="vpn_service.exe" Execute="deferred" Impersonate="no" Return="check"
+                  HideTarget="yes" ExeCommand="preset &quot;[SERVER]&quot; &quot;[PORT]&quot; &quot;[CODE]&quot;" />
+    <InstallExecuteSequence>
+      <Custom Action="Preset" Before="StartServices"><![CDATA[(SERVER OR CODE) AND NOT REMOVE~="ALL"]]></Custom>
+    </InstallExecuteSequence>
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="ztgate" />
@@ -63,6 +89,8 @@
                               ResetPeriodInDays="1" />
         </ServiceInstall>
         <ServiceControl Id="ServiceControl" Name="ztgate" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        <!-- 쓰이지 않은 등록 코드는 제거할 때 함께 지운다. 서버 기본값(install)은 신원처럼 남긴다. -->
+        <RemoveRegistryKey Id="PendingEnroll" Root="HKLM" Key="Software\ztgate\enroll" Action="removeOnUninstall" />
       </Component>
 
       <Component Id="Wintun" Guid="*" Win64="yes">
