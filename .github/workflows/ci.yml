@@ -71,12 +71,14 @@ jobs:
       - name: Configuration sync between servers (test/sync_check.sh)
         run: test/sync_check.sh
 
-      - name: MCP server syntax
+      - name: MCP server syntax, deployer and tool surface (node --test)
         working-directory: mcp
         run: |
           npm ci --omit=dev --no-audit --no-fund
           node --check server.js
           node --check ctl.cjs
+          node --check deploy.cjs
+          node --test deploy.test.cjs surface.test.cjs
 
   # Dockerfile 과 docker-compose.yml 이 실제로 도는지. 개발 장비에는 docker 가 없다.
   # 다른 시험의 토큰은 시험용 도구(tools/idp/mint.py)가 만든다. 실제 IdP 의 토큰이 그 모양과
@@ -305,6 +307,30 @@ jobs:
         with:
           name: ztgate-server-rpm
           path: out/*.rpm
+
+  # MCP 배포기 (mcp/deploy.cjs). 이 체크아웃으로 원격을 만들어 첫 패키지, 좋은 커밋, 같은 커밋, 뜨자마자 죽는
+  # 커밋의 자동 되돌리기, 되돌리기, 겹침, 허용 밖의 ref, 끊긴 작업을 실제로 돌린다. 작업과 빌드가 systemd-run 의
+  # 유닛이라 systemd 가 있어야 한다: deb 는 러너에서, rpm 은 systemd 를 PID 1 로 띄운 Rocky 9 컨테이너에서.
+  deploy-deb:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy, check, revert on the runner's systemd (test/deploy_check.sh)
+        run: test/deploy_check.sh
+
+  deploy-rpm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy, check, revert on Rocky 9 with systemd (docker/deploy, test/deploy_check.sh)
+        run: |
+          docker build -q -t zt-deploy-rocky9 docker/deploy > /dev/null
+          docker run -d --name zt-deploy-rpm --privileged --tmpfs /run --tmpfs /run/lock zt-deploy-rocky9 > /dev/null
+          timeout 60 sh -c 'until docker exec zt-deploy-rpm systemctl is-system-running 2> /dev/null | grep -Eq "running|degraded"; do sleep 1; done'
+          git archive HEAD | docker exec -i -u zt zt-deploy-rpm sh -c 'mkdir -p ~/src && tar -x -C ~/src'
+          docker exec -u zt -w /home/zt/src zt-deploy-rpm bash test/deploy_check.sh
 
   # 앱 커넥터 패키지 (ztgate-connector). 등록하지 않은 장비에서는 서비스가 꺼져 있는지, 지워도 신원이
   # 남는지를 러너에 설치해 보고, docker/connector.sh 로 systemd 위에서 실제로 내부망까지 닿는지 본다.
