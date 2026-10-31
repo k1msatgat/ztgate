@@ -316,6 +316,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 러너의 node 는 /usr/local/bin 에만 있다. 배포기와 ztgate_ctl 은 root 로 /usr/bin/node 를 쓴다.
+      - name: Distribution nodejs
+        run: sudo apt-get install -y -qq nodejs > /dev/null && /usr/bin/node --version
+
       - name: Deploy, check, revert on the runner's systemd (test/deploy_check.sh)
         run: test/deploy_check.sh
 
