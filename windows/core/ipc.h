@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define IPC_PIPE_NAME	L"\\\\.\\pipe\\ztgate"
-#define IPC_VERSION	9	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로, 8: 상태에 터널이 도는지, 9: 기기에 설치 때 받은 코드의 등록 */
+#define IPC_VERSION	10	/* 2: 사용자 로그인 (LOGIN / LOGOUT), 3: 상태에 연결된 뒤 지난 시간, 4: 서버 여럿, 5: DPoP 증명, 6: IPv6 서버, 7: 서버를 글자(DNS 이름)로, 8: 상태에 터널이 도는지, 9: 기기에 설치 때 받은 코드의 등록, 10: 상태에 서버에 보낸 포스처 */
 
 /* 한 메시지의 최대 크기. 패킷 사건을 묶어 보내는 것이 가장 크다. */
 #define IPC_MAX_MSG	16384
@@ -102,8 +102,12 @@ typedef struct ipc_state {
 	uint32_t wanted;	/* 사용자가 연결을 원한 상태인가. 끊겨도 서비스가 다시 시도한다 */
 	uint32_t running;	/* 서비스 안에서 터널이 돌고 있다. wanted 여도 다시 올리기를 기다리는 동안
 				 * (등록되지 않았다, 지난번이 끝났다)은 0 이다 — 그때는 등록을 받는다 */
-	uint32_t reserved;
+	uint32_t has_posture;	/* posture 가 있다 (v10) */
 	uint64_t connected_ms;	/* 연결된 뒤 지난 ms. 재연결 동안은 이어서 세고, 끊기거나 거부되면 0 */
+	/* 터널이 서버에 마지막으로 보낸 포스처 (AUTH, KEEPALIVE). 서버는 이것으로 판정한다. GUI 는
+	 * 권한 없이 돌아 BitLocker 를 WMI 로 읽지 못하므로, 스스로 읽은 값은 서버가 본 것과 다를 수
+	 * 있다. 사용자가 해제해 터널이 다시 오르지 않으면 지운다. */
+	posture_report_t posture;
 } ipc_state_t;
 
 typedef struct ipc_device {

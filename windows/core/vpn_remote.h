@@ -53,6 +53,10 @@ int vpn_remote_running(const vpn_session_t *s);
 /* 서비스가 터널을 원한다: 끊기면 스스로 다시 올린다 (사용자가 연결했거나 AlwaysOn). */
 int vpn_remote_wanted(const vpn_session_t *s);
 
+/* 터널이 서버에 마지막으로 보낸 포스처 (서비스가 읽은 값이라 이 프로그램이 읽은 것보다 정확하다).
+ * 있으면 1 을 돌려주고 out 을 채운다. 아직 보내지 않았거나, 해제됐거나, 서비스에 붙어 있지 않으면 0. */
+int vpn_remote_posture(vpn_session_t *s, posture_report_t *out);
+
 /* 마지막 등록 명령을 서비스가 받지 않았으면 그 까닭 (ipc_error_code_t). 받았으면 0. 등록이
  * TUNNEL_ENROLL_ERROR / DEVICE_ERROR 로 끝난 뒤에 본다. */
 uint32_t vpn_remote_enroll_error(vpn_session_t *s);

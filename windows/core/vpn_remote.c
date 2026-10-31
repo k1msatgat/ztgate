@@ -26,6 +26,8 @@ struct vpn_session {
 	int running;		/* 서비스 안에서 터널이 돌고 있다 (ipc_state.running) */
 	int wanted;		/* 서비스가 터널을 스스로 다시 올린다 (ipc_state.wanted) */
 	ULONGLONG connected_since;	/* 터널이 연결된 때 (이 PC 의 GetTickCount64). 0 이면 연결되지 않았다 */
+	int has_posture;	/* ipc_state.has_posture */
+	posture_report_t posture;
 	int enrolled;
 	uint8_t device_id[DEVICE_ID_LEN];
 	uint32_t preset;	/* ipc_device.preset */
@@ -161,6 +163,8 @@ static void on_state(vpn_session_t *s, const uint8_t *body, uint32_t len)
 	/* 받은 지금에서 지난 양을 빼 연결된 때로 바꿔 둔다. 화면이 이것을 읽는 것은 아래의
 	 * WM_VPN_STATE 를 받은 뒤다. */
 	s->connected_since = st.connected_ms ? GetTickCount64() - st.connected_ms : 0;
+	s->has_posture = st.has_posture != 0;
+	s->posture = st.posture;
 	LeaveCriticalSection(&s->lock);
 
 	post(s, WM_VPN_STATE, (WPARAM)st.state);
@@ -376,6 +380,7 @@ out:
 	s->active = 0;
 	s->running = 0;
 	s->wanted = 0;
+	s->has_posture = 0;
 	memset(&s->login, 0, sizeof(s->login));	/* 서비스는 떨어진 GUI 의 토큰을 버린다 */
 	LeaveCriticalSection(&s->lock);
 	SetEvent(s->enroll_done);
@@ -596,6 +601,24 @@ int vpn_remote_running(const vpn_session_t *s)
 int vpn_remote_wanted(const vpn_session_t *s)
 {
 	return s != NULL && s->link == VPN_REMOTE_UP && s->wanted;
+}
+
+int vpn_remote_posture(vpn_session_t *s, posture_report_t *out)
+{
+	int has;
+
+	if (!s) {
+		return 0;
+	}
+
+	EnterCriticalSection(&s->lock);
+	has = s->link == VPN_REMOTE_UP && s->has_posture;
+	if (has) {
+		*out = s->posture;
+	}
+	LeaveCriticalSection(&s->lock);
+
+	return has;
 }
 
 uint32_t vpn_remote_enroll_error(vpn_session_t *s)

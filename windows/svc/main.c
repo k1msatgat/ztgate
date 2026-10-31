@@ -73,6 +73,8 @@ static ULONGLONG retry_at;	/* 0 이 아니면 그때 다시 올린다 */
 static uint32_t state = TUNNEL_STATE_STOPPED;
 static ULONGLONG connected_at;	/* 처음 연결된 때 (GetTickCount64). 0 이면 연결되지 않았다 */
 static int state_dirty;
+static posture_report_t sent_posture;	/* 터널이 서버에 마지막으로 보낸 것 (ipc_state.posture) */
+static int has_sent_posture;
 
 /* 관리 정책 (policy.h). 바뀌면 policy_event 가 깨운다. */
 static ztgate_policy_t pol;
@@ -163,6 +165,15 @@ static void slog(const char *fmt, ...)
 	va_end(ap);
 
 	push_log(line);
+}
+
+/* 터널이 다시 오르지 않는다. 지난번에 보낸 포스처는 그 뒤로 바뀌었을 수 있다. */
+static void sent_posture_forget(void)
+{
+	EnterCriticalSection(&lock);
+	has_sent_posture = 0;
+	memset(&sent_posture, 0, sizeof(sent_posture));
+	LeaveCriticalSection(&lock);
 }
 
 static void set_state(uint32_t s)
@@ -266,6 +277,11 @@ static void on_packet(void *ctx, const tunnel_packet_t *p)
 	EnterCriticalSection(&lock);
 	packets[pkt_seq % PACKET_RING] = *p;
 	pkt_seq++;
+	if (p->has_posture && (!has_sent_posture || memcmp(&p->posture, &sent_posture, sizeof(sent_posture)) != 0)) {
+		sent_posture = p->posture;
+		has_sent_posture = 1;
+		state_dirty = 1;
+	}
 	if (p->msg_type == MSG_TYPE_VERSION && p->deny_reason == TUNNEL_DENY_CLIENT_OLD) {
 		update_soon = 1;
 	}
@@ -458,6 +474,7 @@ static void worker_exited(void)
 	}
 	else {
 		slog("tunnel ended (%lu)", code);
+		sent_posture_forget();
 		set_state(TUNNEL_STATE_STOPPED);
 	}
 }
@@ -591,11 +608,12 @@ static int send_state(void)
 	EnterCriticalSection(&lock);
 	s.state = state;
 	s.connected_ms = connected_at ? GetTickCount64() - connected_at : 0;
+	s.has_posture = (uint32_t)has_sent_posture;
+	s.posture = sent_posture;
 	state_dirty = 0;
 	LeaveCriticalSection(&lock);
 	s.wanted = (uint32_t)wanted;
 	s.running = worker != NULL;
-	s.reserved = 0;
 
 	return send_msg(IPC_EVT_STATE, &s, sizeof(s));
 }
@@ -835,6 +853,7 @@ static int cmd_disconnect(void)
 		SetEvent(tunnel_stop);	/* 끝나면 worker_exited 가 STOPPED 를 올린다 */
 	}
 	else {
+		sent_posture_forget();
 		set_state(TUNNEL_STATE_STOPPED);
 	}
 
@@ -1752,6 +1771,15 @@ static const char *state_name(uint32_t s)
 	}
 }
 
+static const char *posture_name(uint8_t s)
+{
+	switch (s) {
+	case POSTURE_STATE_ON:	return "on";
+	case POSTURE_STATE_OFF:	return "off";
+	default:		return "unknown";
+	}
+}
+
 static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 {
 	ipc_header_t h;
@@ -1784,6 +1812,11 @@ static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 			printf(", connected for %llu:%02llu:%02llu", sec / 3600, (sec / 60) % 60, sec % 60);
 		}
 		printf("\n");
+		if (s.has_posture) {
+			printf("posture sent: build=%u firewall=%s antivirus=%s disk=%s\n", s.posture.os_build,
+					posture_name(s.posture.firewall), posture_name(s.posture.antivirus),
+					posture_name(s.posture.disk));
+		}
 		break;
 	}
 	case IPC_EVT_DEVICE: {
