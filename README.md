@@ -364,11 +364,18 @@ domain corp.example
 # 서버: 커넥터로 쓸 기기를 등록 코드로 올린다 (MCP 의 enroll_create 에 connector 를 주어도 같다)
 sudo env ENROLL_FILE=./enroll.conf docker/enroll-code.sh 10.0.0.9 -l gw connector=10.101.0.0/16
 
-# 내부망 안의 장비: 등록하고 커넥터로 띄운다. eth0 은 내부망 쪽 장치
+# 내부망 안의 장비: 패키지를 깔고 등록하면 서비스로 뜬다. eth0 은 내부망 쪽 장치
+sudo apt install ./ztgate-connector_<버전>_amd64.deb     # 또는 dnf install ./ztgate-connector-<버전>-1.x86_64.rpm
+sudo ztgate-connector enroll '<초대 링크>' --lan-if eth0  # 또는 enroll <서버> 9000 <코드> --lan-if eth0
+sudo ztgate-connector status
+#   [connector] forwarding 10.0.0.0/24 -> eth0 (masquerade), replies only on the way back
+
+# 빌드한 저장소에서 바로 띄울 때
 sudo ./client/bin/vpn_client enroll <서버 IP> 9000 <코드>
 sudo ./client/bin/vpn_client connector <서버 IP> 9000 eth0
-#   [connector] forwarding 10.0.0.0/24 -> eth0 (masquerade), replies only on the way back
 ```
+
+패키지 `ztgate-connector`(`packaging/build.sh connector-deb|connector-rpm`)는 `vpn_client` 를 systemd 서비스로 돌립니다. 서비스는 root 이지만 받는 힘은 `CAP_NET_ADMIN` 하나이고, 등록하기 전에는 뜨지 않으며, 서버에 닿지 못하면 5초 뒤 다시 붙습니다. `vpn_client` 는 IP 만 받으므로 서버 이름은 래퍼가 띄울 때마다 풉니다. 신원과 `connector.env` 는 패키지의 파일이 아니라 업그레이드나 제거로 지워지지 않습니다. CI 는 `docker/connector.sh` 로 패키지를 systemd 컨테이너에 깔고, 클라이언트가 격리된 내부망 호스트에 닿는지, 재시작 · 다시 설치 · 제거 뒤에도 신원이 남는지를 봅니다.
 
 - **판정은 서버가 합니다.** 커넥터로 보내기 전에 ACL, 포스처, 사용자 조건을 모두 지납니다. 커넥터는 정책을 모르고 받은 것을 내보낼 뿐입니다. 클라이언트는 ACL에서 뽑은 경로를 그대로 받고, 커넥터에는 경로를 내려 주지 않습니다 (그 대역은 커넥터 쪽에서 바로 붙어 있는 네트워크입니다).
 - **커넥터가 보내는 것은 좁게 봅니다.** 출발지는 커넥터가 맡은 대역 안이어야 하고, 목적지는 붙어 있는 클라이언트여야 합니다. 서버의 주소나 다른 커넥터로는 보낼 수 없습니다.
@@ -409,8 +416,10 @@ sudo systemctl enable --now ztgate
 ```bash
 sudo apt install ./ztgate-server_<버전>_amd64.deb        # Debian, Ubuntu (OpenSSL 3, Node.js 18 이상)
 sudo dnf install ./ztgate-server-<버전>-1.x86_64.rpm     # Rocky, RHEL 9
-sudo systemctl enable --now ztgate
+sudo ztgate setup --public-address vpn.example.com      # 설정, 방화벽 포트, 서비스 켜기까지
 ```
+
+`ztgate setup` 은 `server.env` 와 `dns.conf` 를 바뀐 줄만 고치고(주석과 손으로 적은 줄은 그대로), 켜져 있는 firewalld 나 ufw 에 그 포트만 열고, 서비스를 켠 뒤 `ztgate_ctl status` 로 떴는지 확인합니다. 빠진 값은 터미널에서 묻고, `--yes` 나 터미널이 아니면 묻지 않습니다. 같은 값으로 다시 돌리면 아무것도 바꾸지 않고, `--enroll 이름` 은 첫 기기의 등록 코드와 초대 링크를 만듭니다. 시험은 `test/setup_check.py`, CI 는 패키지를 깐 뒤 setup 으로 서버를 켭니다.
 
 배치는 설치 스크립트와 같고(`/opt/ztgate`, `/etc/ztgate`), 다른 점은 셋입니다. 유닛은 `/usr/lib/systemd/system` 에, `ztgate_ctl` 은 `/usr/sbin` 에 놓입니다. MCP 서버는 npm 의존성이 있어 들어 있지 않습니다. 필요하면 그 장비에서 `mcp/install.sh` 를 씁니다. `ztgate_ctl` 은 Node.js 가 있어야 돌아 권장 의존으로만 둡니다. 설정(`/etc/ztgate`)은 패키지의 파일이 아니라 설치할 때 처음 한 번 만들어집니다. 그래서 업그레이드해도 기기 목록과 서버 키가 그대로이고, 패키지를 지워도(`purge` 도) 남습니다. 업그레이드하면 돌고 있던 서버를 새 실행 파일로 다시 올리고, 붙어 있던 기기는 `DISCONNECT` 를 받고 바로 다시 붙습니다. CI 가 설치 → 시작 → 다시 설치(서버 키가 그대로인지) → 제거(설정이 남는지)를 Ubuntu 24.04 와 Rocky Linux 9 에서 확인합니다.
 

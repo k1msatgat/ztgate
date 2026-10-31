@@ -13,31 +13,29 @@
 
    설치는 서버 키(`/etc/ztgate/server.key`)와 기본 설정(`/etc/ztgate/server.env`)을 처음 한 번 만듭니다. 관리 도구 `ztgate_ctl` 은 Node.js 18 이상이 필요합니다. Ubuntu 22.04 의 기본 `nodejs` 는 12 라서 NodeSource 같은 곳에서 18 이상을 깝니다.
 
-   서버의 방화벽에서 포트를 엽니다. Rocky Linux 와 RHEL 은 firewalld 가 기본으로 켜져 있습니다. 클라우드 서버라면 보안 그룹에서도 엽니다.
+2. `ztgate setup` 으로 설정하고 서버를 켭니다. 터미널에서 돌리면 공개 주소, 포트, 터널 대역, 사내망으로 내보낼 인터페이스, 내부 DNS 를 지금 값과 함께 묻습니다. 옵션으로 주면 묻지 않습니다.
 
    ```bash
-   sudo firewall-cmd --permanent --add-port=9000/udp --add-port=9000/tcp && sudo firewall-cmd --reload   # Rocky, RHEL
-   sudo ufw allow 9000/udp && sudo ufw allow 9000/tcp                                                      # Ubuntu 에서 ufw 를 쓴다면
+   sudo ztgate setup --public-address vpn.example.com --enroll 첫-PC
    ```
 
-2. 서버 키를 바로 백업합니다 ([설정 백업하기](#설정-백업하기)). 서버 키를 잃으면 모든 기기가 다시 등록해야 합니다.
+   setup 이 하는 일은 아래와 같습니다.
+   - `server.env` 와 `dns.conf` 를 적습니다. 바뀐 줄만 그 자리에서 고치고, 주석과 손으로 적은 줄은 그대로 둡니다.
+   - 켜져 있는 firewalld 나 ufw 에 그 포트만 엽니다. 둘 다 없으면 열 명령을 보여 줍니다. 클라우드 서버라면 보안 그룹은 따로 엽니다.
+   - 서버를 켜고(`enable --now`) 실제로 떴는지 확인한 뒤 요약을 보여 줍니다.
+   - `--enroll 이름` 을 주면 첫 기기의 등록 코드와 초대 링크를 만들어 보여 줍니다.
 
-3. `/etc/ztgate/server.env` 를 고칩니다. 자주 바꾸는 값은 아래와 같습니다.
+   같은 값으로 다시 돌리면 아무것도 바꾸지 않습니다. 나중에 값을 바꿀 때도 `sudo ztgate setup --port 9443` 처럼 다시 씁니다. 옵션 전체는 `ztgate setup -h` 에 있습니다. 자주 쓰는 것은 아래와 같습니다.
 
-   ```bash
-   PORT=9000                        # 기기가 붙는 UDP 포트
-   TUN_IP=10.0.0.1                  # 터널 안의 서버 주소. 기기는 같은 대역(PREFIX, 기본 /24)의 주소를 받습니다
-   PUBLIC_ADDRESS=vpn.example.com   # 기기가 밖에서 서버에 닿는 이름. 적으면 초대 링크가 만들어집니다
-   # TCP_PORT=9000                  # UDP 를 막는 네트워크의 기기용. Windows 는 PORT 와 같은 번호의 TCP 로만 넘어갑니다
-   # FORWARD_OUT=eth0               # 터널에서 서버 뒤의 사내망으로 내보내려면 그 인터페이스
-   ```
+   | 옵션 | 뜻 |
+   |---|---|
+   | `--public-address` | 기기가 밖에서 서버에 닿는 이름. 서버가 두 대면 쉼표로 이어 적습니다. 초대 링크에 들어갑니다 |
+   | `--port`, `--tcp-port` | 기기가 붙는 UDP 포트와, UDP 를 막는 네트워크의 기기용 TCP 포트. Windows 는 같은 번호의 TCP 로만 넘어갑니다 |
+   | `--tunnel` | 터널 안의 서버 주소와 대역 (기본 `10.0.0.1/24`) |
+   | `--forward-out` | 터널에서 서버 뒤의 사내망으로 내보낼 인터페이스 |
+   | `--dns-server`, `--dns-domain` | 내부 DNS 서버와 그 서버에 물을 도메인 |
 
-4. 서버를 켜고 상태를 봅니다.
-
-   ```bash
-   sudo systemctl enable --now ztgate
-   sudo ztgate status
-   ```
+3. 서버 키를 바로 백업합니다 ([설정 백업하기](#설정-백업하기)). 서버 키를 잃으면 모든 기기가 다시 등록해야 합니다.
 
 서버는 root 가 아닌 `ztgate` 계정으로 돕니다. `/etc/ztgate` 의 파일을 손으로 고쳤으면 `sudo systemctl reload ztgate` 를 실행합니다. `kill -HUP` 로 보내면 파일 소유가 맞춰지지 않아 서버가 그 파일을 읽지 못합니다.
 
@@ -141,9 +139,39 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 
 설정은 주 서버에서만 고칩니다. 부 서버의 관리 도구는 설정을 고치는 명령을 거절합니다. 주 서버가 꺼져 있는 동안 부 서버는 마지막으로 받은 설정으로 기기를 계속 받습니다. 그동안에는 새 기기를 등록하거나 정책을 바꿀 수 없습니다.
 
+## 내부망을 앱 커넥터로 내어 주기
+
+서버가 사내망 안에 있지 않으면, 사내망 안의 Linux 장비 하나에 앱 커넥터를 둡니다. 커넥터는 서버로 나가는 세션만 열기 때문에 사내망 방화벽에 들어오는 규칙이 필요 없습니다.
+
+1. 콘솔의 **등록 코드**에서 코드를 만들 때 커넥터로 쓸 대역(예: `10.101.0.0/16`)을 적습니다. MCP 로는 `enroll_create` 의 `connector` 입니다.
+2. ACL 에 그 대역으로 가는 `allow` 규칙을 넣습니다. 기기는 이 규칙에서 경로를 받습니다.
+3. 커넥터 장비에 패키지를 설치하고 등록합니다. `--lan-if` 는 그 장비의 사내망 쪽 인터페이스입니다.
+
+   ```bash
+   sudo apt install ./ztgate-connector_<버전>_amd64.deb      # Debian, Ubuntu
+   sudo dnf install ./ztgate-connector-<버전>-1.x86_64.rpm   # Rocky, RHEL
+   sudo ztgate-connector enroll 'ztgate://enroll?server=...&port=...&code=...' --lan-if eth0
+   sudo ztgate-connector status
+   ```
+
+   등록하면 서비스 `ztgate-connector` 가 켜지고, 재부팅과 서버 재시작 뒤에도 스스로 다시 붙습니다. 초대 링크 대신 `enroll <서버> <포트> <코드>` 로도 됩니다. UDP 가 막힌 곳이면 `--tcp` 를 붙입니다.
+
+신원(`/var/lib/ztgate-connector/device`)과 설정(`/etc/ztgate-connector/connector.env`)은 패키지를 지워도 남습니다. 커넥터를 빼려면 `sudo ztgate-connector unenroll --yes` 를 실행하고, 서버에서도 그 기기를 지웁니다.
+
 ## Windows PC 에 배포하기
 
-1. `ztgate.msi` 를 Intune, SCCM, 그룹 정책 소프트웨어 설치 가운데 하나로 배포합니다. VC++ 재배포 패키지는 필요 없습니다.
+1. `ztgate.msi` 를 Intune, SCCM, 그룹 정책 소프트웨어 설치 가운데 하나로 배포합니다. VC++ 재배포 패키지는 필요 없습니다. 설치할 때 서버와 등록 코드를 함께 줄 수 있습니다.
+
+   ```
+   msiexec /i ztgate.msi /qn SERVER=vpn.example.com PORT=9000 CODE=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+   ```
+
+   - `SERVER`, `PORT` 는 그 PC 의 기본 서버가 됩니다. 정책이 있으면 정책이 먼저이고, 사용자가 GUI 에 적은 값도 이것보다 먼저입니다. 다시 설치할 때 `SERVER` 를 주지 않으면 있던 값을 그대로 둡니다.
+   - `CODE` 를 주면 서비스가 설치 뒤 그 코드로 등록합니다. 서버에 닿지 않으면 다시 시도하고, 서버가 코드를 거절하면 GUI 에 새 코드가 필요하다는 안내가 나옵니다. 이미 등록된 PC 에서는 코드를 쓰지 않습니다.
+   - 코드는 설치 기록에 남지 않습니다. 하지만 배포 도구(Intune, SCCM)의 기록에는 명령 줄이 남을 수 있습니다. 코드는 한 번만 쓰이므로, PC 마다 따로 만들고 유효 시간을 짧게 둡니다.
+   - 형식이 틀린 값을 주면 설치가 되돌아갑니다(1603). 무엇이 틀렸는지는 설치 기록(`/l*v`)의 `returned actual error code` 에 있습니다. 2 는 서버, 3 은 포트, 4 는 코드, 5 는 서버 없이 코드만 준 경우입니다.
+
+   MSI 를 두 번 눌러 설치하면 같은 세 칸을 묻는 창이 나옵니다. 비워 두면 설치한 뒤에 초대 링크나 GUI 로 등록합니다.
 2. 그룹 정책 템플릿(`ztgate.admx`, `ztgate.adml`)으로 정책을 정합니다. 정책으로 정한 값은 사용자가 바꿀 수 없습니다.
    - 서버: `Servers`, `Port`
    - 늘 연결: `AlwaysOn`
