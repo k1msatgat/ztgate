@@ -60,6 +60,10 @@ uint32_t vpn_remote_enroll_error(vpn_session_t *s);
 /* 등록된 기기면 1 을 돌려주고 id 를 채운다. 아니면 (또는 서비스에 붙지 못했으면) 0. */
 int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN]);
 
+/* 설치할 때 받은 등록 코드를 서비스가 어디까지 했나 (preset_phase_t, 붙어 있지 않으면 PRESET_NONE).
+ * result 에 그 마지막 시도의 tunnel_enroll_result_t. */
+uint32_t vpn_remote_preset(vpn_session_t *s, uint32_t *result);
+
 /* 등록 코드로 서버에 이 PC 를 올리라고 서비스에 시킨다. tunnel_enroll_result_t 를 돌려준다.
  * 답이 올 때까지 블로킹한다 (길어야 수십 초). servers 는 tunnel_config_t.servers 와 같은 글자다. */
 int vpn_remote_enroll(vpn_session_t *s, const wchar_t *servers, uint16_t server_port, const char *code);

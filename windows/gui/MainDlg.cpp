@@ -234,6 +234,17 @@ void CMainDlg::LoadSettings()
 	m_client_id = app->GetProfileString(_T("login"), _T("client_id"), _T("ztgate"));
 	m_scope = app->GetProfileString(_T("login"), _T("scope"), _T("openid"));
 
+	/* 사용자가 적은 서버가 없으면 설치할 때 받은 서버 (msiexec ... SERVER=, preset.h). */
+	if (m_server.IsEmpty()) {
+		wchar_t servers[TUNNEL_SERVERS_LEN];
+		uint16_t port;
+
+		if (preset_defaults_load(servers, &port)) {
+			m_server = servers;
+			m_port.Format(_T("%u"), (unsigned)port);
+		}
+	}
+
 	/* 정책이 정한 것은 그대로 쓴다. 사용자 설정에는 덮어쓰지 않는다 — 정책이 빠지면 원래대로. */
 	policy_load(&m_policy);
 	if (m_policy.has_servers) {
@@ -255,8 +266,22 @@ void CMainDlg::SaveSettings()
 	/* 정책이 정한 값은 사용자 설정으로 남기지 않는다. 정한 것만 건너뛴다 — 나머지는 사용자 것이다. */
 	app->WriteProfileString(_T("conn"), _T("adapter"), m_adapter);
 	if (!m_policy.has_servers) {
-		app->WriteProfileString(_T("conn"), _T("server"), m_server);
-		app->WriteProfileString(_T("conn"), _T("port"), m_port);
+		wchar_t servers[TUNNEL_SERVERS_LEN];
+		uint16_t port;
+		CString preset_port;
+
+		/* 설치할 때 받은 값 그대로면 적지 않는다. 그래야 관리자가 다음 설치에서 SERVER 를 바꾸면 따라간다. */
+		if (preset_defaults_load(servers, &port)) {
+			preset_port.Format(_T("%u"), (unsigned)port);
+		}
+		if (servers[0] != L'\0' && m_server == servers && m_port == preset_port) {
+			app->WriteProfileString(_T("conn"), _T("server"), NULL);
+			app->WriteProfileString(_T("conn"), _T("port"), NULL);
+		}
+		else {
+			app->WriteProfileString(_T("conn"), _T("server"), m_server);
+			app->WriteProfileString(_T("conn"), _T("port"), m_port);
+		}
 	}
 	if (m_policy.issuer[0] == L'\0') {
 		app->WriteProfileString(_T("login"), _T("issuer"), m_issuer);
@@ -867,6 +892,36 @@ bool CMainDlg::ServiceReady()
 				_T("계속되면 IT 담당자에게 알려 주세요."), MB_ICONWARNING);
 		return false;
 	}
+}
+
+/* 설치할 때 받은 등록 코드 (msiexec ... CODE=) 를 서비스가 어떻게 했나. 보일 것이 없으면 빈 글자. */
+CString CMainDlg::PresetHint(bool &warn)
+{
+	uint32_t result;
+	const uint32_t phase = vpn_remote_preset(m_session, &result);
+
+	warn = phase == PRESET_FAILED || (phase == PRESET_WAITING && result != TUNNEL_ENROLL_OK);
+	if (phase == PRESET_WAITING) {
+		switch (result) {
+		case TUNNEL_ENROLL_OK:
+			return _T("설치할 때 받은 등록 코드로 이 PC 를 등록하고 있습니다.");
+		case TUNNEL_ENROLL_NO_RESPONSE:
+			return _T("설치할 때 받은 등록 코드로 등록하려 했지만 서버가 답하지 않습니다. 인터넷 연결을 확인하세요. 잠시 뒤 다시 시도합니다.");
+		default:
+			return _T("설치할 때 받은 등록 코드로 아직 등록하지 못했습니다. 잠시 뒤 다시 시도합니다. 계속되면 IT 담당자에게 알려 주세요.");
+		}
+	}
+	if (phase == PRESET_FAILED) {
+		switch (result) {
+		case TUNNEL_ENROLL_CONFLICT:
+			return _T("설치할 때 받은 등록 코드에 묶인 터널 주소가 이미 서버에 있습니다. 관리자에게 새 초대 링크나 코드를 받아 아래 [기기 등록] 에 넣어 주세요.");
+		case TUNNEL_ENROLL_BAD_CODE:
+			return _T("설치할 때 받은 등록 코드의 형식이 맞지 않습니다. 관리자에게 받은 초대 링크나 코드를 아래 [기기 등록] 에 넣어 주세요.");
+		default:
+			return _T("서버가 설치할 때 받은 등록 코드를 받지 않았습니다 (만료됐거나 이미 쓰였습니다). 관리자에게 새 초대 링크나 코드를 받아 아래 [기기 등록] 에 넣어 주세요.");
+		}
+	}
+	return CString();
 }
 
 /* 서비스와의 연결이 바뀌었다. */
@@ -1926,6 +1981,18 @@ void CMainDlg::UpdateStatus()
 			hintColor = c.muted;
 		}
 		break;
+	}
+
+	/* 설치할 때 받은 코드로 서비스가 등록하는 중이거나, 서버가 그 코드를 받지 않았다. 등록이 안 된 까닭은
+	 * 이것이 먼저다 — 사용자는 코드를 받은 적이 없다. */
+	if (m_link == VPN_REMOTE_UP && m_device_known && m_device_id.IsEmpty() && m_deny_reason == 0 && !m_stopping) {
+		bool warn = false;
+		const CString preset = PresetHint(warn);
+
+		if (!preset.IsEmpty()) {
+			hint = preset;
+			hintColor = warn ? c.warn : c.muted;
+		}
 	}
 
 	/* 거부됐으면 사유와 할 일을 둔다. 연결이 끊긴 뒤에도 남겨 둔다 — 첫 핸드셰이크에서

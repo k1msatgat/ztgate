@@ -9,6 +9,7 @@
 #include "posture.h"
 #include "policy.h"
 #include "invite.h"
+#include "preset.h"
 #include <deque>
 
 #include "PacketStore.h"
@@ -198,6 +199,7 @@ private:
 	HomeRow LoginRow() const;
 
 	void LoadDeviceId();
+	CString PresetHint(bool &warn);
 	void TrackAuth(const tunnel_packet_t &p);
 	void RefreshPosture(bool collect);
 	static CString LocalStateName(int state);

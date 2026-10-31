@@ -28,6 +28,8 @@ struct vpn_session {
 	ULONGLONG connected_since;	/* 터널이 연결된 때 (이 PC 의 GetTickCount64). 0 이면 연결되지 않았다 */
 	int enrolled;
 	uint8_t device_id[DEVICE_ID_LEN];
+	uint32_t preset;	/* ipc_device.preset */
+	uint32_t preset_result;
 
 	/* 패킷 링버퍼. vpn_session.c 와 같은 방식이다. */
 	tunnel_packet_t *ring;
@@ -236,6 +238,8 @@ static int on_message(vpn_session_t *s, const uint8_t *msg, DWORD n)
 		EnterCriticalSection(&s->lock);
 		s->enrolled = d.enrolled != 0;
 		memcpy(s->device_id, d.id, sizeof(s->device_id));
+		s->preset = d.preset;
+		s->preset_result = d.preset_result;
 		LeaveCriticalSection(&s->lock);
 
 		post(s, WM_VPN_DEVICE, 0);
@@ -622,6 +626,23 @@ int vpn_remote_device(vpn_session_t *s, uint8_t id[DEVICE_ID_LEN])
 	LeaveCriticalSection(&s->lock);
 
 	return enrolled;
+}
+
+uint32_t vpn_remote_preset(vpn_session_t *s, uint32_t *result)
+{
+	uint32_t phase;
+
+	*result = 0;
+	if (!s) {
+		return 0;
+	}
+
+	EnterCriticalSection(&s->lock);
+	phase = s->link == VPN_REMOTE_UP ? s->preset : 0;
+	*result = s->preset_result;
+	LeaveCriticalSection(&s->lock);
+
+	return phase;
 }
 
 /* 명령을 보내고 ENROLL_RESULT 가 올 때까지 기다린다. 읽는 스레드가 따로 있으므로 이
