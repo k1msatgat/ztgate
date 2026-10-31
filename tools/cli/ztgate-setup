@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""ztgate setup — 패키지를 깐 서버를 기기가 붙을 수 있는 상태로 한 번에 만든다. 표준 라이브러리만 쓴다.
+
+    sudo ztgate setup [옵션]
+
+    --public-address 이름[,이름]    기기가 밖에서 서버에 닿는 이름이나 주소 (넷까지). 초대 링크에 들어간다
+    --port N                        기기가 붙는 UDP 포트
+    --tcp-port N|none               UDP 가 막힌 네트워크의 기기용 TCP 포트
+    --tunnel 주소/N                 터널 안의 서버 주소와 대역 (예: 10.0.0.1/24)
+    --forward-out 인터페이스|none   터널에서 서버 뒤의 사내망으로 내보낼 인터페이스
+    --dns-server IP[,IP]|none       내부 DNS 서버 (둘까지). none 이면 dns.conf 를 지운다
+    --dns-domain 이름[,이름]        그 DNS 에 물을 도메인 (넷까지)
+    --session-lifetime 초|none      세션 키를 바꾸는 주기 (기본 3600)
+    --enroll 이름                   다 되면 첫 기기의 등록 코드와 초대 링크를 만든다
+    --no-firewall                   방화벽은 건드리지 않는다
+    --no-start                      서비스는 켜지 않는다
+    --yes                           묻지 않는다
+
+옵션으로 주지 않은 값은 터미널에서 돌리면 지금 값을 보여 주며 묻는다. 빈 줄은 지금 값을 둔다.
+--yes 거나 터미널이 아니면 묻지 않고 지금 값을 둔다. server.env 는 바뀐 줄만 그 자리에서 고치고
+주석과 모르는 줄은 그대로 둔다. 같은 값으로 다시 돌리면 아무것도 쓰지 않고 서버도 다시 띄우지 않는다.
+
+방화벽은 켜진 firewalld 나 ufw 에 그 포트만 연다. 둘 다 없으면 열 명령을 보여 준다.
+
+시험(test/setup_check.py)은 경로를 환경 변수로 바꾼다: ZTGATE_ETC, ZTGATE_SYS_NET, ZTGATE_PROC_ROUTE,
+ZTGATE_SYSTEMD_DIR. ZTGATE_SETUP_ANY_USER=1 이면 root 가 아니어도 돈다. systemctl, firewall-cmd, ufw 는
+PATH 에서 찾는다.
+"""
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ETC = os.environ.get("ZTGATE_ETC", "/etc/ztgate")
+ENV_FILE = os.path.join(ETC, "server.env")
+DNS_FILE = os.path.join(ETC, "dns.conf")
+DEVICE_FILE = os.path.join(ETC, "devices.conf")
+SYS_NET = os.environ.get("ZTGATE_SYS_NET", "/sys/class/net")
+PROC_ROUTE = os.environ.get("ZTGATE_PROC_ROUTE", "/proc/net/route")
+SYSTEMD_DIR = os.environ.get("ZTGATE_SYSTEMD_DIR", "/run/systemd/system")
+UNIT = "ztgate.service"
+
+# 서비스가 이 값 없이는 뜨지 않는다 (mcp/service.sh 가 set -u 로 읽는다). 기본값은 ztgate_ctl 의 readEnv 와 같다.
+REQUIRED = {"PORT": "9000", "TUN_IP": "10.0.0.1", "PREFIX": "24", "MTU": "1400"}
+# 서버가 시작할 때만 읽는 값. PUBLIC_ADDRESS 는 ztgate_ctl 만 읽으므로 바꿔도 다시 띄우지 않는다.
+RESTART_KEYS = {"PORT", "TCP_PORT", "TUN_IP", "PREFIX", "MTU", "FORWARD_OUT", "SESSION_LIFETIME"}
+NONE_WORDS = ("none", "없음")
+
+ASSIGN = re.compile(r"^\s*([A-Z_][A-Z0-9_]*)=(.*)$")
+HINT = re.compile(r"^\s*#\s*([A-Z_][A-Z0-9_]*)=")
+LABEL = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+class Bad(Exception):
+    """사람이 준 값이 틀렸다. 메시지를 그대로 보여 준다."""
+
+
+# ---- 값 읽기 (경계) ----------------------------------------------------------
+
+def port(text):
+    if not text.isdigit() or not 1 <= int(text) <= 65535:
+        raise Bad("포트는 1 부터 65535 사이의 숫자입니다: %s" % text)
+    return (str(int(text)),)
+
+
+def host(name):
+    try:
+        return str(ipaddress.ip_address(name.strip("[]")))
+    except ValueError:
+        pass
+    labels = name.rstrip(".").split(".")
+    if len(name) > 253 or not all(LABEL.match(x) for x in labels) or labels[-1].isdigit():
+        raise Bad("이름이나 IP 주소가 아닙니다: %s" % name)
+    return name.rstrip(".").lower()
+
+
+def public_address(text):
+    names = [x.strip() for x in text.split(",") if x.strip()]
+    if not 1 <= len(names) <= 4:
+        raise Bad("공개 주소는 쉼표로 넷까지 적습니다: %s" % text)
+    return (",".join(host(x) for x in names),)
+
+
+def tunnel(text):
+    m = re.match(r"^(\d+\.\d+\.\d+\.\d+)/(\d+)$", text)
+    try:
+        ip = ipaddress.IPv4Address(m.group(1)) if m else None
+    except ValueError:
+        ip = None
+    if ip is None:
+        raise Bad("터널은 주소/길이로 적습니다 (예: 10.0.0.1/24): %s" % text)
+    prefix = int(m.group(2))
+    if not 8 <= prefix <= 30:
+        raise Bad("터널 대역의 길이는 8 부터 30 까지입니다: /%d" % prefix)
+    net = ipaddress.IPv4Network("%s/%d" % (ip, prefix), strict=False)
+    if ip in (net.network_address, net.broadcast_address):
+        raise Bad("%s 는 %s 대역 자신이나 브로드캐스트 주소라 서버에 쓸 수 없습니다" % (ip, net))
+    return (str(ip), str(prefix))
+
+
+def interface(text):
+    if not re.match(r"^[A-Za-z0-9_.:-]{1,15}$", text) or not os.path.exists(os.path.join(SYS_NET, text)):
+        raise Bad("이 장비에 %s 라는 인터페이스가 없습니다 (ip link 로 봅니다)" % text)
+    return (text,)
+
+
+def lifetime(text):
+    if not text.isdigit() or not 2 <= int(text) <= 7 * 86400:
+        raise Bad("세션 수명은 2 부터 604800 초까지입니다: %s" % text)
+    return (str(int(text)),)
+
+
+def dns_servers(text):
+    out = []
+    for x in (x.strip() for x in text.split(",") if x.strip()):
+        try:
+            ip = ipaddress.IPv4Address(x)
+        except ValueError:
+            raise Bad("DNS 서버는 IPv4 주소입니다: %s" % x)
+        if int(ip) == 0:
+            raise Bad("DNS 서버로 0.0.0.0 은 쓸 수 없습니다")
+        out.append(str(ip))
+    if not 1 <= len(out) <= 2:
+        raise Bad("DNS 서버는 쉼표로 둘까지 적습니다: %s" % text)
+    return (",".join(out),)
+
+
+def dns_domains(text):
+    out = []
+    for x in (x.strip().lower() for x in text.split(",") if x.strip()):
+        # server/src/dns.c 와 같게: 대문자와 끝의 점은 고쳐 받고, 글자는 net_domain_ok 의 것만.
+        x = x[:-1] if len(x) > 1 and x.endswith(".") else x
+        if len(x) > 100 or not re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)*$", x):
+            raise Bad("도메인이 아닙니다: %s" % x)
+        out.append(x)
+    if not 1 <= len(out) <= 4:
+        raise Bad("도메인은 쉼표로 넷까지 적습니다: %s" % text)
+    return (",".join(out),)
+
+
+def optional(parse):
+    def read(text):
+        return (None,) if text.lower() in NONE_WORDS else parse(text)
+    return read
+
+
+class Field:
+    """사람에게서 받는 값 하나. 받은 글을 keys 의 값들로 바꾼다 (None 은 적지 않음)."""
+
+    def __init__(self, dest, label, keys, parse, ask=True, sep=""):
+        self.dest, self.label, self.keys, self.parse, self.ask, self.sep = dest, label, keys, parse, ask, sep
+
+    def show(self, values):
+        return "없음" if values[0] is None else self.sep.join(values)
+
+
+# 앞의 다섯은 server.env, dns.* 는 dns.conf 의 줄이다. 묻는 순서도 이 순서다.
+FIELDS = [
+    Field("public_address", "공개 주소 (기기가 닿는 이름이나 IP, 쉼표로 넷까지)", ("PUBLIC_ADDRESS",),
+          optional(public_address)),
+    Field("port", "UDP 포트", ("PORT",), port),
+    Field("tcp_port", "TCP 포트 (UDP 가 막힌 기기용, none 이면 끔)", ("TCP_PORT",), optional(port)),
+    Field("tunnel", "터널 주소/길이", ("TUN_IP", "PREFIX"), tunnel, sep="/"),
+    Field("forward_out", "사내망으로 내보낼 인터페이스 (none 이면 내보내지 않음)", ("FORWARD_OUT",), optional(interface)),
+    Field("dns_server", "내부 DNS 서버 (쉼표로 둘까지, none 이면 끔)", ("dns.server",), optional(dns_servers)),
+    Field("dns_domain", "내부 DNS 에 물을 도메인 (쉼표로 넷까지)", ("dns.domain",), optional(dns_domains)),
+    Field("session_lifetime", "세션 키 수명(초)", ("SESSION_LIFETIME",), optional(lifetime), ask=False),
+]
+
+
+# ---- 지금 상태 ---------------------------------------------------------------
+
+def read_lines(path):
+    try:
+        with open(path) as f:
+            return f.read().splitlines()
+    except FileNotFoundError:
+        return None
+
+
+def env_values(lines):
+    """systemd 의 EnvironmentFile 처럼 마지막 줄이 이기고, 값을 감싼 따옴표 하나는 벗긴다."""
+    env = {}
+    for line in lines:
+        m = ASSIGN.match(line)
+        if m:
+            env[m.group(1)] = re.sub(r"^(['\"])(.*)\1$", r"\2", m.group(2).strip())
+    return env
+
+
+def dns_values(lines):
+    if lines is None:
+        return {"dns.server": None, "dns.domain": None}
+    got = {"server": [], "domain": []}
+    for line in lines:
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 2 and words[0] in got:
+            got[words[0]].append(words[1].lower().rstrip(".") if words[0] == "domain" else words[1])
+    return {"dns.server": ",".join(got["server"]) or None, "dns.domain": ",".join(got["domain"]) or None}
+
+
+def default_route_interface():
+    try:
+        with open(PROC_ROUTE) as f:
+            for line in f.readlines()[1:]:
+                cols = line.split()
+                if len(cols) > 2 and cols[1] == "00000000":
+                    return cols[0]
+    except OSError:
+        pass
+    return None
+
+
+# ---- 고치기 -----------------------------------------------------------------
+
+def edit_env(lines, changes):
+    """바뀐 키만 그 자리에서. 있던 줄을 고치고, 없으면 주석 처리된 자리(# KEY=)를 살리고, 그것도 없으면 끝에."""
+    out = list(lines)
+    for key, value in changes.items():
+        active = [i for i, line in enumerate(out) if ASSIGN.match(line) and ASSIGN.match(line).group(1) == key]
+        if value is None:
+            for i in active:
+                out[i] = "# " + out[i].lstrip()
+            continue
+        line = "%s=%s" % (key, value)
+        hint = [i for i, x in enumerate(out) if HINT.match(x) and HINT.match(x).group(1) == key]
+        if active:
+            out[active[-1]] = line
+        elif hint:
+            out[hint[0]] = line
+        else:
+            out.append(line)
+    return out
+
+
+def dns_text(values):
+    lines = ["# ztgate setup 이 썼다. domain 에 적은 이름(과 그 아래 이름)만 server 로 묻는다 (README 의 \"내부 DNS\")."]
+    lines += ["server " + x for x in values["dns.server"].split(",")]
+    lines += ["domain " + x for x in values["dns.domain"].split(",")]
+    return lines
+
+
+def write_atomic(path, lines):
+    """같은 디렉터리에 쓰고 rename 한다. 쓰다가 죽어도 반쯤 쓰인 설정이 남지 않는다."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        own(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def own(path):
+    # 서버는 ztgate 계정으로 돈다 (ADR 0011). 서비스가 뜰 때 ztgate-user.sh 가 다시 맞추지만, 그 전에도 맞게.
+    if os.geteuid() != 0:
+        return
+    import pwd
+    try:
+        pw = pwd.getpwnam("ztgate")
+    except KeyError:
+        return
+    os.chown(path, pw.pw_uid, pw.pw_gid)
+
+
+# ---- 바깥 명령 --------------------------------------------------------------
+
+def run(argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(argv, 127, "", str(e))
+
+
+def ctl_call(ctl, cmd, **args):
+    p = None
+    try:
+        p = subprocess.run([ctl], input=json.dumps(dict(args, cmd=cmd, actor="setup")), capture_output=True,
+                           text=True, timeout=60)
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired) as e:
+        why = (p.stderr.strip().splitlines() or [""])[-1] if p is not None and p.stderr else ""
+        return {"ok": False, "error": "ztgate_ctl 이 답하지 않았습니다 (%s)%s" % (type(e).__name__, ": " + why if why else "")}
+
+
+def firewall(ports, old_ports):
+    """켜진 방화벽에 ports(예: 9000/udp)만 연다. 다른 규칙은 건드리지 않는다. 결과를 한 줄로."""
+    if shutil.which("firewall-cmd") and run(["firewall-cmd", "--state"]).returncode == 0:
+        opened = []
+        for p in ports:
+            for scope in (["--permanent"], []):
+                if run(["firewall-cmd"] + scope + ["--query-port=" + p]).returncode == 0:
+                    continue
+                r = run(["firewall-cmd"] + scope + ["--add-port=" + p])
+                if r.returncode != 0:
+                    raise Bad("firewall-cmd 로 %s 를 열지 못했습니다: %s" % (p, (r.stderr or r.stdout).strip()))
+                if p not in opened:
+                    opened.append(p)
+        close = "sudo firewall-cmd --permanent --remove-port=%s && sudo firewall-cmd --remove-port=%s"
+        result = "firewalld: " + ("%s 를 열었습니다 (지금과 재부팅 뒤)" % ", ".join(opened) if opened
+                                  else "%s 는 이미 열려 있습니다" % ", ".join(ports))
+    elif shutil.which("ufw") and "Status: active" in run(["ufw", "status"]).stdout:
+        opened = []
+        for p in ports:
+            r = run(["ufw", "allow", p])
+            if r.returncode != 0:
+                raise Bad("ufw 로 %s 를 열지 못했습니다: %s" % (p, (r.stderr or r.stdout).strip()))
+            if "Rule added" in r.stdout or "Rule updated" in r.stdout:
+                opened.append(p)
+        close = "sudo ufw delete allow %s"
+        result = "ufw: " + ("%s 를 열었습니다" % ", ".join(opened) if opened else "%s 는 이미 열려 있습니다" % ", ".join(ports))
+    else:
+        print("켜진 firewalld 도 ufw 도 없어 방화벽은 그대로 둡니다. 다른 방화벽을 쓰면 직접 엽니다:")
+        print("  sudo firewall-cmd --permanent --add-port=%s && sudo firewall-cmd --reload" %
+              " --add-port=".join(ports))
+        print("  " + " && ".join("sudo ufw allow " + p for p in ports))
+        print("클라우드 서버라면 보안 그룹에서도 %s 를 엽니다." % ", ".join(ports))
+        return "켜진 방화벽 없음 (열 명령을 위에 적었습니다)"
+    for p in old_ports:
+        if p not in ports:
+            print("예전 포트 %s 는 열어 둔 채입니다. 닫으려면: %s" % (p, close.replace("%s", p)))
+    return result
+
+
+def service(restart, reload):
+    """ztgate.service 를 켜고, 시작할 때만 읽는 값이 바뀌었으면 다시 띄운다. 한 일을 한 줄로."""
+    if not os.path.isdir(SYSTEMD_DIR) or not shutil.which("systemctl"):
+        return None, "systemd 가 없어 서비스를 띄우지 않았습니다"
+    active = run(["systemctl", "is-active", "--quiet", UNIT]).returncode == 0
+    enabled = run(["systemctl", "is-enabled", "--quiet", UNIT]).returncode == 0
+    if not active:
+        verb, said = ["enable", "--now"], "켰습니다 (부팅 때도 뜹니다)"
+    elif restart:
+        verb, said = ["restart"], "바뀐 설정으로 다시 띄웠습니다"
+    elif reload:
+        verb, said = ["reload"], "dns.conf 를 다시 읽혔습니다"
+    elif not enabled:
+        verb, said = ["enable"], "부팅 때 뜨게 했습니다"
+    else:
+        return True, "이미 돌고 있어 그대로 두었습니다"
+    if active and not enabled and verb != ["enable"]:
+        run(["systemctl", "enable", UNIT])
+    r = run(["systemctl"] + verb + [UNIT])
+    if r.returncode != 0:
+        return False, "systemctl %s 가 실패했습니다: %s" % (" ".join(verb), (r.stderr or r.stdout).strip())
+    return True, said
+
+
+def wait_running(ctl):
+    """ztgate_ctl 로 서버가 실제로 떠서 tun 을 올리고 상태 소켓에 답하는지 본다 (최대 10초)."""
+    r = {}
+    for _ in range(20):
+        r = ctl_call(ctl, "status")
+        if not r.get("ok"):
+            return r
+        if r.get("running") and (r.get("tunnel") or {}).get("up") and not r.get("sessions_error"):
+            return r
+        if str(r.get("state", "")).startswith("failed"):
+            return r
+        time.sleep(0.5)
+    return r
+
+
+# ---- 흐름 -------------------------------------------------------------------
+
+def ask(field, values, hint=""):
+    while True:
+        try:
+            text = input("%s%s [%s]: " % (field.label, hint, field.show(values))).strip()
+        except EOFError:
+            print()
+            return values
+        if not text:
+            return values
+        try:
+            return field.parse(text)
+        except Bad as e:
+            print("  " + str(e))
+
+
+def parse_args():
+    ap = argparse.ArgumentParser(prog="ztgate setup", description="ztgate 서버의 처음 설정: server.env, 방화벽, 서비스")
+    ap.add_argument("--public-address")
+    ap.add_argument("--port")
+    ap.add_argument("--tcp-port")
+    ap.add_argument("--tunnel")
+    ap.add_argument("--forward-out")
+    ap.add_argument("--dns-server")
+    ap.add_argument("--dns-domain")
+    ap.add_argument("--session-lifetime")
+    ap.add_argument("--enroll", metavar="이름", help="첫 기기의 등록 코드와 초대 링크를 만든다")
+    ap.add_argument("--no-firewall", action="store_true")
+    ap.add_argument("--no-start", action="store_true")
+    ap.add_argument("--yes", "-y", action="store_true", help="묻지 않는다")
+    ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl")
+                    else "/usr/local/sbin/ztgate_ctl")
+    return ap.parse_args()
+
+
+def desired_values(a, current, interactive):
+    """옵션, 물어서 받은 값, 지금 값의 순으로 고른다. 틀린 옵션은 Bad 로 멈춘다."""
+    want = dict(current)
+    for field in FIELDS:
+        cur = tuple(current[k] for k in field.keys)
+        given = getattr(a, field.dest)
+        if given is not None:
+            got = field.parse(given.strip())
+        elif interactive and field.ask:
+            hint = ""
+            if field.dest == "forward_out" and cur[0] is None and default_route_interface():
+                hint = ", 기본 경로는 %s" % default_route_interface()
+            got = ask(field, cur, hint)
+        else:
+            got = cur
+        want.update(zip(field.keys, got))
+    if (want["dns.server"] is None) != (want["dns.domain"] is None):
+        raise Bad("내부 DNS 는 서버와 도메인을 함께 적습니다. 도메인이 없으면 서버가 기기에 내려 주지 않습니다")
+    return want
+
+
+def check_devices(want, current):
+    if (want["TUN_IP"], want["PREFIX"]) == (current["TUN_IP"], current["PREFIX"]):
+        return
+    net = ipaddress.IPv4Network("%s/%s" % (want["TUN_IP"], want["PREFIX"]), strict=False)
+    outside = []
+    for line in read_lines(DEVICE_FILE) or []:
+        words = line.split("#", 1)[0].split()
+        if len(words) >= 3:
+            try:
+                if ipaddress.IPv4Address(words[2]) not in net or words[2] == want["TUN_IP"]:
+                    outside.append(words[2])
+            except ValueError:
+                pass
+    if outside:
+        print("주의: 등록된 기기 %d대의 터널 주소가 새 대역 %s 밖이거나 서버 주소와 같습니다 (%s). 그 기기는 다시 등록해야 합니다."
+              % (len(outside), net, ", ".join(outside[:4])))
+
+
+def main():
+    a = parse_args()
+    if os.geteuid() != 0 and not os.environ.get("ZTGATE_SETUP_ANY_USER"):
+        print("오류: ztgate setup 은 /etc/ztgate 를 고치고 서비스를 띄우므로 root 로 돌립니다 (sudo ztgate setup).",
+              file=sys.stderr)
+        return 2
+    env_lines = read_lines(ENV_FILE)
+    if env_lines is None:
+        if not os.path.isdir(ETC):
+            print("오류: %s 가 없습니다. 먼저 ztgate-server 패키지를 설치합니다." % ETC, file=sys.stderr)
+            return 1
+        env_lines = []
+    dns_lines = read_lines(DNS_FILE)
+    file_env = env_values(env_lines)
+    current = dict(REQUIRED, **file_env)
+    current.update(dns_values(dns_lines))
+    for f in FIELDS:
+        for k in f.keys:
+            current.setdefault(k, None)
+
+    interactive = not a.yes and sys.stdin.isatty()
+    try:
+        want = desired_values(a, current, interactive)
+    except Bad as e:
+        print("오류: " + str(e), file=sys.stderr)
+        return 1
+    check_devices(want, current)
+    if want["TCP_PORT"] and want["TCP_PORT"] != want["PORT"]:
+        print("주의: Windows 클라이언트는 PORT 와 같은 번호의 TCP 로만 넘어갑니다 (TCP_PORT=%s, PORT=%s)."
+              % (want["TCP_PORT"], want["PORT"]))
+
+    env_keys = [k for k in want if not k.startswith("dns.")]
+    changes = {k: want[k] for k in env_keys if want[k] != file_env.get(k)}
+    # 파일에 없던 키를 None 으로 둔 것은 바뀐 것이 아니다. 꼭 있어야 하는 키는 기본값으로라도 적는다.
+    changes = {k: v for k, v in changes.items() if v is not None or k in file_env}
+    dns_changed = (want["dns.server"], want["dns.domain"]) != (current["dns.server"], current["dns.domain"])
+    dns_toggled = (want["dns.server"] is None) != (dns_lines is None)
+
+    done = []
+    if changes:
+        write_atomic(ENV_FILE, edit_env(env_lines, changes))
+        done.append("server.env: " + ", ".join("%s=%s" % (k, "(지움)" if v is None else v) for k, v in changes.items()))
+    if dns_changed or dns_toggled:
+        if want["dns.server"] is None:
+            os.unlink(DNS_FILE)
+            done.append("dns.conf: 지움 (내부 DNS 끔)")
+        else:
+            write_atomic(DNS_FILE, dns_text(want))
+            done.append("dns.conf: server %s, domain %s" % (want["dns.server"], want["dns.domain"]))
+    for line in done:
+        print("고침  " + line)
+    if not done:
+        print("설정은 그대로입니다 (바뀐 값이 없습니다).")
+
+    ports = ["%s/udp" % want["PORT"]] + (["%s/tcp" % want["TCP_PORT"]] if want["TCP_PORT"] else [])
+    old_ports = ["%s/udp" % current["PORT"]] + (["%s/tcp" % current["TCP_PORT"]] if current["TCP_PORT"] else [])
+    try:
+        fw = "건드리지 않음 (--no-firewall)" if a.no_firewall else firewall(ports, old_ports)
+    except Bad as e:
+        print("오류: " + str(e), file=sys.stderr)
+        return 1
+
+    status, ok = None, True
+    if a.no_start:
+        svc = "켜지 않음 (--no-start)"
+    else:
+        restart = bool(RESTART_KEYS & set(changes)) or dns_toggled
+        started, svc = service(restart, dns_changed and not dns_toggled)
+        if started is False:
+            ok = False
+        if started is not None:
+            status = wait_running(a.ctl)
+            if status.get("ok") and not status.get("running"):
+                ok = False
+
+    print()
+    print("ztgate 서버")
+    print("  방화벽      " + fw)
+    print("  서비스      " + svc)
+    if status is not None and status.get("ok"):
+        t = status.get("tunnel") or {}
+        print("  상태        " + ("실행 중" if status.get("running") else "멈춤 (%s)" % status.get("last_result", status.get("state"))))
+        if status.get("running"):
+            print("  듣는 포트   " + ", ".join(ports))
+            print("  터널        %s/%s%s" % (want["TUN_IP"], want["PREFIX"], " (%s)" % t["device"] if t.get("device") else ""))
+        for line in (status.get("last_log") or [])[-8:]:
+            print("    " + str(line))
+    elif status is not None:
+        print("  상태        확인하지 못함: %s" % status.get("error"))
+    else:
+        print("  듣는 포트   " + ", ".join(ports))
+        print("  터널        %s/%s" % (want["TUN_IP"], want["PREFIX"]))
+    print("  공개 주소   " + (want["PUBLIC_ADDRESS"] or "없음 (--public-address 를 주면 초대 링크가 만들어집니다)"))
+    if want["dns.server"]:
+        print("  내부 DNS    %s (%s)" % (want["dns.server"], want["dns.domain"]))
+    if not ok:
+        return 1
+
+    if a.enroll is not None:
+        r = ctl_call(a.ctl, "enroll_create", label=a.enroll)
+        if not r.get("ok"):
+            print("오류: 등록 코드를 만들지 못했습니다: %s" % r.get("error"), file=sys.stderr)
+            return 1
+        print()
+        print("첫 기기 등록  비밀입니다. 이 코드를 가진 사람은 기기 하나를 등록할 수 있습니다. 15분 안에 한 번만 씁니다.")
+        print("  이름        " + a.enroll)
+        print("  코드        " + r["code"])
+        if r.get("invite"):
+            print("  초대 링크   " + r["invite"])
+        else:
+            print("  기기에서    vpn_client.exe enroll %s %s %s" % (
+                (want["PUBLIC_ADDRESS"] or "<서버 주소>").split(",")[0], want["PORT"], r["code"]))
+            if r.get("invite_error"):
+                print("  초대 링크   만들지 못함: " + r["invite_error"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""ztgate — 운영자가 터미널에서 읽는 서버 상태. 표준 라이브러리만 쓴다.
+"""ztgate — 운영자가 터미널에서 읽는 서버 상태와 처음 설정. 표준 라이브러리만 쓴다.
 
+    ztgate setup [옵션]           처음 설정 (root): server.env, 방화벽, 서비스. ztgate setup -h
     ztgate status                 서버, 카운터, 붙어 있는 세션
     ztgate devices                등록된 기기 (지금 연결됐는지 함께)
     ztgate enroll                 기다리는 등록 코드
@@ -11,7 +12,9 @@
     --color WHEN      auto(기본) | always | never. auto 는 터미널이고 NO_COLOR 가 없을 때만
     --ctl PATH        ztgate_ctl 위치. root 가 아니면 sudo 로 부른다
 
-일은 모두 ztgate_ctl(mcp/ctl.cjs)이 한다. 이 명령은 읽기만 하고, 답을 표로 바꿔 보여 줄 뿐이다.
+setup 말고는 읽기만 한다. 일은 ztgate_ctl(mcp/ctl.cjs)이 하고 이 명령은 답을 표로 바꿔 보여 줄 뿐이다.
+setup 은 설정 파일을 고치고 서비스를 띄우는 쪽이라 따로 둔 ztgate-setup 이 맡는다 (같은 폴더, 패키지에서는
+/opt/ztgate/libexec).
 색은 docs/design/tokens.md 의 터미널 표를 따른다.
 """
 
@@ -228,12 +231,24 @@ def show_audit(r, paint):
                               paint(EVENT_KIND.get(kind, "dim"), kind.ljust(w)), rest))
 
 
+def setup(argv):
+    here = os.path.dirname(os.path.realpath(__file__))
+    for path in (os.path.join(here, "ztgate-setup"), "/opt/ztgate/libexec/ztgate-setup"):
+        if os.path.exists(path):
+            os.execv(sys.executable, [sys.executable, path] + argv)
+    print("오류: ztgate-setup 이 없습니다 (패키지를 다시 설치합니다).", file=sys.stderr)
+    return 1
+
+
 def main():
+    if sys.argv[1:2] == ["setup"]:
+        return setup(sys.argv[2:])
     ap = argparse.ArgumentParser(prog="ztgate", description="ztgate 서버 상태를 터미널에서 읽는다")
     ap.add_argument("--json", action="store_true", help="ztgate_ctl 의 답을 그대로")
     ap.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl") else "/usr/local/sbin/ztgate_ctl")
     sub = ap.add_subparsers(dest="what", metavar="명령")
+    sub.add_parser("setup", help="처음 설정 (root): server.env, 방화벽, 서비스")
     sub.add_parser("status", help="서버, 카운터, 세션")
     sub.add_parser("devices", help="등록된 기기")
     sub.add_parser("enroll", help="기다리는 등록 코드")
