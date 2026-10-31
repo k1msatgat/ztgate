@@ -971,7 +971,7 @@ static void preset_try(void)
 	preset_t p;
 	device_t dev;
 	preset_step_t step;
-	int enrolled, have, result = TUNNEL_ENROLL_OK;
+	int device, have, result = TUNNEL_ENROLL_OK;
 
 	preset_at = 0;
 	have = preset_enroll_load(&p);
@@ -987,16 +987,20 @@ static void preset_try(void)
 		preset_result = TUNNEL_ENROLL_BAD_CODE;
 		return;
 	}
-	enrolled = device_load(&dev) == DEVICE_OK;
+	device = device_load(&dev);
 	SecureZeroMemory(&dev, sizeof(dev));
-	if (!enrolled && worker) {
+	if (device == DEVICE_NOT_ENROLLED && worker) {
 		preset_at = GetTickCount64() + preset_retry_ms(1);
 		SecureZeroMemory(&p, sizeof(p));
 		return;
 	}
-	if (enrolled) {
+	if (device == DEVICE_OK) {
 		slog("install: this PC is already enrolled, the enrollment code from the installer is not used");
 		preset_failed_set(-1);
+	}
+	else if (device != DEVICE_NOT_ENROLLED) {
+		/* 신원이 있는데 읽지 못한 것일 수 있다. 등록하면 그 신원을 덮는다. */
+		slog("install: cannot read this PC's identity, not enrolling with the installer's code yet");
 	}
 	else {
 		slog("install: enrolling with the code from the installer (%ls port %u)", p.servers, (unsigned)p.port);
@@ -1006,7 +1010,7 @@ static void preset_try(void)
 	}
 	SecureZeroMemory(&p, sizeof(p));
 
-	step = preset_after(enrolled, result);
+	step = preset_after(device, result);
 	if (step.drop) {
 		preset_enroll_drop();
 		preset_tries = 0;

@@ -8,6 +8,7 @@
 #include "preset.h"
 #include "crypt.h"
 #include "secure.h"
+#include "device.h"
 
 int preset_parse(const wchar_t *servers, const wchar_t *port, const wchar_t *code, preset_t *out)
 {
@@ -69,15 +70,15 @@ static const preset_step_t after_result[] = {
 	[TUNNEL_ENROLL_ERROR]		= { PRESET_WAITING, 0 },
 };
 
-preset_step_t preset_after(int enrolled, int result)
+preset_step_t preset_after(int device, int result)
 {
 	const preset_step_t skip = { PRESET_NONE, 1 };
 	const preset_step_t retry = { PRESET_WAITING, 0 };
 
-	if (enrolled) {
+	if (device == DEVICE_OK) {
 		return skip;
 	}
-	if (result < 0 || result >= (int)(sizeof(after_result) / sizeof(after_result[0]))) {
+	if (device != DEVICE_NOT_ENROLLED || result < 0 || result >= (int)(sizeof(after_result) / sizeof(after_result[0]))) {
 		return retry;
 	}
 	return after_result[result];
@@ -231,15 +232,16 @@ int preset_selftest(void)
 	failed |= st("preset: code with U", preset_parse(L"a", L"", L"UK2QF-9XWM4-ABCDE-FGHJK-MNPQR", &p) == PRESET_BAD_CODE);
 	failed |= st("preset: code not ascii", preset_parse(L"a", L"", L"7K2QF-9XWM4-ABCDE-FGHJK-MNPQ\x00c9", &p) == PRESET_BAD_CODE);
 
-	failed |= st("preset: enrolled", step_is(preset_after(0, TUNNEL_ENROLL_OK), PRESET_NONE, 1));
-	failed |= st("preset: already enrolled", step_is(preset_after(1, TUNNEL_ENROLL_NO_RESPONSE), PRESET_NONE, 1));
-	failed |= st("preset: no response", step_is(preset_after(0, TUNNEL_ENROLL_NO_RESPONSE), PRESET_WAITING, 0));
-	failed |= st("preset: rejected", step_is(preset_after(0, TUNNEL_ENROLL_REJECTED), PRESET_FAILED, 1));
-	failed |= st("preset: conflict", step_is(preset_after(0, TUNNEL_ENROLL_CONFLICT), PRESET_FAILED, 1));
-	failed |= st("preset: bad code", step_is(preset_after(0, TUNNEL_ENROLL_BAD_CODE), PRESET_FAILED, 1));
-	failed |= st("preset: server failed", step_is(preset_after(0, TUNNEL_ENROLL_SERVER_FAILED), PRESET_WAITING, 0));
-	failed |= st("preset: local error", step_is(preset_after(0, TUNNEL_ENROLL_ERROR), PRESET_WAITING, 0));
-	failed |= st("preset: unknown result", step_is(preset_after(0, 99), PRESET_WAITING, 0));
+	failed |= st("preset: enrolled", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_OK), PRESET_NONE, 1));
+	failed |= st("preset: already enrolled", step_is(preset_after(DEVICE_OK, TUNNEL_ENROLL_OK), PRESET_NONE, 1));
+	failed |= st("preset: identity unreadable", step_is(preset_after(DEVICE_ERROR, TUNNEL_ENROLL_OK), PRESET_WAITING, 0));
+	failed |= st("preset: no response", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_NO_RESPONSE), PRESET_WAITING, 0));
+	failed |= st("preset: rejected", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_REJECTED), PRESET_FAILED, 1));
+	failed |= st("preset: conflict", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_CONFLICT), PRESET_FAILED, 1));
+	failed |= st("preset: bad code", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_BAD_CODE), PRESET_FAILED, 1));
+	failed |= st("preset: server failed", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_SERVER_FAILED), PRESET_WAITING, 0));
+	failed |= st("preset: local error", step_is(preset_after(DEVICE_NOT_ENROLLED, TUNNEL_ENROLL_ERROR), PRESET_WAITING, 0));
+	failed |= st("preset: unknown result", step_is(preset_after(DEVICE_NOT_ENROLLED, 99), PRESET_WAITING, 0));
 
 	failed |= st("preset: retry backoff", preset_retry_ms(1) == 30000 && preset_retry_ms(2) == 60000 &&
 			preset_retry_ms(7) == 30ull * 60 * 1000 && preset_retry_ms(100) == 30ull * 60 * 1000);

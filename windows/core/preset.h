@@ -66,9 +66,10 @@ typedef struct preset_step {
  * preset_error_t. */
 int preset_parse(const wchar_t *servers, const wchar_t *port, const wchar_t *code, preset_t *out);
 
-/* 한 번 해 본 뒤에 할 일. enrolled 는 해 보기 전에 이미 등록된 기기였는가 (그러면 코드를 쓰지 않고
- * 지운다 — 있는 신원을 설치 명령이 덮지 않는다), result 는 tunnel_enroll_result_t. */
-preset_step_t preset_after(int enrolled, int result);
+/* 한 번 해 본 뒤에 할 일. device 는 해 보기 전의 device_load 결과다. DEVICE_OK 면 이미 등록된 기기라
+ * 코드를 쓰지 않고 지운다 (있는 신원을 설치 명령이 덮지 않는다). DEVICE_ERROR 면 신원이 있는지 모르므로
+ * 등록하지 않고 다시 본다. DEVICE_NOT_ENROLLED 일 때만 등록하고, 그 결과(tunnel_enroll_result_t)가 result. */
+preset_step_t preset_after(int device, int result);
 
 /* 서버에 닿지 못한 tries 번째 뒤에 다시 해 볼 때까지 (ms). 30초에서 두 배씩, 30분까지. */
 ULONGLONG preset_retry_ms(unsigned tries);
