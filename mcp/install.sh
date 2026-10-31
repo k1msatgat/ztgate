@@ -27,6 +27,9 @@ die() { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
 
 # node_modules 가 root 소유가 되지 않도록 일반 사용자로 받는다.
 [ "$(id -u)" -ne 0 ] || die "run as a normal user; the script calls sudo itself"
+# root 로 도는 배포기와 ztgate_ctl 은 PATH 가 아니라 이 자리의 node 를 쓴다 (#!/usr/bin/node). nvm 이나
+# /usr/local 에만 있는 node 로는 sudo 가 "No such file or directory" 로 실패한다.
+[ -x /usr/bin/node ] || die "/usr/bin/node is missing: install the distribution's nodejs (18 or later)"
 
 (cd "$MCP_DIR" && npm ci --omit=dev --no-audit --no-fund)
 
