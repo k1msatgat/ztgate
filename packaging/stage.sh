@@ -8,12 +8,13 @@
 #   /opt/ztgate/libexec/service.sh               systemd 가 부른다 (mcp/service.sh)
 #   /opt/ztgate/libexec/postinst.sh              설치 뒤 한 번: /etc/ztgate 와 서버 키
 #   /opt/ztgate/libexec/ztgate-user.sh           서버 계정(ztgate)과 파일 소유. 서비스가 뜨고 다시 읽기 전에도 돈다
+#   /opt/ztgate/libexec/ztgate-setup             처음 설정. ztgate setup 이 부른다 (server.env, 방화벽, 서비스)
 #   /opt/ztgate/tools/ztgate_exporter.py         Prometheus 지표
 #   /opt/ztgate/tools/ztgate_jwks.py             JWKS 갱신
 #   /opt/ztgate/tools/ztgate_console.py          웹 관리 콘솔
 #   /opt/ztgate/test/auth_check.py               ztgate_ctl 의 자체 시험이 돌린다
 #   /usr/sbin/ztgate_ctl                         관리 헬퍼 (node 가 있어야 돈다)
-#   /usr/bin/ztgate                              운영자가 터미널에서 읽는 상태 (ztgate status 등)
+#   /usr/bin/ztgate                              운영자가 터미널에서 읽는 상태 (ztgate status 등)와 처음 설정 (ztgate setup)
 #   /usr/sbin/ztgate-backup                      설정과 서버 키의 백업 / 되살리기 (+ ztgate-backup.timer, 하루 한 번)
 #   /usr/sbin/ztgate-sync                        이중화: 주 서버의 설정을 부 서버들에 (+ .path, .timer. 켜지 않는다)
 #   /etc/logrotate.d/ztgate                      감사 로그 돌리기
@@ -36,6 +37,7 @@ install -m 755 -s "$ROOT/server/bin/vpn_server" "$S/opt/ztgate/server/bin/vpn_se
 install -m 755 "$ROOT/mcp/service.sh" "$S/opt/ztgate/libexec/service.sh"
 install -m 755 "$ROOT/packaging/postinst.sh" "$S/opt/ztgate/libexec/postinst.sh"
 install -m 755 "$ROOT/packaging/ztgate-user.sh" "$S/opt/ztgate/libexec/ztgate-user.sh"
+install -m 755 "$ROOT/tools/cli/ztgate-setup" "$S/opt/ztgate/libexec/ztgate-setup"
 install -m 755 "$ROOT/tools/metrics/ztgate_exporter.py" "$S/opt/ztgate/tools/ztgate_exporter.py"
 install -m 755 "$ROOT/tools/idp/ztgate_jwks.py" "$S/opt/ztgate/tools/ztgate_jwks.py"
 install -m 755 "$ROOT/tools/console/ztgate_console.py" "$S/opt/ztgate/tools/ztgate_console.py"

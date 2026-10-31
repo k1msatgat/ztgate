@@ -1,7 +1,7 @@
 #!/bin/sh
 # 패키지를 설치하거나 올린 뒤 한 번 (DEB 의 postinst, RPM 의 %post 가 부른다). mcp/install.sh 의 설정
 # 만들기와 같다. 있는 것은 건드리지 않는다 — 업그레이드해도 기기 목록과 서버 키가 그대로다.
-# 서비스를 켜지는 않는다. 설정을 본 뒤 관리자가 systemctl enable --now ztgate 한다.
+# 서비스를 켜지는 않는다. 관리자가 sudo ztgate setup 으로 값을 정하고 방화벽을 열고 서비스를 켠다.
 set -e
 
 ETC=/etc/ztgate
@@ -30,4 +30,9 @@ if command -v systemctl > /dev/null 2>&1 && [ -d /run/systemd/system ]; then
 	fi
 	# 콘솔과 지표 내보내기도 새 코드로 (켜져 있을 때만).
 	systemctl try-restart ztgate-console.service ztgate-exporter.service || true
+fi
+
+# 처음 설치했거나 아직 켜지 않은 서버에만 다음 할 일을 알린다. 묻지는 않는다 (apt 와 dnf 가 멈추지 않게).
+if ! { command -v systemctl > /dev/null 2>&1 && systemctl is-active --quiet ztgate.service; }; then
+	echo "ztgate-server: 다음으로 sudo ztgate setup 을 실행합니다 (공개 주소, 포트, 방화벽, 서비스 켜기)."
 fi
