@@ -44,7 +44,8 @@ if ($LASTEXITCODE -ne 0) { throw "candle failed ($LASTEXITCODE)" }
 
 # ICE 검사 중 서비스와 바로가기에 관한 것은 per-machine 설치에서 그대로 맞는 경고다.
 # 설치 창은 한국어다 (WixUIExtension 의 ko-KR, 코드 페이지 949).
-& $light -nologo -ext WixUtilExtension -ext WixUIExtension -cultures:ko-KR -spdb -out (Join-Path $bin 'ztgate.msi') (Join-Path $obj 'ztgate.wixobj')
+# ICE61 은 끈다. 같은 버전도 갈아 끼우게 한 것(ztgate.wxs 의 AllowSameVersionUpgrades)을 경고한다.
+& $light -nologo -ext WixUtilExtension -ext WixUIExtension -cultures:ko-KR -sice:ICE61 -spdb -out (Join-Path $bin 'ztgate.msi') (Join-Path $obj 'ztgate.wixobj')
 if ($LASTEXITCODE -ne 0) { throw "light failed ($LASTEXITCODE)" }
 
 Write-Output "built $(Join-Path $bin 'ztgate.msi')"

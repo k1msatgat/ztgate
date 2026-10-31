@@ -32,8 +32,10 @@
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
              Description="ztgate ZTNA client $(var.Version)" />
 
-    <!-- 새 버전을 설치하면 옛 버전을 지우고 올린다. 더 새 버전이 깔려 있으면 멈춘다. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer version of ztgate is already installed." />
+    <!-- 새 버전을 설치하면 옛 버전을 지우고 올린다. 더 새 버전이 깔려 있으면 멈춘다.
+         같은 버전도 갈아 끼운다. Windows Installer 는 버전의 앞 세 자리만 견주므로, 이게 없으면 같은 번호로
+         다시 만든 MSI(시험 빌드와 정식 빌드 등)가 옛 것을 지우지 않고 제품 둘로 나란히 깔린다. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of ztgate is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
     <!-- 8.1 이상(VersionNT 603 — 10 과 11 도 호환 목록 없는 설치 파일에는 603 으로 보인다).
