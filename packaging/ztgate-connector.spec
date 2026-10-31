@@ -1,7 +1,7 @@
-# packaging/build.sh connector-rpm 이 @VERSION@ 과 @STAGE@ 를 채운다. 파일은 packaging/connector-stage.sh 가 놓은 그대로다.
+# packaging/build.sh connector-rpm 이 @VERSION@, @RELEASE@, @STAGE@ 를 채운다. 파일은 packaging/connector-stage.sh 가 놓은 그대로다.
 Name:           ztgate-connector
 Version:        @VERSION@
-Release:        1
+Release:        @RELEASE@
 Summary:        ztgate app connector
 License:        Proprietary
 URL:            https://github.com/k1msatgat/ztgate

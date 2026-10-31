@@ -1,7 +1,7 @@
-# packaging/build.sh rpm 이 @VERSION@ 과 @STAGE@ 를 채운다. 파일은 packaging/stage.sh 가 놓은 그대로다.
+# packaging/build.sh rpm 이 @VERSION@, @RELEASE@, @STAGE@ 를 채운다. 파일은 packaging/stage.sh 가 놓은 그대로다.
 Name:           ztgate-server
 Version:        @VERSION@
-Release:        1
+Release:        @RELEASE@
 Summary:        ztgate ZTNA server
 License:        Proprietary
 URL:            https://github.com/k1msatgat/ztgate
