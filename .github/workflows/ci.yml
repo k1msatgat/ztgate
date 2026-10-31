@@ -292,6 +292,67 @@ jobs:
           name: ztgate-server-rpm
           path: out/*.rpm
 
+  # 앱 커넥터 패키지 (ztgate-connector). 등록하지 않은 장비에서는 서비스가 꺼져 있는지, 지워도 신원이
+  # 남는지를 러너에 설치해 보고, docker/connector.sh 로 systemd 위에서 실제로 내부망까지 닿는지 본다.
+  connector:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make client CFLAGS="-Wall -Wextra -Werror -O2 -g"
+
+      - name: Hardening flags (tools/check_hardening.sh)
+        run: tools/check_hardening.sh client/bin/vpn_client
+
+      - name: Wrapper (test/connector_check.sh)
+        run: test/connector_check.sh
+
+      - name: Package (packaging/build.sh connector-deb)
+        run: packaging/build.sh connector-deb out
+
+      - name: Install, remove
+        run: |
+          set -x
+          sudo apt-get install -y -qq ./out/ztgate-connector_*.deb > /dev/null
+          [ "$(systemctl is-enabled ztgate-connector || true)" = disabled ]
+          if systemctl is-active --quiet ztgate-connector; then exit 1; fi
+          [ "$(sudo stat -c %a /var/lib/ztgate-connector)" = 700 ]
+          sudo /opt/ztgate-connector/bin/vpn_client selftest | tail -n 1
+          sudo ztgate-connector status
+          echo keep | sudo tee /var/lib/ztgate-connector/device > /dev/null
+          sudo apt-get install -y -qq --reinstall ./out/ztgate-connector_*.deb > /dev/null
+          if systemctl is-active --quiet ztgate-connector; then exit 1; fi
+          sudo apt-get purge -y -qq ztgate-connector > /dev/null
+          [ "$(sudo cat /var/lib/ztgate-connector/device)" = keep ]
+          test ! -e /opt/ztgate-connector/bin/vpn_client
+
+      - name: Server, packaged connector on systemd, LAN host (docker/connector.sh)
+        run: docker/connector.sh
+
+      - name: RPM (rockylinux:9)
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rockylinux:9 bash -euxc '
+            dnf -y -q install gcc make openssl-devel rpm-build > /dev/null
+            make clean > /dev/null
+            make client CFLAGS="-Wall -Wextra -Werror -O2 -g"
+            bash tools/check_hardening.sh client/bin/vpn_client
+            packaging/build.sh connector-rpm out
+            dnf -y -q install ./out/ztgate-connector-*.rpm > /dev/null
+            test "$(stat -c %a /var/lib/ztgate-connector)" = 700
+            /opt/ztgate-connector/bin/vpn_client selftest | tail -n 1
+            ztgate-connector status
+            echo keep > /var/lib/ztgate-connector/device
+            rpm -e ztgate-connector
+            test "$(cat /var/lib/ztgate-connector/device)" = keep
+            test ! -e /opt/ztgate-connector/bin/vpn_client
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ztgate-connector
+          path: out/ztgate-connector*
+
   windows:
     runs-on: windows-2022
     steps:
