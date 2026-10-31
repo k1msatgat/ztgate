@@ -1,0 +1,290 @@
+#!/bin/bash
+# 앱 커넥터 장비의 관리 명령 (ztgate-connector 패키지). vpn_client connector 를 서비스로 돌린다.
+#
+#   ztgate-connector enroll <server> <port> <code> --lan-if <장치> [--tcp] [--force]
+#   ztgate-connector enroll '<ztgate://enroll?server=...&port=...&code=...>' --lan-if <장치> [--tcp] [--force]
+#   ztgate-connector status
+#   ztgate-connector unenroll --yes
+#   ztgate-connector run                 systemd 가 부른다 (앞에서 띄울 때도 이것)
+#
+# 등록하면 신원은 /var/lib/ztgate-connector/device, 설정은 /etc/ztgate-connector/connector.env 에
+# 남는다. 둘 다 패키지의 파일이 아니라서 업그레이드나 제거로 지워지지 않는다.
+#
+# 시험(test/connector_check.sh)은 ZTGATE_CONNECTOR_* 로 자리를 바꾸고 root 확인을 건너뛴다.
+set -u
+
+ETC=${ZTGATE_CONNECTOR_ETC:-/etc/ztgate-connector}
+STATE=${ZTGATE_CONNECTOR_STATE:-/var/lib/ztgate-connector}
+CLIENT=${ZTGATE_CONNECTOR_CLIENT:-/opt/ztgate-connector/bin/vpn_client}
+SYSFS=${ZTGATE_CONNECTOR_SYSFS:-/sys/class/net}
+SYSTEMD=${ZTGATE_CONNECTOR_SYSTEMD:-/run/systemd/system}
+ENV_FILE=$ETC/connector.env
+IDENT=$STATE/device
+UNIT=ztgate-connector.service
+TUN_IF=ztconn0
+
+die() { echo "ztgate-connector: $*" >&2; exit 1; }
+
+usage() {
+	cat >&2 <<EOF
+사용법:
+  ztgate-connector enroll <서버> <포트> <등록 코드> --lan-if <장치> [--tcp] [--force]
+  ztgate-connector enroll '<초대 링크>' --lan-if <장치> [--tcp] [--force]
+  ztgate-connector status
+  ztgate-connector unenroll --yes
+  ztgate-connector run
+
+  <서버>     이름이나 IPv4 / IPv6 주소. 쉼표로 넷까지 (앞의 것이 답하지 않으면 다음)
+  --lan-if   내부망 쪽 장치 (eth0 등). 서버가 보낸 패킷을 이 장치로 NAT 해 내보낸다
+  --tcp      UDP 가 막힌 곳에서 같은 포트의 TCP 로 (서버의 TCP_PORT)
+  --force    이미 등록된 신원을 새것으로 바꾼다 (서버의 예전 기기 줄은 관리자가 지운다)
+EOF
+	exit 1
+}
+
+need_root() {
+	[ -n "${ZTGATE_CONNECTOR_NOROOT:-}" ] || [ "$(id -u)" -eq 0 ] || die "root 로 실행하세요 (sudo ztgate-connector $1)"
+}
+
+has_systemd() { [ -d "$SYSTEMD" ] && command -v systemctl > /dev/null 2>&1; }
+
+# 서버 목록: 이름이나 주소를 쉼표로 넷까지. 글자는 Windows 클라이언트(tunnel_check_servers)와 같다.
+valid_servers() {
+	local list=$1 s n=0 name='^[A-Za-z0-9._:-]{1,253}$' v6='^\[[0-9A-Fa-f:.]+\]$'
+	[ -n "$list" ] || return 1
+	case "$list" in ,* | *, | *,,*) return 1 ;; esac
+	IFS=, read -r -a parts <<< "$list"
+	for s in "${parts[@]}"; do
+		n=$((n + 1))
+		[ "$n" -le 4 ] || return 1
+		[[ $s =~ $name || $s =~ $v6 ]] || return 1
+		[[ $s == -* || $s == *- || $s == *..* ]] && return 1
+	done
+	return 0
+}
+
+valid_port() { [[ $1 =~ ^[0-9]{1,5}$ ]] && [ "$((10#$1))" -ge 1 ] && [ "$((10#$1))" -le 65535 ]; }
+
+# 코드의 형식은 vpn_client 가 다시 본다. 여기서는 명령줄로 넘겨도 되는 글자인지만.
+valid_code() { [[ $1 =~ ^[A-Za-z0-9-]{1,64}$ ]]; }
+
+# vpn_client 의 connector_ifname_ok 와 같은 글자.
+valid_lan_if() {
+	[[ $1 =~ ^[A-Za-z0-9._-]{1,15}$ ]] || return 1
+	[ "$1" != . ] && [ "$1" != .. ]
+}
+
+# 초대 링크를 풀어 INV_SERVER, INV_PORT, INV_CODE 에. windows/core/invite.h 와 같은 규칙이다:
+# 대소문자 무시, 모르는 이름은 건너뛰고, 공백·제어 문자·'+' 가 든 값은 받지 않는다.
+parse_invite() {
+	local link=$1 query pair key val have=0 chars='^([][A-Za-z0-9._~:,-]|%[0-9A-Fa-f]{2})*$'
+	link=${link#\"}
+	link=${link%\"}
+	shopt -s nocasematch
+	if [[ $link != ztgate://enroll\?* ]]; then
+		shopt -u nocasematch
+		return 1
+	fi
+	shopt -u nocasematch
+	query=${link#*\?}
+	query=${query%%#*}
+	IFS='&' read -r -a pairs <<< "$query"
+	for pair in "${pairs[@]}"; do
+		[ -n "$pair" ] || continue
+		[[ $pair == *=* ]] || return 1
+		key=${pair%%=*}
+		val=${pair#*=}
+		# %XX 를 푼 뒤에는 NUL 을 셸이 말없이 지우므로, 풀기 전에 공백 아래의 글자를 거른다.
+		[[ $val =~ $chars && ! $val =~ %([01][0-9A-Fa-f]|20) ]] || return 1
+		val=$(printf '%b' "${val//%/\\x}")
+		case "${key,,}" in
+			server) valid_servers "$val" || return 1; INV_SERVER=$val; have=$((have | 1)) ;;
+			port) valid_port "$val" || return 1; INV_PORT=$((10#$val)); have=$((have | 2)) ;;
+			code) valid_code "$val" || return 1; INV_CODE=$val; have=$((have | 4)) ;;
+		esac
+	done
+	[ "$have" -eq 7 ]
+}
+
+# 이름 하나를 vpn_client 가 받는 주소로. 주소는 그대로, 이름은 IPv4 를 먼저 찾고 없으면 IPv6.
+resolve_one() {
+	local s=$1 a
+	if [[ $s =~ ^[0-9.]+$ || $s == *:* ]]; then
+		echo "$s"
+		return 0
+	fi
+	a=$(getent ahostsv4 "$s" 2> /dev/null | awk 'NR == 1 { print $1 }')
+	[ -n "$a" ] || a=$(getent ahostsv6 "$s" 2> /dev/null | awk 'NR == 1 { print $1 }')
+	[ -n "$a" ] || return 1
+	echo "$a"
+}
+
+# 풀리는 것만 쉼표로 잇는다. 하나도 없으면 실패 — systemd 가 잠시 뒤 다시 띄운다.
+resolve_list() {
+	local s a out=
+	IFS=, read -r -a parts <<< "$1"
+	for s in "${parts[@]}"; do
+		if a=$(resolve_one "$s"); then
+			out=${out:+$out,}$a
+		else
+			echo "ztgate-connector: $s 의 주소를 찾지 못했습니다" >&2
+		fi
+	done
+	[ -n "$out" ] || return 1
+	echo "$out"
+}
+
+# connector.env 에서 아는 키만 읽는다. source 하지 않는다 — 이 파일로 명령을 돌리게 두지 않는다.
+load_env() {
+	local line key val
+	SERVER= PORT= LAN_IF= TCP_PORT=
+	[ -f "$ENV_FILE" ] || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		[[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+		[[ $line == *=* ]] || continue
+		key=${line%%=*}
+		val=${line#*=}
+		val=${val%\"}
+		val=${val#\"}
+		case "$key" in
+			SERVER) SERVER=$val ;;
+			PORT) PORT=$val ;;
+			LAN_IF) LAN_IF=$val ;;
+			TCP_PORT) TCP_PORT=$val ;;
+		esac
+	done < "$ENV_FILE"
+	bad() { echo "ztgate-connector: $ENV_FILE: $1 가 틀렸습니다: $2" >&2; return 1; }
+	valid_servers "$SERVER" || { bad SERVER "$SERVER"; return; }
+	valid_port "$PORT" || { bad PORT "$PORT"; return; }
+	valid_lan_if "$LAN_IF" || { bad LAN_IF "$LAN_IF"; return; }
+	[ -z "$TCP_PORT" ] || valid_port "$TCP_PORT" || { bad TCP_PORT "$TCP_PORT"; return; }
+}
+
+write_env() {
+	local tmp
+	install -d -m 755 "$ETC" || die "$ETC 를 만들지 못했습니다"
+	tmp=$(mktemp "$ETC/.connector.env.XXXXXX") || die "$ETC 에 쓰지 못했습니다"
+	{
+		echo "# ztgate-connector enroll 이 썼다. 고친 뒤 systemctl restart ztgate-connector"
+		echo "SERVER=$1"
+		echo "PORT=$2"
+		echo "LAN_IF=$3"
+		echo "# UDP 가 막힌 곳에서는 서버의 TCP 포트로 (vpn_server -t)"
+		if [ -n "$4" ]; then echo "TCP_PORT=$4"; else echo "# TCP_PORT=443"; fi
+	} > "$tmp"
+	chmod 644 "$tmp"
+	mv "$tmp" "$ENV_FILE"
+}
+
+cmd_enroll() {
+	local server= port= code= lan_if= tcp=0 force= pos=() s addr ok=0 tcp_port=
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--lan-if) [ $# -ge 2 ] || usage; lan_if=$2; shift 2 ;;
+			--lan-if=*) lan_if=${1#*=}; shift ;;
+			--tcp) tcp=1; shift ;;
+			--force | -f) force=-f; shift ;;
+			-*) usage ;;
+			*) pos+=("$1"); shift ;;
+		esac
+	done
+	case ${#pos[@]} in
+		1) parse_invite "${pos[0]}" || die "초대 링크가 아닙니다 (ztgate://enroll?server=...&port=...&code=...)"
+			server=$INV_SERVER port=$INV_PORT code=$INV_CODE ;;
+		3) server=${pos[0]} port=${pos[1]} code=${pos[2]} ;;
+		*) usage ;;
+	esac
+	valid_servers "$server" || die "서버 주소가 틀렸습니다: $server"
+	valid_port "$port" || die "포트가 틀렸습니다: $port"
+	port=$((10#$port))
+	valid_code "$code" || die "등록 코드가 틀렸습니다"
+	[ -n "$lan_if" ] || die "--lan-if 로 내부망 쪽 장치를 적으세요 (예: --lan-if eth0)"
+	valid_lan_if "$lan_if" || die "장치 이름이 틀렸습니다: $lan_if"
+	[ -e "$SYSFS/$lan_if" ] || die "장치가 없습니다: $lan_if (ip link 로 확인하세요)"
+	[ "$tcp" -eq 0 ] || tcp_port=$port
+	need_root enroll
+
+	if [ -e "$IDENT" ] && [ -z "$force" ]; then
+		die "이미 등록되어 있습니다 ($IDENT). 새로 등록하려면 --force (서버의 예전 기기 줄은 관리자가 지웁니다)"
+	fi
+	install -d -m 700 "$STATE" || die "$STATE 를 만들지 못했습니다"
+	chmod 700 "$STATE"
+
+	# 코드는 한 번만 쓰인다. 서버를 여럿 적었으면 답하는 곳을 찾을 때까지 차례로.
+	IFS=, read -r -a servers <<< "$server"
+	for s in "${servers[@]}"; do
+		if ! addr=$(resolve_one "$s"); then
+			echo "ztgate-connector: $s 의 주소를 찾지 못했습니다" >&2
+			continue
+		fi
+		if "$CLIENT" -k "$IDENT" ${tcp_port:+-T "$tcp_port"} enroll "$addr" "$port" "$code" $force; then
+			ok=1
+			break
+		fi
+	done
+	[ "$ok" -eq 1 ] || die "등록하지 못했습니다"
+
+	write_env "$server" "$port" "$lan_if" "$tcp_port"
+	echo "설정을 $ENV_FILE 에 적었습니다."
+	if has_systemd; then
+		systemctl enable --quiet "$UNIT" && systemctl restart "$UNIT" || die "서비스를 띄우지 못했습니다 (ztgate-connector status)"
+		echo "서비스를 켰습니다. 상태: ztgate-connector status"
+	else
+		echo "systemd 가 없어 서비스는 켜지 않았습니다. 앞에서 띄우려면: ztgate-connector run"
+	fi
+}
+
+cmd_status() {
+	local id
+	if [ -e "$IDENT" ]; then
+		id=$(awk 'NR == 1 { print $1 }' "$IDENT" 2> /dev/null)
+		echo "등록      됨 (기기 id ${id:-?})"
+	else
+		echo "등록      안 됨 (ztgate-connector enroll ...)"
+	fi
+	if [ ! -f "$ENV_FILE" ]; then
+		echo "설정      없음 ($ENV_FILE)"
+	elif load_env; then
+		echo "서버      $SERVER 포트 $PORT${TCP_PORT:+ (tcp $TCP_PORT)}"
+		echo "내부망    $LAN_IF"
+	fi
+	if has_systemd; then
+		echo "서비스    $(systemctl is-active "$UNIT" 2> /dev/null), $(systemctl is-enabled "$UNIT" 2> /dev/null)"
+		echo
+		journalctl -u "$UNIT" -n 15 --no-pager -o short-iso 2> /dev/null
+	else
+		echo "서비스    systemd 없음"
+	fi
+}
+
+cmd_unenroll() {
+	[ "${1:-}" = --yes ] || die "이 장비의 신원을 지웁니다. 되돌릴 수 없어 --yes 를 붙여야 합니다: ztgate-connector unenroll --yes"
+	need_root unenroll
+	if has_systemd; then
+		systemctl disable --now --quiet "$UNIT" 2> /dev/null || true
+	fi
+	rm -f "$IDENT" "$ENV_FILE"
+	echo "신원과 설정을 지웠습니다. 서버의 기기 목록에서도 이 기기를 지우세요 (ztgate_ctl device_remove 또는 콘솔)."
+}
+
+cmd_run() {
+	local addrs
+	need_root run
+	[ -e "$IDENT" ] || die "등록되어 있지 않습니다 ($IDENT). 먼저 ztgate-connector enroll ..."
+	[ -f "$ENV_FILE" ] || die "$ENV_FILE 가 없습니다. 먼저 ztgate-connector enroll ..."
+	load_env || exit 1
+	addrs=$(resolve_list "$SERVER") || die "서버 주소를 하나도 찾지 못했습니다: $SERVER"
+	exec "$CLIENT" -k "$IDENT" -i "$TUN_IF" ${TCP_PORT:+-T "$TCP_PORT"} connector "$addrs" "$PORT" "$LAN_IF"
+}
+
+[ $# -ge 1 ] || usage
+cmd=$1
+shift
+case "$cmd" in
+	enroll) cmd_enroll "$@" ;;
+	status) cmd_status ;;
+	unenroll) cmd_unenroll "$@" ;;
+	run) cmd_run ;;
+	-h | --help | help) usage ;;
+	*) usage ;;
+esac

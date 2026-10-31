@@ -1,0 +1,42 @@
+[Unit]
+Description=ztgate app connector
+After=network-online.target
+Wants=network-online.target
+# 등록하기 전에는 뜨지 않는다 (실패가 아니라 건너뜀). ztgate-connector enroll 이 켠다.
+ConditionPathExists=/var/lib/ztgate-connector/device
+ConditionPathExists=/etc/ztgate-connector/connector.env
+# 서버가 오래 꺼져 있어도 포기하지 않는다.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/ztgate-connector run
+# 서버에 닿지 못하거나 거절당하면 vpn_client 가 끝난다. 이름은 띄울 때마다 다시 푼다.
+Restart=always
+RestartSec=5
+
+# root 로 돈다. 신원 파일은 root 의 600 이어야 하고(identity.c), /proc/sys/net/ipv4/ip_forward 는
+# root 의 파일이다. 받는 힘은 tun, 주소와 경로, nft 표를 다루는 CAP_NET_ADMIN 하나뿐이다.
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=yes
+StateDirectory=ztgate-connector
+StateDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+# ProtectKernelTunables 는 켜지 않는다. 커넥터가 ip_forward 를 켜고 끝날 때 되돌린다.
+# PrivateDevices 도 켜지 않는다. /dev/net/tun 이 있어야 한다.
+
+[Install]
+WantedBy=multi-user.target
