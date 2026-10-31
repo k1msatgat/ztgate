@@ -945,6 +945,26 @@ function syncPrimary() {
 	}
 }
 
+/* 배포기(mcp/deploy.cjs)가 새 패키지를 깔고 검사하는 동안에는 서버를 내리거나 다시 올리지 않는다. 검사 중의
+ * 재시작은 멀쩡한 판을 되돌리게 하고, 되돌리는 중의 멈춤은 그 검사를 떨어뜨린다. 표지는 그 작업의 유닛이 아직
+ * 돌고 있을 때만 믿는다 — 죽은 작업이 남긴 표지는 아무것도 막지 않는다. */
+const DEPLOY_WINDOW = '/run/ztgate-deploy/window';
+const DEPLOY_COMMANDS = new Set(['start', 'stop', 'restart', 'auth_check']);
+
+function deployWindow() {
+	let job;
+
+	try {
+		job = JSON.parse(fs.readFileSync(DEPLOY_WINDOW, 'utf8')).job;
+	} catch (e) {
+		return null;
+	}
+	const r = run('/usr/bin/systemctl', ['show', 'ztgate-deploy.service', '-p', 'ActiveState,Description']);
+	const p = Object.fromEntries(r.stdout.split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+
+	return ['active', 'activating', 'deactivating'].includes(p.ActiveState) && p.Description === `ztgate deploy ${job}` ? job : null;
+}
+
 const RELOAD = Symbol('reload');
 
 function withConfigLock(fn) {
@@ -1387,6 +1407,10 @@ async function main() {
 		}
 		if (SYNCED_COMMANDS.has(req.cmd) && syncPrimary() !== null) {
 			fail(`this server takes its configuration from ${syncPrimary()}; change it there`);
+		}
+		const deploying = DEPLOY_COMMANDS.has(req.cmd) ? deployWindow() : null;
+		if (deploying !== null) {
+			fail(`a deploy is installing and checking the server (job ${deploying}); wait for it with deploy_status`);
 		}
 		let r = LOCKED_COMMANDS.has(req.cmd)
 			? await withConfigLock(() => COMMANDS[req.cmd](req))
