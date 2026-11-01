@@ -2,7 +2,7 @@
 
 버전의 두 번째 숫자는 프로토콜 버전(`lib/common/include/proto.h`의 `PROTOCOL_VERSION`)과 같습니다. v9 까지는 서버가 버전이 다른 패킷을 버려서, 두 번째 숫자가 바뀌면 서버와 클라이언트를 함께 올려야 했습니다. 앞으로는 서버를 먼저 올리고, 서버는 한 버전 아래의 클라이언트도 받습니다 ([ADR 0012](docs/decisions/0012-version-compat.md)). 태그는 0.5.0부터 붙였고, 그 이전 버전은 해당 구간의 첫 커밋으로 적었습니다.
 
-## 미배포 (프로토콜 v9)
+## 0.9.5 — 2026-11-01 (프로토콜 v9)
 
 **프로토콜이 v9 로 올라갔습니다.** v7 에서 터널 설정에 내부 DNS 칸이, v8 에서 등록 메시지에 공개키가, v9 에서 핸드셰이크의 모양(감싼 기기 ID 와 포스처)이 바뀌어 이전 버전과는 통하지 않으므로 서버와 모든 클라이언트를 함께 올립니다. **서버에는 서버 키가 있어야 합니다** — `vpn_server genkey /etc/ztgate/server.key` (설치 스크립트와 Docker 이미지는 스스로 만듭니다). 등록 코드(`-e`)를 쓰는 서버는 `-k` 없이 뜨지 않습니다. 세션 키를 뽑는 라벨(`"ztgate v6 session"`)은 그대로입니다 — 버전을 가르는 것은 헤더의 버전 바이트입니다.
 
@@ -24,6 +24,7 @@
 - **서버 한 대가 받는 수를 늘렸습니다.** 동시 세션 8 → 4096, 기기 16 → 4096, ACL 규칙 32 → 1024, 등록 대기 16 → 256. 세션과 기기는 해시 색인으로 찾아 수가 늘어도 패킷마다의 비용이 그대로이고, 상태 소켓은 크기 제한 없이 루프를 막지 않고 끝까지 씁니다. 세션 번호의 자리 번호가 8bit 에서 16bit 로 바뀌었지만 클라이언트는 번호를 그대로 돌려줄 뿐이라 프로토콜은 v6 그대로입니다. 관리 도구(`ztgate_ctl`)의 상한도 같이 올렸습니다.
 
 ### 추가
+- **GitHub 릴리스로 설치 파일을 냅니다.** `v*` 태그를 올리면 CI 가 모든 시험을 다시 돌리고, 통과하면 서버 deb / rpm, 커넥터 deb / rpm, `ztgate.msi`, 안내서 PDF, `SHA256SUMS` 를 릴리스에 올립니다. 안내서에 받는 곳과 확인하는 법을 적었습니다.
 - **안내서 PDF (`docs/guide/ztgate-guide.pdf`).** 사용자 안내서, 서버 운영, 운영 참고, 새로 쓴 "ztgate 한눈에"와 용어를 표지와 쪽 번호 있는 목차와 함께 한 권으로 묶습니다. `python3 tools/docs/build_guide.py` 가 Markdown 에서 헤드리스 Edge 나 Chrome 으로 만들고, CI 의 `--check` 는 원본이 바뀌었는데 PDF 를 다시 만들지 않았으면 실패합니다.
 - **MCP 로 서버 배포 (`deploy`, `deploy_status`, `deploy_rollback`).** 원격의 브랜치, 태그 또는 커밋을 장비에서 패키지로 빌드해 깔고, 검사에 떨어지면 이전 패키지로 스스로 되돌립니다. 배포기 `ztgate-deploy` 는 패키지 밖(`/opt/ztgate-mcp`)에 있어 어느 판으로 내려가도 남습니다. 받을 ref 는 root 의 `/etc/ztgate-deploy/deploy.conf` 가 정하고, 빌드는 네트워크 없는 일회성 유닛에서 빌드 전용 계정이 합니다. 패키지 판에 커밋이 들어갑니다 (`build.sh` 의 `SNAPSHOT`). [ADR 0014](docs/decisions/0014-deploy-from-remote.md).
 - **패키지 배치로 옮기기 (`packaging/migrate-to-package.sh`).** 예전 `mcp/install.sh` 로 깐 서버를 `ztgate-server` 패키지로 옮깁니다. 기본은 할 일만 보여 주고 `--apply`, `--undo`. 콘솔의 듣는 주소 같은 손댄 유닛 값은 drop-in 으로 옮깁니다. `mcp/install.sh` 는 이제 MCP 와 배포기만 깝니다.
