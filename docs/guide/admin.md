@@ -2,6 +2,8 @@
 
 이 안내서는 ztgate 서버를 설치하고 기기를 들이는 순서를 적습니다. 서버 요건, 매일 쓰는 명령, 문제 해결은 [운영 참고](admin-reference.md)에 있습니다. 모든 옵션과 동작 원리는 [README](../../README.md)에 있습니다.
 
+인쇄해 읽을 사람은 이 안내서, 사용자 안내서, 운영 참고, 용어를 한 권으로 묶은 [PDF 안내서](ztgate-guide.pdf)를 씁니다.
+
 ## 서버 설치하기
 
 1. 서버에 패키지를 설치합니다. Ubuntu 에서는 deb, Rocky Linux 와 RHEL 에서는 rpm 입니다.

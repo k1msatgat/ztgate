@@ -1,6 +1,6 @@
 # Windows 에서 ztgate 로 회사 네트워크에 접속하기
 
-이 안내서는 Windows PC 에서 회사 네트워크에 접속하는 순서를 적습니다.
+이 안내서는 Windows PC 에서 회사 네트워크에 접속하는 순서를 적습니다. 인쇄해 읽으려면 서버 운영 안내와 함께 묶은 [PDF 안내서](ztgate-guide.pdf)를 씁니다.
 
 ## ztgate 설치하기
 
