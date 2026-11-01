@@ -1,0 +1,2 @@
+# 만든 PDF 는 줄 끝을 바꾸지 않는다 (docs/guide/ztgate-guide.sources.sha256 이 그 sha256 을 적는다).
+*.pdf binary
