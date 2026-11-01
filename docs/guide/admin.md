@@ -4,9 +4,42 @@
 
 인쇄해 읽을 사람은 이 안내서, 사용자 안내서, 운영 참고, 용어를 한 권으로 묶은 [PDF 안내서](ztgate-guide.pdf)를 씁니다.
 
+## 설치 파일 받기
+
+ztgate 는 버전마다 설치 파일을 GitHub 릴리스로 냅니다. 가장 새 버전은 [https://github.com/k1msatgat/ztgate/releases/latest](https://github.com/k1msatgat/ztgate/releases/latest) 에서 받습니다. 지난 버전은 [https://github.com/k1msatgat/ztgate/releases](https://github.com/k1msatgat/ztgate/releases) 에 있습니다.
+
+| 파일 | 용도 |
+|---|---|
+| `ztgate-server_<버전>_amd64.deb` | 서버 패키지 (Ubuntu) |
+| `ztgate-server-<버전>-1.x86_64.rpm` | 서버 패키지 (Rocky Linux, RHEL) |
+| `ztgate-connector_<버전>_amd64.deb` | 앱 커넥터 패키지 (Debian, Ubuntu) |
+| `ztgate-connector-<버전>-1.x86_64.rpm` | 앱 커넥터 패키지 (Rocky Linux, RHEL) |
+| `ztgate.msi` | Windows 클라이언트 설치 파일 |
+| `ztgate-guide.pdf` | 이 안내서 |
+| `SHA256SUMS` | 위 파일들의 sha256 |
+
+받은 파일이 릴리스에 올라온 파일과 같은지 `SHA256SUMS` 로 확인합니다. 받은 파일과 `SHA256SUMS` 를 한 폴더에 두고, 그 폴더에서 아래 명령을 실행합니다. `--ignore-missing` 은 받지 않은 파일을 건너뜁니다.
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+받은 파일마다 `OK` 가 나와야 합니다. `FAILED` 가 나온 파일은 설치하지 않고 다시 받습니다. Windows 에서는 PowerShell 의 `Get-FileHash ztgate.msi` 가 보여 주는 값을 `SHA256SUMS` 의 `ztgate.msi` 줄과 견줍니다. `Get-FileHash` 는 대문자로 보여 주므로 대소문자는 달라도 됩니다.
+
+`ztgate.msi` 에는 아직 코드 서명이 없습니다. 브라우저로 받은 MSI 를 실행하면 Windows SmartScreen 이 게시자를 알 수 없다고 경고할 수 있습니다. 실행하기 전에 위처럼 sha256 을 확인합니다.
+
+설치 파일을 소스에서 직접 만들려면, 서버 패키지와 커넥터 패키지는 Linux 에서 아래 명령으로 만듭니다. 만든 파일은 `packaging/out/` 에 생깁니다.
+
+```bash
+make server && packaging/build.sh deb             # 서버 패키지. rpm 은 packaging/build.sh rpm
+make client && packaging/build.sh connector-deb   # 커넥터 패키지. rpm 은 packaging/build.sh connector-rpm
+```
+
+`ztgate.msi` 는 Windows 에서 `windows/ztgate.sln` 을 Release x64 로 빌드한 뒤 `windows\installer\build.ps1` 로 만듭니다. 필요한 도구와 순서는 README 의 [빌드와 의존성](../../README.md#빌드와-의존성)에 있습니다.
+
 ## 서버 설치하기
 
-1. 서버에 패키지를 설치합니다. Ubuntu 에서는 deb, Rocky Linux 와 RHEL 에서는 rpm 입니다.
+1. [설치 파일 받기](#설치-파일-받기)에서 받은 서버 패키지를 설치합니다. Ubuntu 에서는 deb, Rocky Linux 와 RHEL 에서는 rpm 입니다.
 
    ```bash
    sudo apt install ./ztgate-server_<버전>_amd64.deb
@@ -151,7 +184,7 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 
 1. 콘솔의 **등록 코드**에서 코드를 만들 때 커넥터로 쓸 대역(예: `10.101.0.0/16`)을 적습니다. MCP 로는 `enroll_create` 의 `connector` 입니다.
 2. ACL 에 그 대역으로 가는 `allow` 규칙을 넣습니다. 기기는 이 규칙에서 경로를 받습니다.
-3. 커넥터 장비에 패키지를 설치하고 등록합니다. `--lan-if` 는 그 장비의 사내망 쪽 인터페이스입니다.
+3. 커넥터 장비에 패키지를 설치하고 등록합니다. 커넥터 패키지는 서버 패키지와 같은 릴리스에 있습니다 ([설치 파일 받기](#설치-파일-받기)). `--lan-if` 는 그 장비의 사내망 쪽 인터페이스입니다.
 
    ```bash
    sudo apt install ./ztgate-connector_<버전>_amd64.deb      # Debian, Ubuntu
@@ -166,7 +199,7 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 
 ## Windows PC 에 배포하기
 
-1. `ztgate.msi` 를 Intune, SCCM, 그룹 정책 소프트웨어 설치 가운데 하나로 배포합니다. VC++ 재배포 패키지는 필요 없습니다. 설치할 때 서버와 등록 코드를 함께 줄 수 있습니다.
+1. 릴리스에서 받은 `ztgate.msi` 를 Intune, SCCM, 그룹 정책 소프트웨어 설치 가운데 하나로 배포합니다. VC++ 재배포 패키지는 필요 없습니다. 설치할 때 서버와 등록 코드를 함께 줄 수 있습니다.
 
    ```
    msiexec /i ztgate.msi /qn SERVER=vpn.example.com PORT=9000 CODE=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
