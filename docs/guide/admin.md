@@ -51,14 +51,14 @@ make client && packaging/build.sh connector-deb   # 커넥터 패키지. rpm 은
 2. `ztgate setup` 으로 설정하고 서버를 켭니다. 터미널에서 돌리면 공개 주소, 포트, 터널 대역, 사내망으로 내보낼 인터페이스, 내부 DNS 를 지금 값과 함께 묻습니다. 옵션으로 주면 묻지 않습니다.
 
    ```bash
-   sudo ztgate setup --public-address vpn.example.com --enroll 첫-PC
+   sudo ztgate setup --public-address vpn.example.com --enroll first-pc
    ```
 
    setup 이 하는 일은 아래와 같습니다.
    - `server.env` 와 `dns.conf` 를 적습니다. 바뀐 줄만 그 자리에서 고치고, 주석과 손으로 적은 줄은 그대로 둡니다.
    - 켜져 있는 firewalld 나 ufw 에 그 포트만 엽니다. 둘 다 없으면 열 명령을 보여 줍니다. 클라우드 서버라면 보안 그룹은 따로 엽니다.
    - 서버를 켜고(`enable --now`) 실제로 떴는지 확인한 뒤 요약을 보여 줍니다.
-   - `--enroll 이름` 을 주면 첫 기기의 등록 코드와 초대 링크를 만들어 보여 줍니다.
+   - `--enroll 이름` 을 주면 첫 기기의 등록 코드와 초대 링크를 만들어 보여 줍니다. 이름은 영문, 숫자, 빈칸, `_`, `.`, `-` 로 32자까지 적습니다.
 
    같은 값으로 다시 돌리면 아무것도 바꾸지 않습니다. 나중에 값을 바꿀 때도 `sudo ztgate setup --port 9443` 처럼 다시 씁니다. 옵션 전체는 `ztgate setup -h` 에 있습니다. 자주 쓰는 것은 아래와 같습니다.
 
@@ -76,7 +76,7 @@ make client && packaging/build.sh connector-deb   # 커넥터 패키지. rpm 은
 
 다시 읽기(reload)로 반영되지 않는 것이 있습니다. 아래를 바꿨으면 `sudo systemctl restart ztgate` 로 다시 띄웁니다. 붙어 있던 PC 는 바로 다시 붙습니다.
 
-- `server.env` 의 값 (포트, 터널 대역, MTU, `FORWARD_OUT`, 워커 수)
+- `server.env` 의 값 (포트, 터널 대역, MTU, `FORWARD_OUT`, 워커 수). `PUBLIC_ADDRESS` 는 관리 도구만 읽으므로 다시 시작하지 않아도 됩니다
 - ACL, 사용자 로그인, 내부 DNS 를 켜거나 끄는 것 (`acl.conf`, `idp.conf`, `dns.conf` 를 새로 만들거나 지웠을 때)
 - 서버 키
 
@@ -150,14 +150,15 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 ## 서버 두 대로 장애에 대비하기
 
 1. 두 번째 서버를 같은 방법으로 설치합니다. `server.env` 의 `TUN_IP` 는 첫 서버와 같게 둡니다.
-2. 두 번째 서버(부 서버)에 동기화 계정을 만듭니다. 그 계정에는 첫 서버(주 서버)의 공개키를 등록하고, `sudo rsync`, `sudo systemctl reload ztgate`, `sudo systemctl restart ztgate` 만 허락합니다.
-3. 주 서버에 root 만 여는 폴더 `/etc/ztgate-sync` 를 만들고, 그 안에 `sync.conf` 와 키를 둡니다. `/etc/ztgate` 에는 두지 않습니다. 서버 계정이 쓸 수 있는 곳이라, 서버를 차지한 쪽이 동기화 도구(root)에 명령을 끼워 넣을 수 있기 때문입니다. 도구는 다른 계정이 쓸 수 있는 `sync.conf` 를 읽지 않습니다.
+2. 첫 서버(주 서버)에 root 만 여는 폴더 `/etc/ztgate-sync` 를 만들고, 그 안에 `sync.conf` 와 키를 둡니다. `/etc/ztgate` 에는 두지 않습니다. 서버 계정이 쓸 수 있는 곳이라, 서버를 차지한 쪽이 동기화 도구(root)에 명령을 끼워 넣을 수 있기 때문입니다. 도구는 다른 계정이 쓸 수 있는 `sync.conf` 를 읽지 않습니다.
 
    ```bash
    sudo install -d -m 700 /etc/ztgate-sync
    sudo ssh-keygen -t ed25519 -N '' -f /etc/ztgate-sync/sync.key
    printf 'PEERS="sync@10.0.0.11"\nSSH_KEY=/etc/ztgate-sync/sync.key\n' | sudo install -m 600 /dev/stdin /etc/ztgate-sync/sync.conf
    ```
+
+3. 두 번째 서버(부 서버)에 동기화 계정을 만듭니다. 그 계정에는 주 서버에서 만든 공개키(`/etc/ztgate-sync/sync.key.pub`)를 등록하고, `sudo rsync`, `sudo systemctl reload ztgate`, `sudo systemctl restart ztgate` 만 허락합니다.
 
 4. 주 서버에서 root 로 부 서버에 한 번 접속해 호스트 키를 받아 둡니다. 동기화는 묻지 않고 접속하므로, 모르는 호스트 키면 `Host key verification failed` 로 실패합니다. 지문이 부 서버의 것(부 서버에서 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`)과 같은지 보고 `yes` 를 칩니다.
 
@@ -182,7 +183,13 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 
 서버가 사내망 안에 있지 않으면, 사내망 안의 Linux 장비 하나에 앱 커넥터를 둡니다. 커넥터는 서버로 나가는 세션만 열기 때문에 사내망 방화벽에 들어오는 규칙이 필요 없습니다.
 
-1. 콘솔의 **등록 코드**에서 코드를 만들 때 커넥터로 쓸 대역(예: `10.101.0.0/16`)을 적습니다. MCP 로는 `enroll_create` 의 `connector` 입니다.
+1. 커넥터 장비의 등록 코드를 만들면서 커넥터가 맡을 대역(예: `10.101.0.0/16`)을 적습니다. 웹 콘솔의 **등록 코드** 화면에는 대역을 적는 칸이 없으므로 서버에서 `ztgate_ctl` 로 만듭니다. MCP 로는 `enroll_create` 에 `connector` 를 줍니다.
+
+   ```bash
+   echo '{"cmd": "enroll_create", "label": "gw", "connector": ["10.101.0.0/16"]}' | sudo ztgate_ctl
+   ```
+
+   답의 `code` 가 등록 코드입니다. `server.env` 에 `PUBLIC_ADDRESS` 를 적었으면 `invite` 에 초대 링크가 있습니다.
 2. ACL 에 그 대역으로 가는 `allow` 규칙을 넣습니다. 기기는 이 규칙에서 경로를 받습니다.
 3. 커넥터 장비에 패키지를 설치하고 등록합니다. 커넥터 패키지는 서버 패키지와 같은 릴리스에 있습니다 ([설치 파일 받기](#설치-파일-받기)). `--lan-if` 는 그 장비의 사내망 쪽 인터페이스입니다.
 
@@ -224,4 +231,4 @@ sudo ztgate-backup restore <파일>                 # 지금 설정을 백업한
 1. 서버를 먼저 올립니다. 새 패키지를 설치하면 서버가 스스로 다시 올라오고, 붙어 있던 PC 는 바로 다시 붙습니다. 서버가 두 대면 부 서버를 먼저, 주 서버를 나중에 올립니다. AI 에이전트(MCP)를 붙여 두었으면 `deploy {"ref": "main"}` 으로 올리고, 새 서버가 검사에 떨어지면 이전 패키지로 스스로 돌아갑니다 ([README](../../README.md) 의 "MCP 로 배포하기").
 2. 그다음 PC 를 자동 업데이트나 배포 도구로 올립니다.
 
-PC 와 서버의 버전이 맞지 않으면 서버가 그 PC 에게 알려 줍니다. 그 PC 의 화면에는 업데이트가 필요하다는 안내가 나오고, 자동 업데이트를 쓰는 PC 는 업데이트를 바로 확인합니다. 아직 올라오지 않은 PC 의 수는 지표 `version_mismatch` 로 봅니다.
+PC 와 서버의 버전이 맞지 않으면 서버가 그 PC 에게 알려 줍니다. 그 PC 의 화면에는 업데이트가 필요하다는 안내가 나오고, 자동 업데이트를 쓰는 PC 는 업데이트를 바로 확인합니다. 지표 `ztgate_version_mismatch_total` 은 서버가 받지 않는 버전으로 온 패킷의 수입니다. 이 값이 계속 늘면 아직 올라오지 않은 PC 가 있습니다.
