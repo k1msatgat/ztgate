@@ -1,0 +1,157 @@
+/* ztgate 안내서의 인쇄 모양. 색은 docs/design/tokens.md 의 밝은 화면 토큰이다. */
+:root {
+	--navy-950: #0B1626;
+	--navy-900: #0F1E36;
+	--surface-2: #EEF2F7;
+	--border: #DCE3EC;
+	--text: #1A2333;
+	--text-muted: #5B6678;
+	--accent: #1E4E8C;
+	--accent-soft: #E6EEF8;
+	--teal: #2A9D8F;
+	--teal-text: #1F7A6F;
+}
+
+@page {
+	size: A4;
+	margin: 22mm 18mm 20mm 18mm;
+	@bottom-center {
+		content: counter(page);
+		font: 8.5pt "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR", sans-serif;
+		color: #5B6678;
+	}
+}
+
+@page cover {
+	margin: 0;
+	@bottom-center { content: none; }
+}
+
+@page toc {
+	@top-right {
+		content: "목차";
+		font: 8.5pt "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR", sans-serif;
+		color: #5B6678;
+	}
+}
+
+html {
+	-webkit-print-color-adjust: exact;
+	print-color-adjust: exact;
+}
+
+body {
+	margin: 0;
+	background: #FFFFFF;
+	color: var(--text);
+	font-family: "Malgun Gothic", "Noto Sans CJK KR", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+	font-size: 10pt;
+	line-height: 1.65;
+	word-break: keep-all;
+	overflow-wrap: anywhere;
+}
+
+/* 표지 */
+.cover {
+	page: cover;
+	box-sizing: border-box;
+	width: 210mm;
+	height: 296.8mm;
+	overflow: hidden;
+	padding: 48mm 24mm 24mm;
+	background: var(--navy-950);
+	color: #E6ECF5;
+	display: flex;
+	flex-direction: column;
+}
+.cover img.logo { width: 30mm; height: 30mm; }
+.cover h1 {
+	margin: 14mm 0 4mm;
+	font-size: 34pt;
+	line-height: 1.2;
+	color: #FFFFFF;
+	border: 0;
+}
+.cover .subtitle { font-size: 14pt; color: #9AA8BD; }
+.cover .rule { width: 40mm; height: 1.5mm; margin: 12mm 0; background: var(--teal); }
+.cover .parts { font-size: 11pt; color: #E6ECF5; line-height: 2; }
+.cover .meta { margin-top: auto; font-size: 9pt; color: #9AA8BD; }
+
+/* 목차 */
+.toc { page: toc; break-before: page; }
+.toc h1 { font-size: 20pt; margin: 0 0 8mm; }
+.toc ol { list-style: none; margin: 0; padding: 0; }
+.toc > ol > li { margin: 0 0 3.5mm; }
+.toc .part { display: block; font-size: 8.5pt; font-weight: 700; color: var(--teal-text); letter-spacing: 0.04em; }
+.toc .toc-chapter { font-size: 12pt; font-weight: 700; color: var(--navy-900); }
+.toc ol ol { margin: 1.5mm 0 0 5mm; }
+.toc ol ol li { font-size: 9.5pt; line-height: 1.6; margin: 0; }
+.toc a { color: inherit; text-decoration: none; }
+.toc a { display: flex; gap: 3mm; }
+.toc a .title { flex: 1; }
+.toc a .page { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* 장 */
+.chapter { break-before: page; }
+.chapter .part {
+	display: block;
+	margin-bottom: 2mm;
+	font-size: 9pt;
+	font-weight: 700;
+	color: var(--teal-text);
+	letter-spacing: 0.04em;
+}
+h1, h2, h3, h4 { color: var(--navy-900); line-height: 1.35; break-after: avoid; }
+h1 { font-size: 20pt; margin: 0 0 6mm; padding-bottom: 3mm; border-bottom: 0.6mm solid var(--accent); }
+h2 { font-size: 13.5pt; margin: 8mm 0 3mm; padding-left: 3mm; border-left: 1.2mm solid var(--teal); }
+h3 { font-size: 11pt; margin: 6mm 0 2mm; }
+h4 { font-size: 10pt; margin: 5mm 0 2mm; }
+p { margin: 0 0 3mm; }
+ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+li { margin: 0 0 1.2mm; }
+li > p { margin: 0 0 1.5mm; }
+li > ul, li > ol { margin: 1.2mm 0 0; }
+
+a { color: var(--accent); text-decoration: none; }
+strong { color: var(--navy-900); }
+
+code {
+	font-family: Consolas, "D2Coding", "Cascadia Mono", "Noto Sans Mono CJK KR", ui-monospace, monospace;
+	font-size: 0.9em;
+	padding: 0.2mm 1mm;
+	border-radius: 1mm;
+	background: var(--surface-2);
+	color: var(--navy-900);
+}
+pre {
+	margin: 2mm 0 4mm;
+	padding: 3mm 4mm;
+	border-radius: 1.6mm;
+	background: var(--navy-950);
+	color: #E6ECF5;
+	font-size: 8.5pt;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	word-break: break-all;
+	break-inside: avoid;
+}
+pre code { padding: 0; background: none; color: inherit; font-size: inherit; }
+
+table {
+	width: 100%;
+	margin: 2mm 0 5mm;
+	border-collapse: collapse;
+	font-size: 9pt;
+	line-height: 1.5;
+}
+th, td { padding: 1.6mm 2.4mm; border: 0.25mm solid var(--border); vertical-align: top; text-align: left; }
+th { background: var(--accent-soft); color: var(--navy-900); font-weight: 700; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+td:first-child { white-space: normal; }
+
+figure { margin: 3mm 0 5mm; text-align: center; break-inside: avoid; }
+figure img { max-width: 100%; max-height: 90mm; border: 0.25mm solid var(--border); border-radius: 1.6mm; }
+figure img[src^="data:image/svg"] { border: 0; }
+figcaption { margin-top: 1.5mm; font-size: 8.5pt; color: var(--text-muted); }
