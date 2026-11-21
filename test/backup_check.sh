@@ -37,6 +37,12 @@ check "restore: the configuration it replaced was saved first" "$(ls "$BACKUP_DI
 for _ in 1 2 3 4; do "$B" > /dev/null; done
 check "retention: only KEEP backups are kept" "$(ls "$BACKUP_DIR" | wc -l)" 3
 
+oldest=$(ls -1 "$BACKUP_DIR"/ztgate-*.tar.gz | sort | head -n 1)
+echo "device-list v3" > "$ZTGATE_ETC/devices.conf"
+"$B" restore "$oldest" > /dev/null 2>&1
+check "restore: the oldest of KEEP backups can be restored" "$(cat "$ZTGATE_ETC/devices.conf")" "device-list v1"
+check "restore: the restored backup is not pruned" "$([ -f "$oldest" ] && echo kept)" kept
+
 mkdir -p "$W/evil/ztgate" "$W/evil/other"
 echo x > "$W/evil/ztgate/server.key"
 echo x > "$W/evil/other/passwd"

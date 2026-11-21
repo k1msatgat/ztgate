@@ -46,7 +46,9 @@ backup() {
 	fi
 	mv "$tmp" "$out"
 	echo "$out"
-	# 오래된 것부터 지워 KEEP 개만 남긴다.
+	# 오래된 것부터 지워 KEEP 개만 남긴다. 되살리기 직전의 백업(keep-all)은 지우지 않는다.
+	# 지우면 되살리려는 바로 그 파일이 가장 오래된 것일 때 사라진다.
+	[ "${1:-}" != keep-all ] || return 0
 	ls -1 "$DIR"/ztgate-*.tar.gz 2> /dev/null | sort | head -n "-$KEEP" | while read -r old; do rm -f -- "$old"; done
 }
 
@@ -77,13 +79,13 @@ restore() {
 	done < <(tar -tzvf "$file")
 	tar -tzf "$file" | grep -qx "$name/server.key" || die "the backup has no $name/server.key"
 
-	local before
-	before=$(backup)
-	echo "current configuration saved to $before"
 	local stage
 	stage=$(mktemp -d "$(dirname "$ETC")/.ztgate-restore.XXXXXX")
 	# 서버를 내리기 전에 푼다. 풀다가 실패하면 서버는 그대로 돌고 있다.
 	tar -xzf "$file" -C "$stage" --no-same-owner || { rm -rf "$stage"; die "could not extract $file; the server was not touched"; }
+	local before
+	before=$(backup keep-all) || { rm -rf "$stage"; die "could not save the current configuration; the server was not touched"; }
+	echo "current configuration saved to $before"
 	[ -z "$UNIT" ] || systemctl stop "$UNIT"
 	# 여기서부터 실패해도 서버는 다시 올린다.
 	[ -z "$UNIT" ] || trap 'systemctl start "$UNIT"' EXIT
