@@ -102,7 +102,7 @@ typedef struct tunnel {
 	 * 바꿔 본다 — UDP 를 막는 네트워크(호텔, 카페, 일부 회사망). 서버는 vpn_server -t <같은 번호>.
 	 * 패킷마다 len(2) 을 붙이고, 받은 스트림은 trbuf 에 모아 틀 하나씩 꺼낸다. */
 	int tcp;
-	int tcp_lost;			/* 연결이 끊겼다. 다시 열고 핸드셰이크한다 */
+	int tcp_lost;			/* 지금 소켓의 TCP 연결이 끊겼다. 소켓을 바꾸면 지운다 (transport_switch) */
 	/* cfg->servers 를 푼 주소들. 지금 붙는 곳은 addrs[cur_server] 다. */
 	tunnel_addr_t addrs[TUNNEL_SERVERS_MAX];
 	int n_addrs;
@@ -673,7 +673,6 @@ static int socket_open_tcp(tunnel_t *t)
 		return -1;
 	}
 	t->tcp = 1;
-	t->tcp_lost = 0;
 	t->trlen = 0;
 	return 0;
 }
@@ -688,6 +687,7 @@ static int transport_switch(tunnel_t *t, int tcp)
 		t->sock = INVALID_SOCKET;
 	}
 	t->tcp = 0;
+	t->tcp_lost = 0;
 	if (tcp) {
 		if (socket_open_tcp(t) < 0) {
 			return -1;
