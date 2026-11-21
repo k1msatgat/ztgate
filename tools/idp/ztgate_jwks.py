@@ -127,10 +127,10 @@ def main():
     fd, tmp = tempfile.mkstemp(prefix=".jwks.", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o644)
             f.write(new)
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except OSError:
         os.unlink(tmp)

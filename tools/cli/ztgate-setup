@@ -252,11 +252,12 @@ def write_atomic(path, lines):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix="." + os.path.basename(path) + ".")
     try:
         with os.fdopen(fd, "w") as f:
+            # 경로가 아니라 열린 fd 에 바꾼다. /etc/ztgate 는 ztgate 소유라 그 계정이 tmp 를 링크로 바꿔 둘 수 있다.
+            os.fchmod(f.fileno(), 0o600)
+            own(f.fileno())
             f.write("\n".join(lines) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(tmp, 0o600)
-        own(tmp)
         os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
@@ -264,7 +265,7 @@ def write_atomic(path, lines):
         raise
 
 
-def own(path):
+def own(fd):
     # 서버는 ztgate 계정으로 돈다 (ADR 0011). 서비스가 뜰 때 ztgate-user.sh 가 다시 맞추지만, 그 전에도 맞게.
     if os.geteuid() != 0:
         return
@@ -273,7 +274,7 @@ def own(path):
         pw = pwd.getpwnam("ztgate")
     except KeyError:
         return
-    os.chown(path, pw.pw_uid, pw.pw_gid)
+    os.fchown(fd, pw.pw_uid, pw.pw_gid)
 
 
 # ---- 바깥 명령 --------------------------------------------------------------
