@@ -177,7 +177,7 @@ class Console:
         self.users_path = users_path
         self.sessions = {}          # 쿠키 -> Session
         self.lock = threading.Lock()
-        self.fails = {}             # 출발지 주소 -> 마지막 실패 시각
+        self.fails = {}             # 출발지 주소 -> 마지막 시도 시각 (time.monotonic)
 
     def users(self):
         return load_users(self.users_path) if self.users_path else {}
@@ -208,9 +208,16 @@ class Console:
     def login(self, addr, form):
         """(쿠키 또는 None, 실패했을 때 보여 줄 글). 계정이 있으면 이름 / 비밀번호(/ 코드), 없으면 토큰."""
         now = time.time()
+        tick = time.monotonic()     # 간격은 벽시계가 아니라 이것으로 잰다. 시계가 되돌아가도 1초가 1초다.
         with self.lock:
-            if now - self.fails.get(addr, 0.0) < 1.0:
+            last = self.fails.get(addr)
+            if last is not None and tick - last < 1.0:
                 return None, "잠시 뒤에 다시 해 주세요."
+            # 비밀번호를 보기 전에 자리를 잡는다. 검사가 잠금 밖에서 도니, 실패한 뒤에 적으면 동시에 보낸
+            # 요청이 모두 이 검사를 지나 1초에 한 번이 지켜지지 않는다. 성공하면 아래에서 지운다.
+            if len(self.fails) > 4096:
+                self.fails = {k: v for k, v in self.fails.items() if tick - v < 1.0}
+            self.fails[addr] = tick
         users = self.users()
         who = None
         if users:
@@ -225,10 +232,8 @@ class Console:
             err = "토큰이 맞지 않습니다."
         with self.lock:
             if who is None:
-                if len(self.fails) > 4096:
-                    self.fails = {k: v for k, v in self.fails.items() if now - v < 1.0}
-                self.fails[addr] = now
                 return None, err
+            self.fails.pop(addr, None)
             sid = secrets.token_urlsafe(32)
             self.sessions = {k: v for k, v in self.sessions.items() if v.expires > now}
             self.sessions[sid] = Session(who[0], who[1], now, by_token=who[2])

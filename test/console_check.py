@@ -346,6 +346,20 @@ def main():
         expect("a second try within a second from the same address is refused", st, 403)
         time.sleep(1.1)
 
+        import threading
+        bodies = []
+
+        def guess():
+            bodies.append(req("POST", "/login", {"name": "alice", "password": "guess"})[2])
+        ts = [threading.Thread(target=guess) for _ in range(8)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        expect("eight logins at once: only one reaches the password check",
+               sum("잠시 뒤에" not in b for b in bodies), 1)
+        time.sleep(1.1)
+
         def login(name, **extra):
             st, h, _ = req("POST", "/login", dict({"name": name, "password": "correct horse battery"}, **extra))
             m = re.search(r"ztgate_session=([^;]+)", h.get("Set-Cookie", ""))
