@@ -114,6 +114,9 @@ def password_ok(password, stored):
     return hmac.compare_digest(got, base64.b64decode(want))
 
 
+DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
 def totp(secret, when, step=0):
     """RFC 6238 (SHA-1, 30초, 6자리). 인증 앱이 보여 주는 코드."""
     key = base64.b32decode(secret + "=" * (-len(secret) % 8))
@@ -222,7 +225,8 @@ class Console:
         who = None
         if users:
             u = users.get(form.get("name", "").strip())
-            if u and password_ok(form.get("password", ""), u[1]) and \
+            # 없는 이름도 scrypt 를 한 번 돌린다. 응답 시간으로 계정 이름이 있는지 알 수 없게.
+            if password_ok(form.get("password", ""), u[1] if u else DUMMY_HASH) and u and \
                     (not u[2] or totp_ok(u[2], form.get("code", "").strip(), now)):
                 who = (form["name"].strip(), u[0], False)
             err = "이름, 비밀번호 또는 인증 코드가 맞지 않습니다."
