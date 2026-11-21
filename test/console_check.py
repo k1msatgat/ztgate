@@ -166,6 +166,8 @@ def main():
         n = len(ctl_cmds())
         st, _, _ = req("POST", "/devices/remove", {"id": "ab" * 16}, cookie=sid)
         expect("a change without the CSRF value is refused", st, 403)
+        st, _, _ = req("POST", "/devices/remove", {"id": "ab" * 16, "csrf": "가" * 32}, cookie=sid)
+        expect("a CSRF value that is not ASCII is refused, not dropped", st, 403)
         st, _, _ = req("POST", "/devices/remove", {"id": "ab" * 16, "csrf": "x" * 32}, cookie=sid)
         expect("a change with a wrong CSRF value is refused", st, 403)
         expect("...and neither reached ztgate_ctl", len(ctl_cmds()), n)

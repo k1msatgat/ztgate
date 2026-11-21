@@ -123,7 +123,7 @@ def totp(secret, when, step=0):
 
 
 def totp_ok(secret, code, when):
-    return any(hmac.compare_digest(totp(secret, when, step), code) for step in (-1, 0, 1))
+    return any(hmac.compare_digest(totp(secret, when, step).encode(), code.encode()) for step in (-1, 0, 1))
 
 
 def load_users(path):
@@ -954,7 +954,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         sid = self.cookie()
         s = c.check(sid)
-        if s is None or not hmac.compare_digest(form.get("csrf", ""), s.csrf):
+        if s is None or not hmac.compare_digest(form.get("csrf", "").encode(), s.csrf.encode()):
             self.send(403, page("/login", login_view("세션이 끝났거나 요청이 이 콘솔에서 온 것이 아닙니다.",
                                                      accounts=bool(c.users()))))
             return
