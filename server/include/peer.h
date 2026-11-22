@@ -54,7 +54,7 @@ typedef struct peer {
     uint64_t acl_denied;
 
     /* 이 세션을 연 기기. 포인터가 아니라 ID 로 들고 있다가 쓸 때마다 목록에서 찾는다.
-     * 목록에서 지워진 기기는 다음 keepalive 에서 찾지 못해 세션이 끊긴다. */
+     * 목록에서 지워진 기기의 세션은 목록을 다시 읽을 때 끊긴다 (server.c 의 drop_unlisted). */
     uint8_t device_id[DEVICE_ID_LEN];
 
     /* 이 기기가 마지막으로 서명해서 보고한 포스처. 핸드셰이크와 keepalive 마다 바뀐다.

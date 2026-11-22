@@ -751,9 +751,14 @@ def reload_tests(srv, path):
     check("policy relaxed: device is accepted again", ka(keepalive(idx)), "KEEPALIVE")
 
     # 기기가 목록에서 사라지면 서버에는 그 기기의 키가 없다. 그래도 세션 키는 남아 있어
-    # 거절을 세션 키로 감싸 보낼 수 있다.
+    # 거절을 세션 키로 감싸 보낼 수 있다. keepalive 를 기다리지 않고 다시 읽는 그 자리에서
+    # 보낸다 — keepalive 를 보내지 않고 데이터만 보내는 쪽도 끊겨야 한다.
+    ping = echo_request(TUN_IP, socket.inet_aton("10.0.0.1"), 800)
+    check_data("before removal: data passes", (c.send(data(idx, None, ping)), c.recv())[1], "echo reply")
     reload(LINE2)
-    check("device removed: next keepalive of the open session", ka(keepalive(idx)), "DENY(1)")
+    check("device removed: the reload itself denies the open session", c.recv(), "DENY(1)")
+    check_data("device removed: data without any keepalive", (c.send(data(idx, None, ping)), c.recv())[1],
+               "no response")
     check("device removed: new handshake", c.handshake(), "DENY(1)")
 
     reload(LINE1, LINE2)

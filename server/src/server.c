@@ -536,6 +536,30 @@ static void send_session_deny(int32_t sock, peer_t *peer, const net_ep_t *dst,
 	}
 }
 
+/* 기기 목록을 새로 읽은 뒤, 목록에서 빠진 기기의 세션. 등록용 세션의 device_id 는 코드에서
+ * 뽑은 임시 ID 라 목록에 없는 것이 맞다. */
+static int device_unlisted(const peer_t *peer, void *arg)
+{
+	(void)arg;
+	return !peer->enroll && device_find(peer->device_id) == NULL;
+}
+
+static void deny_unlisted(peer_t *peer, void *arg)
+{
+	char ids[DEVICE_ID_STRLEN];
+
+	printf("[ka] device %s is no longer registered\n", device_id_str(peer->device_id, ids));
+	send_session_deny(*(int32_t *)arg, peer, &peer->outer, peer->outer_len, DENY_UNKNOWN_DEVICE);
+}
+
+/* 기기 목록을 읽을 때마다 부른다. keepalive 에서만 지워진 기기를 걸러내면, keepalive 를 보내지
+ * 않고 데이터만 보내는 쪽은 세션 수명까지 터널을 쓴다 — 데이터 패킷은 last_seen 을 갱신해 만료에도
+ * 걸리지 않는다. */
+static void drop_unlisted(int32_t sock)
+{
+	peer_drop_if(device_unlisted, deny_unlisted, &sock, "device_removed");
+}
+
 /* ---- 핸드셰이크의 nonce 와 기기 ID 감싸기 (proto.h, v9) ------------------------------- */
 
 /* nonce 의 mac 키. 뜰 때 한 번 뽑고 어디에도 남기지 않는다 — 다시 시작하면 이전의 nonce 는 모두
@@ -1127,6 +1151,10 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 				printf("device: reloaded, %d devices\n", device_count());
 				audit_enrolled(body, tun_ip, src, label);
 			}
+
+			/* enroll_complete 는 잠근 뒤 지금의 파일을 읽는다. 관리자가 그사이 지운 기기도
+			 * 여기서 목록에서 빠진다. */
+			drop_unlisted(sock);
 		}
 	}
 
@@ -2059,8 +2087,8 @@ int main(int argc, char *argv[])
 
 		/* kill -HUP 으로 기기 목록과 ACL 을 다시 읽는다. 서버를 내렸다 올리면 모든
 		 * 세션이 끊기지만, 이렇게 하면 정책을 바꾸거나 기기 하나를 지우는 동안
-		 * 나머지는 그대로 붙어 있다. 열려 있는 세션은 건드리지 않는다 — 다음
-		 * keepalive 가 새 목록에 대 보고 걸러진다. epoll_wait 의 타임아웃이 1초라
+		 * 나머지는 그대로 붙어 있다. 목록에서 빠진 기기의 세션은 여기서 내리고, 남은
+		 * 세션의 포스처는 다음 keepalive 가 새 목록에 대 본다. epoll_wait 의 타임아웃이 1초라
 		 * 시그널을 받고 늦어도 1초 안에 여기에 온다. */
 		if (reload_requested) {
 			reload_requested = 0;
@@ -2132,6 +2160,7 @@ int main(int argc, char *argv[])
 				audit_reload("devices", 0, 0);
 			}
 			else {
+				drop_unlisted(sock);
 				printf("device: reloaded, %d devices\n", nd);
 				audit_reload("devices", 1, nd);
 				device_dump();

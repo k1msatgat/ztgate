@@ -981,7 +981,7 @@ function reload() {
 
 	return {
 		reloaded: true,
-		note: 'ACL rules apply from the next packet; open sessions are re-evaluated against the device list at their next keepalive (within 10s)',
+		note: 'ACL rules apply from the next packet; sessions of removed devices are closed now, the others are re-evaluated against the device list at their next keepalive (within 10s)',
 	};
 }
 

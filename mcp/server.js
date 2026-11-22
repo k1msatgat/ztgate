@@ -206,7 +206,7 @@ server.registerTool('device_update', {
 }, (a) => call('device_update', a));
 
 server.registerTool('device_remove', {
-	description: 'Revoke a device. Its key is deleted and cannot be read back; a connected session is dropped at its next keepalive (within 10s). Re-admitting it requires enrolling again.',
+	description: 'Revoke a device. Its key is deleted and cannot be read back; a connected session is dropped as soon as the server reloads the list. Re-admitting it requires enrolling again.',
 	inputSchema: { id: deviceId },
 	annotations: DISRUPT,
 }, (a) => call('device_remove', a));
