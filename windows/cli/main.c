@@ -103,6 +103,22 @@ static int parse_selftest(void)
 	return failed;
 }
 
+/* DPoP 증명의 htm / htu 는 IPC 로 받은 글자를 서명할 JSON 에 넣는다. 키를 열기 전에 거절하므로
+ * 이 시험은 키를 만들지 않는다. */
+static int dpop_selftest(void)
+{
+	char proof[2048];
+	int failed = 0;
+
+	failed |= st("dpop: quote in htu", dpop_make_proof(0, "POST",
+			"https://rs.example/x\",\"htm\":\"GET", NULL, 0, proof, sizeof(proof)) < 0);
+	failed |= st("dpop: backslash in htu", dpop_make_proof(0, "POST",
+			"https://rs.example/x\\", NULL, 0, proof, sizeof(proof)) < 0);
+	failed |= st("dpop: control char in htm", dpop_make_proof(0, "PO\nST",
+			"https://rs.example/x", NULL, 0, proof, sizeof(proof)) < 0);
+	return failed;
+}
+
 /* GUI 가 화면에 무엇을 보이는가. 서버가 판정한 값과 화면이 다르면 사용자는 무엇을 고칠지 모른다. */
 static int pick_selftest(void)
 {
@@ -128,7 +144,7 @@ static int pick_selftest(void)
 
 static int selftest(void)
 {
-	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest() | pick_selftest();
+	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest() | pick_selftest() | dpop_selftest();
 }
 
 static void print_hex(const char *label, const uint8_t *buf, size_t len)

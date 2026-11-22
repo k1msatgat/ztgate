@@ -71,6 +71,19 @@ static NCRYPT_KEY_HANDLE open_key(int machine)
 	return key;
 }
 
+/* JSON 문자열에 이스케이프 없이 넣어도 되는가. 서비스는 htu 를 IPC 로 받는다 (IPC_CMD_DPOP). */
+static int json_plain(const char *s)
+{
+	for (; *s; s++) {
+		const unsigned char c = (unsigned char)*s;
+
+		if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 int dpop_make_proof(int machine, const char *htm, const char *htu, const char *token, size_t token_len,
 		char *out, size_t cap)
 {
@@ -81,6 +94,9 @@ int dpop_make_proof(int machine, const char *htm, const char *htu, const char *t
 	NCRYPT_KEY_HANDLE key;
 	int n, ret = -1;
 
+	if (!json_plain(htm) || !json_plain(htu)) {
+		return -1;
+	}
 	key = open_key(machine);
 	if (!key) {
 		return -1;

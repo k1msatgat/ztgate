@@ -17,7 +17,8 @@ extern "C" {
 #define DPOP_KEY_NAME	L"ztgate-dpop"
 
 /* 증명 한 줄 (NUL 로 끝남). token 이 있으면 ath 를 넣는다 (LOGIN), 없으면 넣지 않는다 (IdP 의 토큰
- * 엔드포인트). machine 은 PC 의 키를 쓴다 (서비스). 키가 없으면 만든다. 길이, 실패 -1. */
+ * 엔드포인트). machine 은 PC 의 키를 쓴다 (서비스). 키가 없으면 만든다. 길이, 실패 -1. htm 이나 htu 에
+ * 따옴표, 역슬래시, 제어 문자가 있어도 -1 이다 (다른 클레임을 끼워 넣지 못하게). */
 int dpop_make_proof(int machine, const char *htm, const char *htu, const char *token, size_t token_len,
 		char *out, size_t cap);
 
