@@ -42,3 +42,42 @@ test('acl_set: a rule longer than an ACL line the server reads is refused', () =
 
 	assert.throws(() => COMMANDS.acl_set({ rules: [rule] }), /rule 0: .*too long/);
 });
+
+/* /etc/ztgate, /run/ztgate, /var/log/ztgate 는 서버 계정 소유다. 그 안의 이름이 링크나 FIFO 로 바뀌어 있어도
+ * root 인 ztgate_ctl 이 따라가 남의 파일을 읽거나 쓰지 않는다. */
+test('files in the server account\'s folders: links and FIFOs are not followed', { skip: process.platform === 'win32' }, () => {
+	const fs = require('node:fs');
+	const os = require('node:os');
+	const { spawnSync } = require('node:child_process');
+	const ctl = require('./ctl.cjs');
+	const dir = fs.mkdtempSync(`${os.tmpdir()}/ctl-test-`);
+	const victim = `${dir}/victim`;
+
+	try {
+		fs.writeFileSync(victim, 'secret\n');
+		for (const name of ['acl.applied', 'audit.log', '.sync-primary']) {
+			fs.symlinkSync(victim, `${dir}/${name}`);
+		}
+		assert.throws(() => ctl.writeOwned(`${dir}/acl.applied`, 'x\n', ctl.constants.O_TRUNC), { code: 'ELOOP' });
+		assert.throws(() => ctl.writeOwned(`${dir}/audit.log`, 'x\n', ctl.constants.O_APPEND), { code: 'ELOOP' });
+		assert.throws(() => ctl.readOwned(`${dir}/.sync-primary`, 'utf8'), { code: 'ELOOP' });
+		assert.equal(fs.readFileSync(victim, 'utf8'), 'secret\n');
+
+		fs.linkSync(victim, `${dir}/hard`);
+		assert.throws(() => ctl.writeOwned(`${dir}/hard`, 'x\n', ctl.constants.O_TRUNC), /not a regular file/);
+		assert.equal(fs.readFileSync(victim, 'utf8'), 'secret\n', 'not truncated before the check');
+
+		assert.equal(spawnSync('mkfifo', [`${dir}/fifo`]).status, 0);
+		assert.throws(() => ctl.readOwned(`${dir}/fifo`, 'utf8'), /not a regular file/);
+		assert.throws(() => ctl.writeOwned(`${dir}/fifo`, 'x\n', ctl.constants.O_APPEND), { code: 'ENXIO' });
+
+		ctl.writeOwned(`${dir}/plain`, 'a\n', ctl.constants.O_APPEND);
+		ctl.writeOwned(`${dir}/plain`, 'b\n', ctl.constants.O_APPEND);
+		assert.equal(fs.readFileSync(`${dir}/plain`, 'utf8'), 'a\nb\n');
+		ctl.writeAtomic(`${dir}/devices.conf`, 'one\n');
+		assert.equal(fs.readFileSync(`${dir}/devices.conf`, 'utf8'), 'one\n');
+		assert.equal(fs.statSync(`${dir}/devices.conf`).mode & 0o777, 0o600);
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});

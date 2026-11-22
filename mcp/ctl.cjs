@@ -22,7 +22,7 @@ if (Number(process.versions.node.split('.')[0]) < 18) {
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const net = require('node:net');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 
 const UNIT = 'ztgate.service';
 const ETC = '/etc/ztgate';
@@ -72,6 +72,51 @@ function run(cmd, args, opts = {}) {
 	}
 
 	return r;
+}
+
+/* ---- 서버 계정이 가진 폴더의 파일 ------------------------------------------ */
+
+/* /etc/ztgate, /run/ztgate, /var/log/ztgate 는 서버 계정(ztgate) 소유이고 sticky 비트가 없다. 서버를 차지한 쪽은
+ * 그 안의 이름을 심볼릭 링크나 FIFO 로 바꿔 둘 수 있고, root 인 여기서 경로를 따라가면 링크 대상(/etc/shadow 같은
+ * 것)을 읽거나 덮어쓰거나 만든다. 그래서 그 안의 파일은 O_NOFOLLOW 로 열고, 연 것이 일반 파일인지 fd 로 본다.
+ * O_NONBLOCK 은 FIFO 를 열다 멈추지 않으려는 것이다 (일반 파일에는 뜻이 없다). */
+const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_TRUNC, O_APPEND, O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+
+function openOwned(path, flags) {
+	const fd = fs.openSync(path, (flags & ~O_TRUNC) | O_NOFOLLOW | O_NONBLOCK, 0o600);
+	const st = fs.fstatSync(fd);
+
+	/* 하드 링크는 fs.protected_hardlinks 가 꺼진 장비에서 남의 파일을 가리킬 수 있다. 그래서 자르는 것(O_TRUNC)도
+	 * 이 검사 뒤에 한다. */
+	if (!st.isFile() || st.nlink > 1) {
+		fs.closeSync(fd);
+		fail(`${path} is not a regular file`);
+	}
+	if (flags & O_TRUNC) {
+		fs.ftruncateSync(fd, 0);
+	}
+
+	return fd;
+}
+
+function readOwned(path, encoding) {
+	const fd = openOwned(path, O_RDONLY);
+
+	try {
+		return fs.readFileSync(fd, encoding);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function writeOwned(path, data, flags) {
+	const fd = openOwned(path, O_WRONLY | O_CREAT | flags);
+
+	try {
+		fs.writeFileSync(fd, data);
+	} finally {
+		fs.closeSync(fd);
+	}
 }
 
 /* ---- 입력 검증 ------------------------------------------------------------ */
@@ -238,7 +283,7 @@ function readEnv() {
 	let text;
 
 	try {
-		text = fs.readFileSync(ENV_FILE, 'utf8');
+		text = readOwned(ENV_FILE, 'utf8');
 	} catch (e) {
 		return env;
 	}
@@ -278,11 +323,20 @@ function inviteLink(code) {
 function writeAtomic(path, text) {
 	const tmp = `${path}.tmp.${process.pid}`;
 	const owner = serverAccount();
+	let fd;
 
-	fs.writeFileSync(tmp, text, { mode: 0o600 });
-	/* 서버는 ztgate 계정으로 돈다 (packaging/ztgate-user.sh). root 가 쓴 600 파일은 서버가 읽지 못한다. */
-	if (owner) {
-		fs.chownSync(tmp, owner.uid, owner.gid);
+	/* 같은 pid 의 지난 실행이 남긴 것이다. 링크여도 unlink 는 링크만 지운다. 소유는 경로가 아니라 연 fd 에서 바꾼다.
+	 * 만든 직후 그 이름이 링크로 바뀌면 chown(경로)는 링크 대상의 소유를 넘긴다. */
+	fs.rmSync(tmp, { force: true });
+	fd = openOwned(tmp, O_WRONLY | O_CREAT | O_EXCL);
+	try {
+		fs.writeFileSync(fd, text);
+		/* 서버는 ztgate 계정으로 돈다 (packaging/ztgate-user.sh). root 가 쓴 600 파일은 서버가 읽지 못한다. */
+		if (owner) {
+			fs.fchownSync(fd, owner.uid, owner.gid);
+		}
+	} finally {
+		fs.closeSync(fd);
 	}
 	fs.renameSync(tmp, path);
 }
@@ -304,7 +358,7 @@ function readDevices() {
 	let text;
 
 	try {
-		text = fs.readFileSync(DEVICE_FILE, 'utf8');
+		text = readOwned(DEVICE_FILE, 'utf8');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			return devices;
@@ -423,7 +477,7 @@ function readEnroll() {
 	let text;
 
 	try {
-		text = fs.readFileSync(ENROLL_FILE, 'utf8');
+		text = readOwned(ENROLL_FILE, 'utf8');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			return list;
@@ -628,7 +682,7 @@ function readAcl() {
 	let text;
 
 	try {
-		text = fs.readFileSync(ACL_FILE, 'utf8');
+		text = readOwned(ACL_FILE, 'utf8');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			return null;
@@ -669,7 +723,7 @@ function readAcl() {
 
 function aclHash() {
 	try {
-		return crypto.createHash('sha256').update(fs.readFileSync(ACL_FILE)).digest('hex');
+		return crypto.createHash('sha256').update(readOwned(ACL_FILE)).digest('hex');
 	} catch (e) {
 		return 'none';
 	}
@@ -679,7 +733,7 @@ function aclHash() {
  * 성공하면 reload() 가 고쳐 적는다. ACL 없이 뜬 서버는 'none' 이다. */
 function aclApplied() {
 	try {
-		return fs.readFileSync(ACL_APPLIED, 'utf8').trim();
+		return readOwned(ACL_APPLIED, 'utf8').trim();
 	} catch (e) {
 		return null;
 	}
@@ -696,7 +750,7 @@ function aclPending(running) {
 
 /* 파일의 끝 max 바이트. 중간부터 읽었으면 첫 줄은 잘려 있으므로 버린다. */
 function readTail(path, max) {
-	const fd = fs.openSync(path, 'r');
+	const fd = openOwned(path, O_RDONLY);
 
 	try {
 		const size = fs.fstatSync(fd).size;
@@ -919,7 +973,7 @@ function reload() {
 		fail('server rejected the enrollment list and kept the previous one');
 	}
 	if (acl && !acl.msg.includes('failed')) {
-		fs.writeFileSync(ACL_APPLIED, aclHash() + '\n');
+		writeOwned(ACL_APPLIED, aclHash() + '\n', O_TRUNC);
 	} else if (acl && fs.existsSync(ACL_FILE)) {
 		fail('server rejected the ACL file and kept the previous rules');
 	}
@@ -949,8 +1003,9 @@ function reloadAfterWrite() {
  * 새 파일로 바꾸는 사이에 서로 끼면 먼저 쓴 쪽이 고친 것이 사라진다. 그 파일을 고치는 명령은
  * 서버와 같은 잠금(LOCK_FILE 의 flock)을 잡고 돈다.
  *
- * Node 에는 flock 이 없어 flock(1) 이 잠금을 쥔 채 표준 입력을 기다리게 하고, 끝나면 그
- * 표준 입력을 닫는다. 이 프로세스가 죽어도 flock(1) 이 EOF 를 보고 끝나 잠금이 남지 않는다.
+ * Node 에는 flock 이 없다. 잠금 파일은 여기서 O_NOFOLLOW 로 열고 (openOwned), 그 fd 를 flock(1) 에 넘겨
+ * 잡게 한다. flock 은 열린 파일 설명에 걸리므로 flock(1) 이 끝나도 이 프로세스가 fd 를 닫을 때까지 남는다.
+ * 이 프로세스가 죽으면 커널이 fd 를 닫아 잠금도 풀린다.
  * 서버는 200ms 만 기다리므로 잠금 안에서는 파일을 고치는 것만 한다 — 서버에 다시 읽게 하고
  * 그 결과를 기다리는 것(최대 3초)은 풀고 나서 한다 (명령이 [RELOAD] 를 돌려주면 main 이). */
 const LOCKED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove', 'enroll_create', 'enroll_revoke']);
@@ -963,7 +1018,7 @@ const SYNCED_COMMANDS = new Set(['device_add', 'device_update', 'device_remove',
 
 function syncPrimary() {
 	try {
-		return fs.readFileSync(SYNC_MARK, 'utf8').trim();
+		return readOwned(SYNC_MARK, 'utf8').trim();
 	} catch (e) {
 		return null;
 	}
@@ -992,29 +1047,27 @@ function deployWindow() {
 const RELOAD = Symbol('reload');
 
 function withConfigLock(fn) {
-	return new Promise((resolve, reject) => {
-		const holder = spawn('flock', ['-x', '-w', '5', LOCK_FILE, 'sh', '-c', 'echo locked; exec cat > /dev/null'],
-			{ env: ENV, stdio: ['pipe', 'pipe', 'ignore'] });
-		let held = false;
+	const fd = openOwned(LOCK_FILE, O_RDONLY | O_CREAT);
+	const owner = serverAccount();
 
-		holder.stdout.once('data', () => {
-			held = true;
-			try {
-				resolve(fn());
-			} catch (e) {
-				reject(e);
-			} finally {
-				holder.stdin.end();
-			}
-		});
-		holder.on('exit', (code) => {
-			if (!held) {
-				reject(new CtlError(code === 1 ? 'the device files are being changed by the server; try again'
-					: 'cannot lock the device files (flock)'));
-			}
-		});
-		holder.on('error', () => reject(new CtlError('cannot lock the device files (flock(1) not found)')));
-	});
+	try {
+		/* 서버(ztgate)는 이 파일을 O_RDWR 로 연다. 여기서 처음 만든 것이면 서버에게 넘겨 둔다. */
+		if (owner) {
+			fs.fchownSync(fd, owner.uid, owner.gid);
+		}
+		const r = spawnSync('flock', ['-x', '-w', '5', '3'], { env: ENV, stdio: ['ignore', 'ignore', 'ignore', fd] });
+
+		if (r.error) {
+			fail('cannot lock the device files (flock(1) not found)');
+		}
+		if (r.status !== 0) {
+			fail(r.status === 1 ? 'the device files are being changed by the server; try again' : 'cannot lock the device files (flock)');
+		}
+
+		return fn();
+	} finally {
+		fs.closeSync(fd);
+	}
 }
 
 const COMMANDS = {
@@ -1417,7 +1470,7 @@ function auditAdmin(req, out) {
 		e.error = String(out.error).slice(0, 200);
 	}
 	try {
-		fs.appendFileSync(AUDIT_FILE, JSON.stringify(e) + '\n', { mode: 0o600 });
+		writeOwned(AUDIT_FILE, JSON.stringify(e) + '\n', O_APPEND);
 	} catch (err) {
 		process.stderr.write(`ztgate_ctl: cannot write the audit log: ${err.code || err.name}\n`);
 	}
@@ -1476,5 +1529,5 @@ if (require.main === module) {
 	main().then((code) => { process.exitCode = code; });
 }
 
-/* 시험이 MCP 서버(server.js)의 도구 목록과 맞춰 본다 (mcp/surface.test.cjs). */
-module.exports = { COMMANDS, AUDIT_EVENTS };
+/* 시험이 MCP 서버(server.js)의 도구 목록과 맞춰 보고 (mcp/surface.test.cjs), 파일을 여는 길을 따로 본다 (mcp/ctl.test.cjs). */
+module.exports = { COMMANDS, AUDIT_EVENTS, readOwned, writeOwned, writeAtomic, constants: { O_APPEND, O_TRUNC } };
