@@ -84,6 +84,10 @@ typedef struct peer {
     time_t icmp_at;
     int32_t icmp_n;
 
+    /* 이 세션이 보낸 LOGIN (server.c 의 handle_login). 1초에 LOGIN_PER_SEC 개까지만 서명을 확인한다. */
+    time_t login_at;
+    int32_t login_n;
+
     audit_flow_t flows[AUDIT_FLOWS];
     int32_t flow_next;
 } peer_t;

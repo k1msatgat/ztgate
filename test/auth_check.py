@@ -2374,6 +2374,22 @@ def login_tests(srv, acl_path, idp_dir):
         new = srv.text()[before:]
         expect(name, "refused" if want in new and "acl: reload failed" in new else "accepted", "refused")
 
+    # 세션 하나가 엉터리 LOGIN 을 쏟아부어도 서버는 1초에 몇 개까지만 서명을 확인한다. 한꺼번에 보낸 것이
+    # 1초 경계를 넘을 수 있어 창 두 개(100) 까지를 본다.
+    time.sleep(1.1)
+    c.drain()
+    forged = tok("mallory").rsplit(".", 1)[0].encode() + b".AAAA"
+    for _ in range(150):
+        c.send(seal(LOGIN, idx, forged))
+    answered = 0
+    r = c.recv()
+    while r is not None:
+        answered += r[0] == LOGIN
+        r = c.recv()
+    expect("login: a burst of 150 forged logins gets at most 100 answers", 0 < answered <= 100, True)
+    time.sleep(1.1)
+    expect("login: ...and a real token is taken the next second", status(login(c, idx, tok("erin"))), LOGIN_OK)
+
 
 def main():
     if os.geteuid() != 0:

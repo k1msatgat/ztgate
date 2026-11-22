@@ -1207,6 +1207,8 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
  *
  * 답에는 결과와 토큰의 만료 시각과 서버가 읽은 사용자 이름을 싣는다. 클라이언트는
  * 그것을 보고 언제 새 토큰이 필요한지, IdP 의 어느 클레임이 이름으로 쓰였는지 안다. */
+#define LOGIN_PER_SEC 50
+
 static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_t n,
 		const net_ep_t *src, socklen_t srclen)
 {
@@ -1216,6 +1218,20 @@ static void handle_login(int32_t sock, peer_t *peer, const uint8_t *body, int32_
 	uint64_t expires = 0;
 	size_t name_len = 0;
 	int status, same, i;
+	time_t now = mono_now();
+
+	/* 서명 확인(RS256 / ES256)은 표의 쓰기 잠금 아래에서 돌아 그동안 모든 워커의 데이터가 멈추고,
+	 * 거절마다 로그와 감사 로그에 한 줄씩 남는다. 클라이언트는 토큰 하나를 3초에 한 번 보내므로
+	 * 세션마다 1초에 LOGIN_PER_SEC 개를 넘는 것은 확인하지 않고 버린다. */
+	if (peer->login_at != now) {
+		peer->login_at = now;
+		peer->login_n = 0;
+	}
+	if (peer->login_n >= LOGIN_PER_SEC) {
+		LOG_LIMITED(LOG_DROP, "[drop] too many LOGIN on idx=%08x\n", peer->session_idx);
+		return;
+	}
+	peer->login_n++;
 
 	device_id_str(peer->device_id, ids);
 	/* 토큰 [ " " DPoP 증명 ] (proto.h). JWT 에는 공백이 없다. */
