@@ -1257,7 +1257,7 @@ ztgate/
 |---|
 | `test/` 테스트 스크립트 전체 |
 | `client.c`의 재핸드셰이크 로그, `do_handshake`의 `SO_RCVTIMEO` 원복과 `tx_counter` 리셋 (일부) |
-| `windows/` Windows 클라이언트 전체: `core/tunnel.c`(Wintun 터널 루프), `core/vpn_session.c`(워커 스레드 / 메시지 마셜링), `cli/`, `gui/`, Visual Studio 프로젝트 파일. Linux 클라이언트의 프로토콜 동작을 기준으로 작성 |
+| `windows/` Windows 클라이언트 전체: `core/tunnel.c`(Wintun 터널 루프), `core/vpn_session.c`(워커 스레드 / 메시지 마셜링. 서비스와 GUI 를 나눈 뒤로는 `core/vpn_remote.c` 가 대신하고, 이 파일은 지웠다), `cli/`, `gui/`, Visual Studio 프로젝트 파일. Linux 클라이언트의 프로토콜 동작을 기준으로 작성 |
 | `proto.h` / `proto.c` 분리 (기존 코드 이동) |
 | Windows 유휴 시 비유니캐스트 송신이 keepalive를 억제해 불필요한 재핸드셰이크가 생기는 문제를 테스트로 재현하고 `windows/` 쪽을 수정 |
 | ZTNA 확장의 Windows 쪽: `core/posture.c`, `core/device.c`, `core/tunnel.c`의 인증 핸드셰이크와 지속 검증, GUI의 포스처 탭과 기기 등록 창 |
