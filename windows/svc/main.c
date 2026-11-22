@@ -574,6 +574,11 @@ static void client_listen(void)
 		/* 기다리기 시작하기 전에 이미 붙었다. */
 		SetEvent(pipe_ov.hEvent);
 		break;
+	case ERROR_NO_DATA:
+		/* 기다리기 시작하기 전에 붙었다가 벌써 닫았다. 이 인스턴스는 DisconnectNamedPipe 를
+		 * 해야 다시 받는다. 붙은 것처럼 넘기면 첫 읽기가 실패해 client_drop 이 그것을 한다. */
+		SetEvent(pipe_ov.hEvent);
+		break;
 	default:
 		slog("ConnectNamedPipe failed: %lu", GetLastError());
 		break;
