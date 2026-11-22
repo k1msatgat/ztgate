@@ -414,11 +414,24 @@ static void policy_servers(void)
 	}
 }
 
-/* run_cfg 에 적힌 곳으로 터널을 올린다. 0 성공, 아니면 ipc_error_code_t. */
+/* run_cfg 에 적힌 곳으로 터널을 올린다. 정책이 서버를 정했으면 그곳으로 — 기억해 둔 곳(recall)이나
+ * 다시 올릴 때(retry_at)도 그 사이 바뀐 정책을 따른다. 0 성공, 아니면 ipc_error_code_t. */
 static int tunnel_start(void)
 {
+	wchar_t was[TUNNEL_SERVERS_LEN];
+	const uint16_t was_port = run_cfg.server_port;
 	device_t dev;
 	int enrolled;
+
+	wcscpy_s(was, TUNNEL_SERVERS_LEN, run_cfg.servers);
+	policy_servers();
+	if (wcscmp(was, run_cfg.servers) != 0 || was_port != run_cfg.server_port) {
+		servers_seed();
+		if (wanted) {
+			remember();
+		}
+		slog("policy: connecting to the servers the policy names");
+	}
 
 	enrolled = device_load(&dev);
 	if (enrolled != DEVICE_OK) {
