@@ -63,7 +63,7 @@ SERVER_BIN	= $(SERVER_DIR)/bin/vpn_server
 LOADGEN_BIN	= $(LOADGEN_DIR)/bin/loadgen
 
 # ---- top level ------------------------------------------------------------
-.PHONY: all build lib client server tools fuzz clean distclean test help
+.PHONY: all build lib client server tools fuzz clean distclean help
 .DEFAULT_GOAL := all
 
 all: lib client server tools
@@ -149,9 +149,6 @@ clean:
 
 distclean:
 	$(RM) -r $(LIB_DIR)/bin $(CLIENT_DIR)/bin $(SERVER_DIR)/bin $(LOADGEN_DIR)/bin
-
-test:
-	@echo "no tests yet"
 
 help:
 	@echo "targets:"
