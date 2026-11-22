@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """ztgate 서버의 상태를 Prometheus 지표로 내준다.
 
-    sudo tools/metrics/ztgate_exporter.py [-s /run/ztgate/status.sock] [-l 127.0.0.1:9469] [--per-session]
+    sudo -u ztgate tools/metrics/ztgate_exporter.py [-s /run/ztgate/status.sock] [-l 127.0.0.1:9469] [--per-session]
 
 서버의 상태 소켓(읽기 전용, JSON 한 덩어리)을 요청마다 읽어 텍스트 형식(exposition format
 0.0.4)으로 바꾼다. 서버 안에 HTTP 를 넣지 않는다 — 서버는 터널을 나르는 단일 스레드 루프라
 느린 수집기가 붙어도 기다리지 않아야 하고, 그 일은 상태 소켓이 이미 한다(크기 제한 없이, 루프를
 막지 않고). 이 도구가 죽어도 터널은 그대로다.
 
-상태 소켓은 root 전용(600)이라 root 로 돌린다. 기본으로 127.0.0.1 에만 듣는다. 지표에는 기기
+상태 소켓이 ztgate 소유 /run/ztgate 안에 있어 ztgate 계정으로 돌린다. 기본으로 127.0.0.1 에만 듣는다. 지표에는 기기
 ID 와 터널 주소, 사용자 이름이 들어갈 수 있다(--per-session) — 밖으로 열려면 앞에 인증하는
 프록시를 둔다.
 

@@ -4,7 +4,7 @@
 #   sudo install -m 644 tools/metrics/ztgate-exporter.service /etc/systemd/system/
 #   sudo systemctl enable --now ztgate-exporter
 #
-# 상태 소켓이 root 전용이라 root 로 돈다. 대신 쓸 수 있는 곳은 하나도 열지 않는다.
+# 상태 소켓이 ztgate 소유 /run/ztgate 안에 있어 ztgate 로 돈다. 쓸 수 있는 곳은 하나도 열지 않는다.
 [Unit]
 Description=ztgate Prometheus exporter
 After=ztgate.service
