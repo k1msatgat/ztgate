@@ -54,8 +54,12 @@ typedef struct peer {
     uint64_t acl_denied;
 
     /* 이 세션을 연 기기. 포인터가 아니라 ID 로 들고 있다가 쓸 때마다 목록에서 찾는다.
-     * 목록에서 지워진 기기의 세션은 목록을 다시 읽을 때 끊긴다 (server.c 의 drop_unlisted). */
+     * 목록에서 지워진 기기의 세션은 목록을 다시 읽을 때 끊긴다 (server.c 의 drop_stale). */
     uint8_t device_id[DEVICE_ID_LEN];
+
+    /* 세션을 열 때 쓴 기기 키의 SHA-256. 다시 읽은 목록에서 키가 바뀌었는지 본다. 키를 그대로
+     * 두지 않는 것은 세션 표에 비밀의 사본을 하나 더 만들지 않으려는 것이다. */
+    uint8_t key_hash[VPN_HASH_LEN];
 
     /* 이 기기가 마지막으로 서명해서 보고한 포스처. 핸드셰이크와 keepalive 마다 바뀐다.
      * ACL 이 포스처 조건이 걸린 규칙을 볼 때 쓴다. */

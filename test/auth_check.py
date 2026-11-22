@@ -761,6 +761,15 @@ def reload_tests(srv, path):
                "no response")
     check("device removed: new handshake", c.handshake(), "DENY(1)")
 
+    # 기기의 키가 바뀌면 옛 키로 연 세션은 계속 쓰이면 안 된다. 다시 핸드셰이크하라고 알리고 내린다.
+    # 옛 키로는 그 핸드셰이크에서 들어오지 못한다.
+    reload(LINE1, LINE2)
+    idx = session(c)
+    c.drain()
+    reload(LINE1.replace(DEV_KEY.hex(), bytes(range(0xc0, 0xe0)).hex()), LINE2)
+    check("key changed: the reload closes the session opened with the old key", c.recv(), "DISCONNECT")
+    check("key changed: the old key no longer gets in", c.handshake(), "DENY(2)")
+
     reload(LINE1, LINE2)
     idx = session(c)
     reload(LINE1 + " firewal=on", LINE2)

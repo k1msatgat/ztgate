@@ -552,12 +552,32 @@ static void deny_unlisted(peer_t *peer, void *arg)
 	send_session_deny(*(int32_t *)arg, peer, &peer->outer, peer->outer_len, DENY_UNKNOWN_DEVICE);
 }
 
+/* 목록에는 있지만 세션을 연 뒤 키가 바뀐 기기. 세션은 열 때의 키로 뽑은 세션 키를 쓰므로, 샌 키를
+ * 바꿔도 그 키로 연 세션은 수명까지 이어진다. 터널 주소가 바뀐 것은 여기서 보지 않는다 — 열린 세션은
+ * keepalive 응답으로 새 주소를 받고 클라이언트가 스스로 다시 붙는다. */
+static int key_changed(const peer_t *peer, void *arg)
+{
+	const device_t *dev;
+	uint8_t h[VPN_HASH_LEN];
+
+	(void)arg;
+	if (peer->enroll || (dev = device_find(peer->device_id)) == NULL) {
+		return 0;
+	}
+	crypt_sha256(dev->key, sizeof(dev->key), h);
+	return memcmp(h, peer->key_hash, sizeof(h)) != 0;
+}
+
 /* 기기 목록을 읽을 때마다 부른다. keepalive 에서만 지워진 기기를 걸러내면, keepalive 를 보내지
  * 않고 데이터만 보내는 쪽은 세션 수명까지 터널을 쓴다 — 데이터 패킷은 last_seen 을 갱신해 만료에도
- * 걸리지 않는다. */
-static void drop_unlisted(int32_t sock)
+ * 걸리지 않는다. 키가 바뀐 기기에는 다시 핸드셰이크하라고 알린다. 새 키를 받은 클라이언트는 곧바로
+ * 다시 붙고, 옛 키를 쥔 쪽은 그 핸드셰이크에서 막힌다. */
+static void drop_stale(int32_t sock)
 {
+	disconnect_ctx_t ctx = { .sock = sock, .reason = DISCONNECT_REKEY, .now = mono_now() };
+
 	peer_drop_if(device_unlisted, deny_unlisted, &sock, "device_removed");
+	peer_drop_if(key_changed, send_disconnect, &ctx, "key_changed");
 }
 
 /* ---- 핸드셰이크의 nonce 와 기기 ID 감싸기 (proto.h, v9) ------------------------------- */
@@ -782,7 +802,8 @@ static int open_session(peer_t *peer, const device_t *dev, const uint8_t *auth, 
 	}
 
 	/* 서버는 S->C 키로 보내고 C->S 키로 받는다. */
-	if (secure_session_open(&peer->secure, keys.s2c, keys.c2s) < 0) {
+	if (secure_session_open(&peer->secure, keys.s2c, keys.c2s) < 0 ||
+			crypt_sha256(dev->key, sizeof(dev->key), peer->key_hash) < 0) {
 		goto out;
 	}
 
@@ -1159,7 +1180,7 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 
 			/* enroll_complete 는 잠근 뒤 지금의 파일을 읽는다. 관리자가 그사이 지운 기기도
 			 * 여기서 목록에서 빠진다. */
-			drop_unlisted(sock);
+			drop_stale(sock);
 		}
 	}
 
@@ -2165,7 +2186,7 @@ int main(int argc, char *argv[])
 				audit_reload("devices", 0, 0);
 			}
 			else {
-				drop_unlisted(sock);
+				drop_stale(sock);
 				printf("device: reloaded, %d devices\n", nd);
 				audit_reload("devices", 1, nd);
 				device_dump();
