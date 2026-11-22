@@ -142,6 +142,18 @@ static int pick_selftest(void)
 	return failed;
 }
 
+static int is_command(const char *word)
+{
+	static const char *const commands[] = { "posture", "selftest", "device", "dpop-proof", "tpm-selftest", "enroll" };
+
+	for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+		if (strcmp(word, commands[i]) == 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int selftest(void)
 {
 	return crypt_selftest() | update_selftest() | parse_selftest() | preset_selftest() | pick_selftest() | dpop_selftest();
@@ -411,7 +423,9 @@ int main(int argc, char *argv[])
 		return enroll(argc == 3);
 	}
 
-	if (argc != 4) {
+	/* 명령 이름은 어댑터 이름으로 받지 않는다. 인자 수를 틀린 `enroll <server> <port>` 가 어댑터 "enroll" 의
+	 * 터널이 되지 않게. */
+	if (argc != 4 || is_command(argv[1])) {
 		fprintf(stderr, "usage: %s <adapter-name> <server[,server...]> <port>\n", argv[0]);
 		fprintf(stderr, "       %s posture\n", argv[0]);
 		fprintf(stderr, "       %s selftest\n", argv[0]);
