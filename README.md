@@ -147,7 +147,7 @@ sudo env ENROLL_FILE=./enroll.conf docker/enroll-code.sh 10.0.0.2 -l laptop
 # 7K2QF-9XWM4-ABCDE-FGHJK-MNPQR
 ```
 
-Windows 기기에는 코드 대신 **초대 링크**를 보낼 수 있습니다. `server.env` 에 `PUBLIC_ADDRESS=vpn.example.com` 을 적어 두면 `ztgate_ctl` 의 `enroll_create`(MCP, 웹 콘솔)가 `ztgate://enroll?server=vpn.example.com&port=9000&code=…` 를 함께 돌려줍니다. 받은 사람이 링크를 누르면 GUI 가 서버와 코드가 채워진 등록 창을 엽니다 (MSI 가 `ztgate:` 를 GUI 에 묶습니다). 등록 창에 붙여 넣거나 `vpn_client.exe enroll <링크>` 로도 됩니다. 링크에는 코드가 들어 있으니 코드처럼 그 사람에게만 보냅니다. 관리 정책이 서버를 정해 둔 PC 는 링크의 서버를 따르지 않고 코드만 씁니다.
+Windows 기기에는 코드 대신 **초대 링크**를 보낼 수 있습니다. `server.env` 에 `PUBLIC_ADDRESS=vpn.example.com` 을 적어 두면 `ztgate_ctl` 의 `enroll_create`(MCP, 웹 콘솔)가 `ztgate://enroll?server=vpn.example.com&port=9000&code=…` 를 함께 돌려줍니다. 받은 사람이 링크를 누르면 GUI 가 서버와 코드가 채워진 등록 창을 엽니다 (MSI 가 `ztgate:` 를 GUI 에 묶습니다). 링크를 등록 창에 붙여 넣어도 됩니다. `vpn_client.exe enroll <링크>` 는 서비스 없이 도는 콘솔 클라이언트의 신원(그 Windows 사용자의 HKCU)에 등록하므로, GUI 와 서비스가 쓰는 PC 의 신원은 등록되지 않고 코드만 쓰입니다. 링크에는 코드가 들어 있으니 코드처럼 그 사람에게만 보냅니다. 관리 정책이 서버를 정해 둔 PC 는 링크의 서버를 따르지 않고 코드만 씁니다.
 
 **4. 클라이언트를 등록하고 연결합니다.**
 
@@ -1041,7 +1041,7 @@ sendto(buf, n + 32)     └─────────────────�
 
 ## Windows 클라이언트
 
-같은 프로토콜(`lib/common`)을 쓰는 Windows 구현입니다. 터널은 시스템 서비스(`vpn_service.exe`, Wintun 가상 어댑터)가 맡고, GUI(`vpn_gui.exe`, MFC)는 권한 없이 이름 있는 파이프로 조종합니다. 등록 코드로 올라가는 기기의 고정 비밀키는 TPM 이 있으면 TPM 안에 만들어(Microsoft Platform Crypto Provider, 내보낼 수 없음) 기기 키를 디스크에 두지 않고 연결할 때마다 TPM 의 ECDH 로 뽑습니다. 레지스트리와 DPAPI 비밀을 떠 가도 이 PC 의 TPM 없이는 기기 키가 나오지 않습니다. TPM 이 없으면 기기 키를 DPAPI 로 감싸 둡니다 (`vpn_client device` 가 어느 쪽인지 보여 주고, `vpn_client tpm-selftest` 가 TPM 의 ECDH 가 소프트웨어와 같은 값을 내는지 봅니다). 포스처는 OS 빌드, Windows 방화벽, 보안 센터의 백신 상태, BitLocker 를 봅니다. 서비스 없이 도는 콘솔 클라이언트(`vpn_client.exe`)도 있습니다.
+같은 프로토콜(`lib/common`)을 쓰는 Windows 구현입니다. 터널은 시스템 서비스(`vpn_service.exe`, Wintun 가상 어댑터)가 맡고, GUI(`vpn_gui.exe`, MFC)는 권한 없이 이름 있는 파이프로 조종합니다. 등록 코드로 올라가는 기기의 고정 비밀키는 TPM 이 있으면 TPM 안에 만들어(Microsoft Platform Crypto Provider, 내보낼 수 없음) 기기 키를 디스크에 두지 않고 연결할 때마다 TPM 의 ECDH 로 뽑습니다. 레지스트리와 DPAPI 비밀을 떠 가도 이 PC 의 TPM 없이는 기기 키가 나오지 않습니다. TPM 이 없으면 기기 키를 DPAPI 로 감싸 둡니다. 서비스는 등록할 때 키를 어느 쪽에 두었는지 서비스 로그(`%ProgramData%\ztgate\logs\service.log`)에 `enroll: device key ...` 로 남기고, `vpn_client tpm-selftest` 는 TPM 의 ECDH 가 소프트웨어와 같은 값을 내는지 봅니다. 포스처는 OS 빌드, Windows 방화벽, 보안 센터의 백신 상태, BitLocker 를 봅니다. 서비스 없이 도는 콘솔 클라이언트(`vpn_client.exe`)도 있습니다. 콘솔 클라이언트의 `enroll` 과 `device` 는 그 Windows 사용자(HKCU)의 신원을 쓰므로 GUI 와 서비스가 쓰는 PC 의 신원과 따로입니다. PC 의 신원이 등록됐는지와 그 기기 ID 는 `vpn_service ctl status` 가 보여 줍니다.
 
 GUI 는 상용 에이전트처럼 나뉘어 있습니다.
 
