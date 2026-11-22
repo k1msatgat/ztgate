@@ -210,7 +210,6 @@ bool DrawButton(const DRAWITEMSTRUCT *dis)
 
 #define TABS_ADD	(WM_USER + 1)	/* lParam = LPCWSTR */
 #define TABS_GETSEL	(WM_USER + 2)
-#define TABS_SETSEL	(WM_USER + 3)	/* wParam = index */
 #define TABS_IDEAL	(WM_USER + 4)
 
 struct TabsData {
@@ -261,7 +260,7 @@ static int TabsHitTest(const TabsData *d, int x, int y)
 	return -1;
 }
 
-static void TabsSelect(HWND hwnd, TabsData *d, int index, bool notify)
+static void TabsSelect(HWND hwnd, TabsData *d, int index)
 {
 	if (index < 0 || index >= (int)d->items.size() || index == d->sel) {
 		return;
@@ -270,11 +269,9 @@ static void TabsSelect(HWND hwnd, TabsData *d, int index, bool notify)
 	d->sel = index;
 	InvalidateRect(hwnd, nullptr, FALSE);
 
-	if (notify) {
-		SendMessageW(GetParent(hwnd), WM_COMMAND,
-				MAKEWPARAM(GetDlgCtrlID(hwnd), UI_TABS_CHANGED),
-				reinterpret_cast<LPARAM>(hwnd));
-	}
+	SendMessageW(GetParent(hwnd), WM_COMMAND,
+			MAKEWPARAM(GetDlgCtrlID(hwnd), UI_TABS_CHANGED),
+			reinterpret_cast<LPARAM>(hwnd));
 }
 
 static void TabsPaint(HWND hwnd, TabsData *d)
@@ -414,18 +411,18 @@ static LRESULT CALLBACK TabsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
 	case WM_KEYDOWN:
 		if (wParam == VK_LEFT) {
-			TabsSelect(hwnd, d, d->sel - 1, true);
+			TabsSelect(hwnd, d, d->sel - 1);
 			return 0;
 		}
 		if (wParam == VK_RIGHT) {
-			TabsSelect(hwnd, d, d->sel + 1, true);
+			TabsSelect(hwnd, d, d->sel + 1);
 			return 0;
 		}
 		break;
 
 	case WM_LBUTTONDOWN:
 		SetFocus(hwnd);
-		TabsSelect(hwnd, d, TabsHitTest(d, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)), true);
+		TabsSelect(hwnd, d, TabsHitTest(d, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)));
 		return 0;
 
 	case WM_MOUSEMOVE: {
@@ -464,10 +461,6 @@ static LRESULT CALLBACK TabsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 	case TABS_GETSEL:
 		return d->sel;
 
-	case TABS_SETSEL:
-		TabsSelect(hwnd, d, (int)wParam, false);
-		return 0;
-
 	case TABS_IDEAL:
 		return d->rects.empty() ? 0 : d->rects.back().right;
 	}
@@ -497,11 +490,6 @@ void TabsAdd(HWND tabs, LPCWSTR text)
 int TabsGetSel(HWND tabs)
 {
 	return (int)SendMessageW(tabs, TABS_GETSEL, 0, 0);
-}
-
-void TabsSetSel(HWND tabs, int index)
-{
-	SendMessageW(tabs, TABS_SETSEL, (WPARAM)index, 0);
 }
 
 int TabsIdealWidth(HWND tabs)

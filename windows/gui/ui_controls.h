@@ -40,7 +40,6 @@ bool RegisterTabs(HINSTANCE instance);
 
 void TabsAdd(HWND tabs, LPCWSTR text);
 int TabsGetSel(HWND tabs);
-void TabsSetSel(HWND tabs, int index);
 
 /* 탭 글자가 다 들어가는 폭. */
 int TabsIdealWidth(HWND tabs);
