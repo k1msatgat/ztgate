@@ -21,3 +21,13 @@ test('device_add: a p256: key that is not a point on P-256 is refused', () => {
 		assert.throws(() => COMMANDS.device_add({ id: 'ab'.repeat(16), key, tunnel_ip: '10.0.0.5' }), /not a P-256 public key/, key);
 	}
 });
+
+test('enroll_create: conditions, tags and connector ranges longer than the server takes are refused', () => {
+	const req = {
+		requirements: { firewall: true, antivirus: true, disk: true, min_build: 4294967295 },
+		tags: [1, 2, 3, 4].map((i) => `${'t'.repeat(31)}${i}`),
+		connector: ['10.101.0.0/16', '10.102.0.0/16', '10.103.0.0/16', '10.104.0.0/16'],
+	};
+
+	assert.throws(() => COMMANDS.enroll_create(req), /too long/);
+});

@@ -46,6 +46,7 @@ const AUDIT_TAIL_BYTES = 4 * 1024 * 1024;
 const MAX_DEVICES = 4096;
 const MAX_RULES = 1024;
 const MAX_PENDING = 256;	/* server/include/enroll.h */
+const ENROLL_REQS_MAX = 256;	/* server/src/enroll.c 의 REQS_MAX (끝의 NUL 포함) */
 const ENROLL_CODE_LEN = 25;	/* lib/common/include/proto.h */
 const ENROLL_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const LINE_MAX = 511;	/* server/include/policy.h 의 CONF_LINE_MAX (줄바꿈 포함 512) */
@@ -466,10 +467,14 @@ function writeEnroll(list) {
 	];
 
 	for (const e of list) {
-		let line = [e.id, e.key, e.tunnel_ip, e.expires, ...reqTokens(e.requirements),
-			...(e.tags || []).map((t) => `tag=${t}`),
+		const reqs = [...reqTokens(e.requirements), ...(e.tags || []).map((t) => `tag=${t}`),
 			...(e.connector || []).map((c) => `connector=${c}`)].join(' ');
+		let line = [e.id, e.key, e.tunnel_ip, e.expires, ...(reqs ? [reqs] : [])].join(' ');
 
+		/* 서버는 만료 시각 뒤의 글이 이보다 길면 대기 목록 전체를 거부하고, 다음 시작에서는 뜨지 않는다. */
+		if (Buffer.byteLength(reqs) >= ENROLL_REQS_MAX) {
+			fail(`requirements, tags and connector ranges are too long for one enrollment (${Buffer.byteLength(reqs)} characters, max ${ENROLL_REQS_MAX - 1})`);
+		}
 		if (e.label) {
 			line += `  # ${e.label}`;
 		}
