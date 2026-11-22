@@ -1599,9 +1599,15 @@ def enroll_tests(srv, dev_path):
     # 관리 도구가 그 코드의 주소에 기기를 손으로 올렸는데 서버는 아직 다시 읽지 않았다. 그대로
     # 더하면 기기 목록에 같은 주소가 두 줄이 되어 다음부터 읽히지 않는다.
     idx = open_with("33333-44444-55555-66666-77777")
+    # 이 등록은 충돌로 끝나지만 서버는 그 사이 기기 목록을 다시 읽는다. 그러면 기기마다 기억한 "마지막으로
+    # 쓴 nonce" 가 사라지므로, 직전에 엿들은 AUTH 를 다시 보내도 받지 않아야 한다.
+    session(other)
+    sniffed = other.last_auth
     with open(dev_path, "a") as f:
         f.write("%s %s 10.0.0.15  # by-hand\n" % (bytes([0x94] * 16).hex(), new_key.hex()))
     check("enroll: an address taken in the file meanwhile is a conflict", enroll(idx, c_id, Ecdh().pub), "ENROLL(2)")
+    check("enroll: ...and an AUTH sniffed just before it is not taken again",
+          (other.send(sniffed), other.recv())[1], "DENY(2)")
     srv.reload()
     expect("enroll: ...and the device list still loads", "device: reload failed" in srv.text(), False)
     os.unlink(lock_path)

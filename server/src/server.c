@@ -1128,7 +1128,12 @@ static void handle_enroll(int32_t sock, peer_t *peer, const uint8_t *body, int32
 
 			/* 파일에 적은 뒤 그 파일을 다시 읽어서 올린다. 표에 직접 끼워 넣으면 파일과
 			 * 표가 다른 길로 만들어져, 다음에 다시 읽었을 때 달라질 수 있다. 읽고 나서
-			 * 그 기기가 정말 있는지까지 본다. */
+			 * 그 기기가 정말 있는지까지 본다.
+			 *
+			 * enroll_complete 는 잠근 뒤 기기 목록을 다시 읽는다. 그러면 기기마다 기억한 "마지막으로
+			 * 쓴 nonce" 가 사라지므로 바닥을 먼저 올린다. 충돌이나 쓰기 실패로 끝나도 목록은 이미 다시
+			 * 읽혔다. 성공하면 아래에서 한 번 더 읽으므로 그때도 올린다. */
+			__atomic_store_n(&nonce_floor, mono_us(), __ATOMIC_RELAXED);
 			done = enroll_complete(pending, body, body + DEVICE_ID_LEN, device_path);
 			if (done == ENROLL_COMPLETE_CONFLICT) {
 				printf("[enroll] device %s: its id or tunnel ip was added to %s meanwhile\n",
