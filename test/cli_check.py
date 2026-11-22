@@ -122,6 +122,10 @@ def main():
     code, out, _ = run()
     expect("no command means status", "ztgate 서버" in out, True)
 
+    for opts in (["--json"], ["--color", "never"]):
+        code, out, err = run(*opts, "setup", "--help")
+        expect("%s setup: its options go to ztgate-setup" % " ".join(opts), (code, "--public-address" in out, err), (0, True, ""))
+
     print()
     print("all passed" if failed == 0 else "%d FAILED" % failed)
     sys.exit(1 if failed else 0)

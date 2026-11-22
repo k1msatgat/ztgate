@@ -254,7 +254,8 @@ def main():
     ap.add_argument("--color", choices=("auto", "always", "never"), default="auto")
     ap.add_argument("--ctl", default="/usr/sbin/ztgate_ctl" if os.path.exists("/usr/sbin/ztgate_ctl") else "/usr/local/sbin/ztgate_ctl")
     sub = ap.add_subparsers(dest="what", metavar="명령")
-    sub.add_parser("setup", help="처음 설정 (root): server.env, 방화벽, 서비스")
+    # 옵션은 ztgate-setup 이 읽는다. 여기서는 받은 그대로 넘긴다 (ztgate --color never setup --port 9001).
+    sub.add_parser("setup", help="처음 설정 (root): server.env, 방화벽, 서비스", add_help=False)
     sub.add_parser("status", help="서버, 카운터, 세션")
     sub.add_parser("devices", help="등록된 기기")
     sub.add_parser("enroll", help="기다리는 등록 코드")
@@ -262,7 +263,11 @@ def main():
     au = sub.add_parser("audit", help="감사 로그")
     au.add_argument("-n", type=int, default=30, help="최근 몇 건 (기본 30)")
     au.add_argument("-e", "--event", help="종류: session_open session_close auth_denied access reload enrolled")
-    a = ap.parse_args()
+    a, rest = ap.parse_known_args()
+    if a.what == "setup":
+        return setup(rest)
+    if rest:
+        ap.error("unrecognized arguments: " + " ".join(rest))
     what = a.what or "status"
 
     on = a.color == "always" or (a.color == "auto" and sys.stdout.isatty() and not os.environ.get("NO_COLOR"))
