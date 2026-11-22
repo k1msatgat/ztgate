@@ -31,3 +31,14 @@ test('enroll_create: conditions, tags and connector ranges longer than the serve
 
 	assert.throws(() => COMMANDS.enroll_create(req), /too long/);
 });
+
+test('acl_set: a rule longer than an ACL line the server reads is refused', () => {
+	const rule = {
+		src: '255.255.255.255/32', dst: '255.255.255.255/32', proto: 'tcp', dport: '65535-65535', action: 'allow',
+		require: { firewall: true, antivirus: true, disk: true, min_build: 4294967295 },
+		users: { groups: [1, 2, 3, 4].map((i) => `${'g'.repeat(62)}${i}`) },
+		tags: [1, 2, 3, 4].map((i) => `${'t'.repeat(31)}${i}`),
+	};
+
+	assert.throws(() => COMMANDS.acl_set({ rules: [rule] }), /rule 0: .*too long/);
+});

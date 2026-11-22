@@ -1336,9 +1336,15 @@ const COMMANDS = {
 
 			const tags = wantTags(r.tags, `rule ${i}: tags`);
 
-			lines.push([r.src, r.dst, r.proto, dport, r.action, ...reqTokens(require),
+			const line = [r.src, r.dst, r.proto, dport, r.action, ...reqTokens(require),
 				...users.users.map((n) => `user=${n}`), ...users.groups.map((n) => `group=${n}`),
-				...tags.map((t) => `tag=${t}`)].join(' '));
+				...tags.map((t) => `tag=${t}`)].join(' ');
+
+			/* 서버는 이보다 긴 줄이 하나라도 있으면 ACL 파일 전체를 받지 않는다 (server/src/acl.c). */
+			if (Buffer.byteLength(line) > LINE_MAX - 1) {
+				fail(`rule ${i}: too long for one ACL line (${Buffer.byteLength(line)} characters, max ${LINE_MAX - 1}); split its users, groups or tags over more rules`);
+			}
+			lines.push(line);
 		});
 
 		writeAtomic(ACL_FILE, lines.join('\n') + '\n');
