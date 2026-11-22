@@ -354,7 +354,9 @@ jobs:
         run: sudo apt-get install -y -qq nodejs > /dev/null && /usr/bin/node --version
 
       - name: Deploy, check, revert on the runner's systemd (test/deploy_check.sh)
-        run: test/deploy_check.sh
+        run: |
+          set -o pipefail
+          test/deploy_check.sh 2>&1 | tee deploy_check.log || { grep -E "^FAIL|rror" deploy_check.log | head -20 | sed "s/^/::error title=deploy_check::/"; exit 1; }
 
   deploy-rpm:
     runs-on: ubuntu-24.04
@@ -367,7 +369,12 @@ jobs:
           docker run -d --name zt-deploy-rpm --privileged --tmpfs /run --tmpfs /run/lock zt-deploy-rocky9 > /dev/null
           timeout 60 sh -c 'until docker exec zt-deploy-rpm systemctl is-system-running 2> /dev/null | grep -Eq "running|degraded"; do sleep 1; done'
           git archive HEAD | docker exec -i -u zt zt-deploy-rpm sh -c 'mkdir -p ~/src && tar -x -C ~/src'
-          docker exec -u zt -w /home/zt/src zt-deploy-rpm bash test/deploy_check.sh
+          set -o pipefail
+          docker exec -u zt -w /home/zt/src zt-deploy-rpm bash test/deploy_check.sh 2>&1 | tee deploy_check.log || {
+            grep -E "^FAIL|rror" deploy_check.log | head -20 | sed "s/^/::error title=deploy_check::/"
+            docker exec zt-deploy-rpm journalctl -u ztgate --no-pager -n 30 | sed "s/^/::warning title=journal::/"
+            exit 1
+          }
 
   # 앱 커넥터 패키지 (ztgate-connector). 등록하지 않은 장비에서는 서비스가 꺼져 있는지, 지워도 신원이
   # 남는지를 러너에 설치해 보고, docker/connector.sh 로 systemd 위에서 실제로 내부망까지 닿는지 본다.
