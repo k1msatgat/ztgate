@@ -1,14 +1,20 @@
 # 푸시할 때마다 양쪽을 실제로 빌드한다.
 #
-#   server   Linux 서버와 클라이언트를 경고 없이 빌드하고, 패킷 수준의 인증 검사와
-#            Linux 서버 <-> Linux 클라이언트 전체 경로(netns 두 개)를 돌린다.
-#   docker   이미지를 빌드하고 서버 + 클라이언트 두 컨테이너로 전체 시나리오를 돌린다.
-#   bench    부하 생성기로 서버 데이터 경로의 처리량을 재고 perf 로 어디서 시간을 쓰는지 본다.
-#            실제 클라이언트를 띄워 터널을 지난 TCP / UDP 처리량을 직결과 나란히 잰다 (iperf3).
-#   idp      Keycloak 을 띄워 README 의 설정대로 만들고, 그 IdP 가 준 토큰을 서버가 받는지 본다.
-#   windows  Windows 클라이언트(콘솔 + 서비스 + MFC GUI)를 MSVC 로 빌드한다.
-#   guide    안내서 PDF 가 원본과 맞는지 보고, Chrome 으로 실제로 만들어 올린다.
-#   release  v* 태그일 때만. 다른 작업이 모두 통과하면 패키지, MSI, 안내서를 GitHub 릴리스로 올린다.
+#   server      Linux 서버와 클라이언트를 경고 없이 빌드하고, 패킷 수준의 인증 검사와
+#               Linux 서버 <-> Linux 클라이언트 전체 경로(netns 두 개)를 돌린다.
+#   guide       안내서 PDF 가 원본과 맞는지 보고, Chrome 으로 실제로 만들어 올린다.
+#   sanitize    같은 시험을 ASan + UBSan 으로 빌드한 서버와 클라이언트로 돌린다.
+#   fuzz        패킷 디코더와 설정 파일 파서를 libFuzzer 로 흔든다.
+#   idp         Keycloak 을 띄워 README 의 설정대로 만들고, 그 IdP 가 준 토큰을 서버가 받는지 본다.
+#   docker      이미지를 빌드하고 서버 + 클라이언트 두 컨테이너로 전체 시나리오를 돌린다.
+#   bench       부하 생성기로 서버 데이터 경로의 처리량을 재고 perf 로 어디서 시간을 쓰는지 본다.
+#               실제 클라이언트를 띄워 터널을 지난 TCP / UDP 처리량을 직결과 나란히 잰다 (iperf3).
+#   deb, rpm    서버 패키지를 만들어 실제로 설치하고 다시 설치하고 지워 본다.
+#   deploy-deb, deploy-rpm
+#               MCP 배포기를 systemd 위에서 돌린다 (러너, Rocky 9 컨테이너).
+#   connector   앱 커넥터 패키지를 설치해 보고, systemd 위에서 내부망까지 닿는지 본다.
+#   windows     Windows 클라이언트(콘솔 + 서비스 + MFC GUI)를 MSVC 로 빌드한다.
+#   release     v* 태그일 때만. 다른 작업이 모두 통과하면 패키지, MSI, 안내서를 GitHub 릴리스로 올린다.
 #
 # 서버는 Linux 장비에서, 클라이언트는 Windows PC 에서 개발한다. 한쪽에서 고친 것이
 # 다른 쪽을 깨뜨렸는지는 그 장비에 가서 빌드해 보기 전까지 알 수 없었다.
@@ -107,9 +113,6 @@ jobs:
           name: ztgate-guide
           path: guide-out/ztgate-guide.pdf
 
-  # Dockerfile 과 docker-compose.yml 이 실제로 도는지. 개발 장비에는 docker 가 없다.
-  # 다른 시험의 토큰은 시험용 도구(tools/idp/mint.py)가 만든다. 실제 IdP 의 토큰이 그 모양과
-  # 같은지(aud 배열, 서명용이 아닌 키가 섞인 JWKS, 그룹 클레임)는 실제 IdP 로만 확인된다.
   # 같은 시험을 AddressSanitizer + UndefinedBehaviorSanitizer 로 빌드한 서버와 클라이언트로 돌린다.
   # 메모리를 넘겨 읽거나 정수가 넘치면 그 자리에서 멈추고, 보고서가 남으면 실패로 친다.
   sanitize:
@@ -155,6 +158,8 @@ jobs:
           mkdir -p corpus && cp test/fuzz/corpus/* corpus/
           ./test/fuzz/bin/fuzz_parsers -max_total_time=120 -timeout=10 -close_fd_mask=3 corpus
 
+  # 다른 시험의 토큰은 시험용 도구(tools/idp/mint.py)가 만든다. 실제 IdP 의 토큰이 그 모양과
+  # 같은지(aud 배열, 서명용이 아닌 키가 섞인 JWKS, 그룹 클레임)는 실제 IdP 로만 확인된다.
   idp:
     runs-on: ubuntu-24.04
     steps:
@@ -176,6 +181,7 @@ jobs:
         if: failure()
         run: docker logs kc 2>&1 | tail -n 80
 
+  # Dockerfile 과 docker-compose.yml 이 실제로 도는지. 개발 장비에는 docker 가 없다.
   docker:
     runs-on: ubuntu-24.04
     steps:
