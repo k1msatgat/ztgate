@@ -442,7 +442,7 @@ sudo ztgate setup --public-address vpn.example.com      # 설정, 방화벽 포�
 | 서버 로그 | `journalctl -u ztgate` |
 | 지표 (Prometheus) | `tools/metrics/ztgate_exporter.py` 가 상태 소켓을 `127.0.0.1:9469/metrics` 로 내준다 (`ztgate-exporter.service`). 세션 수, 사유별 거절 수, 주고받은 양. `--per-session` 이면 세션마다 (기기 ID, 터널 주소, 사용자가 라벨에 들어가므로 밖으로 열 때는 인증하는 프록시를 앞에 둔다) |
 
-`ztgate` 는 `ztgate_ctl` 의 답을 칸을 맞춘 표와 색으로 보여 주는 읽기 전용 명령입니다 (터미널일 때만 색, `NO_COLOR` 존중, `test/cli_check.py`). `ztgate_ctl`은 표준 입력으로 JSON 명령 하나를 받는 root 헬퍼입니다(`status`, `start` / `stop` / `restart` / `reload`, `logs`, `audit`, `device_*`, `enroll_*`, `acl_get` / `acl_set`). MCP 서버는 이 헬퍼를 감싸 AI 에이전트가 SSH로 같은 일을 하게 합니다. 셸은 열어 주지 않고, sudoers는 `ztgate_ctl`을 인자 없이 부르는 것 하나만 허용합니다.
+`ztgate` 는 `ztgate_ctl` 의 답을 칸을 맞춘 표와 색으로 보여 주는 읽기 전용 명령입니다 (터미널일 때만 색, `NO_COLOR` 존중, `test/cli_check.py`). `ztgate_ctl`은 표준 입력으로 JSON 명령 하나를 받는 root 헬퍼입니다(`status`, `start` / `stop` / `restart` / `reload`, `logs`, `audit`, `device_*`, `enroll_*`, `acl_get` / `acl_set` / `acl_clear`, `auth_check`). MCP 서버는 이 헬퍼를 감싸 AI 에이전트가 SSH로 같은 일을 하게 합니다. 셸은 열어 주지 않고, sudoers는 `ztgate_ctl`과 배포기 `ztgate-deploy`를 인자 없이 부르는 것만 허용합니다. 배포기가 있으므로 MCP 계정을 차지한 쪽은 `deploy.conf` 가 허용한 ref 에서 닿는 커밋을 root 로 빌드해 깔 수 있습니다 ([ADR 0014](docs/decisions/0014-deploy-from-remote.md)).
 
 ```bash
 claude mcp add ztgate -- ssh -T <user>@<서버 IP> ztgate_mcp       # AI 클라이언트 쪽 (선택)
