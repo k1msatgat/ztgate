@@ -397,6 +397,8 @@ int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 					if (send_auth(s, &hs, id, key, body, posture) < 0) {
 						goto out;
 					}
+					/* 서버가 이 시도를 받아 CHALLENGE 로 답했으니 그 앞에 온 거절은 이 서버의 답이 아니다. */
+					loose_deny = 0;
 					deadline = now_ms() + HS_TIMEOUT_MSEC;
 					continue;
 
@@ -416,7 +418,8 @@ int session_handshake(vpn_session_t *s, const uint8_t id[DEVICE_ID_LEN],
 
 					/* 확인할 수 없는 거절이다. 곧바로 믿으면 서버 주소를 위조한 패킷 한
 					 * 통으로 접속을 막을 수 있다. 기억만 해 두고 진짜 서버의 답을 끝까지
-					 * 기다린다 — 그동안 아무것도 오지 않았을 때에만 이것을 답으로 친다. */
+					 * 기다린다 — 수락이 오지 않으면 이것을 답으로 친다. CHALLENGE 를 받으면
+					 * 그 앞에 온 것은 버린다. */
 					if (loose_deny == 0) {
 						loose_deny = body[0];
 					}
