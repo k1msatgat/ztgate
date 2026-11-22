@@ -23,10 +23,12 @@
 #include "session.h"
 #include "connector.h"
 
-/* Linux 클라이언트 (프로토콜 버전 5).
+/* Linux 클라이언트. 명령과 옵션은 usage() 가 전부 보여 준다.
  *
- *   vpn_client [-k 신원파일] enroll <server-ip> <port> <등록 코드>
- *   vpn_client [-k 신원파일] [-i tun 이름] [-t 토큰 파일] [-v] run <server-ip>[,<server-ip>...] <port>
+ *   vpn_client [-k 신원파일] [-T tcp 포트] enroll <server-ip> <port> <등록 코드> [-f]
+ *   vpn_client [-k 신원파일] [-i tun 이름] [-t 토큰 파일] [-T tcp 포트] [-D DPoP 키] [-v] run <server-ip>[,<server-ip>...] <port>
+ *   vpn_client [-k 신원파일] [-i tun 이름] [-T tcp 포트] [-v] connector <server-ip>[,...] <port> <lan 장치>
+ *   vpn_client -D <DPoP 키> dpop-jkt
  *   vpn_client posture
  *   vpn_client selftest
  *
