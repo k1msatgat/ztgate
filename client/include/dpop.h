@@ -3,8 +3,12 @@
 
 /* DPoP — 사용자 토큰을 이 기기의 키에 묶는다 (proto.h 의 "DPoP").
  *
- *   vpn_client -D /var/lib/ztgate/dpop.pem -t <토큰 파일> run ...
- *   client/ztgate_login --dpop-key /var/lib/ztgate/dpop.pem ...      IdP 에서 이 키에 묶인 토큰을 받는다
+ *   client/ztgate_login --dpop-key ~/.config/ztgate/dpop.pem ...      IdP 에서 이 키에 묶인 토큰을 받는다
+ *   sudo vpn_client -D ~/.config/ztgate/dpop.pem -t ~/.config/ztgate/token run ...
+ *
+ * ztgate_login 은 일반 사용자로 돌므로 키는 그 사용자가 읽을 수 있는 곳에 둔다. /var/lib/ztgate 는 root 의
+ * 0700 이라 거기 두면 ztgate_login 이 읽지도 만들지도 못한다. ztgate_login 을 먼저 돌려 사용자의 키로
+ * 만들어 두면 root 인 vpn_client 도 같은 파일을 읽는다.
  *
  * 키는 P-256 개인키 PEM 하나다 (0600, 없으면 만든다). ztgate_login 이 IdP 에 토큰을 청할 때 이 키로
  * 증명을 붙이면 IdP 가 토큰에 그 키의 지문을 적고, 이 클라이언트는 LOGIN 마다 같은 키로 새 증명을
