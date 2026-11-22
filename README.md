@@ -415,7 +415,7 @@ mcp/install.sh                 # 일반 계정으로 실행한다. 필요한 곳
 
 ### 패키지로 설치하기 (DEB / RPM)
 
-저장소를 빌드할 수 없는 장비에는 서버 패키지 `ztgate-server` 를 씁니다. CI 가 만들어 산출물(`ztgate-server-deb`, `ztgate-server-rpm`)로 올리고, 직접 만들려면 `make server` 뒤에 `packaging/build.sh deb` 또는 `packaging/build.sh rpm` 입니다 (`packaging/out/`).
+저장소를 빌드할 수 없는 장비에는 서버 패키지 `ztgate-server` 를 씁니다. CI 가 만들어 산출물(`ztgate-server-deb`, `ztgate-server-rpm`)로 올리고 `v*` 태그의 GitHub 릴리스에도 넣습니다. 직접 만들려면 `make server` 뒤에 `packaging/build.sh deb` 또는 `packaging/build.sh rpm` 입니다 (`packaging/out/`).
 
 ```bash
 sudo apt install ./ztgate-server_<버전>_amd64.deb        # Debian, Ubuntu (OpenSSL 3, Node.js 18 이상)
@@ -1039,7 +1039,7 @@ sendto(buf, n + 32)     └─────────────────�
 - **설정은 텍스트 파일입니다.** 데이터베이스는 없고, 파일을 고친 뒤 `SIGHUP`(reload)으로 반영합니다. 관리 헬퍼, MCP 도구, 웹 콘솔이 그 파일을 대신 고칩니다.
 - **기기 목록과 등록 대기 목록은 서버와 관리 도구가 잠금 파일(`/etc/ztgate/.ztgate.lock`, flock)로 번갈아 고칩니다.** 손으로 고칠 때는 이 잠금을 잡지 않으므로, 등록 코드로 기기가 올라오는 순간과 겹치면 한쪽이 고친 것이 사라질 수 있습니다. 손으로 고칠 때는 `flock /etc/ztgate/.ztgate.lock -c "vi /etc/ztgate/devices.conf"` 처럼 잡고 고칩니다.
 - **이중화는 클라이언트의 장애 조치와 주 서버에서 부 서버로의 설정 복제까지입니다.** 서버끼리 세션을 나누지 않아, 다른 서버로 넘어가면 새로 핸드셰이크하고 그동안의 패킷은 잃습니다. 설정을 고치는 곳은 주 서버 하나라 주 서버가 죽은 동안에는 새 등록과 설정 변경이 멈춥니다 (`ztgate-sync`). 서버를 다시 시작하면 그 서버의 세션이 모두 다시 핸드셰이크합니다.
-- **배포물에 서명이 없습니다.** 서버의 DEB 와 RPM 은 CI 산출물로만 있고, 서명한 apt 나 dnf 저장소는 없습니다. Windows MSI 는 코드 서명을 하지 않아 SmartScreen 경고가 뜹니다. Windows 자동 업데이트는 매니페스트의 서명으로 무엇을 설치할지 정하므로 업데이트 서버를 차지해도 서명 키 없이는 설치시키지 못하지만, 설치되는 MSI 자체는 서명되지 않은 파일입니다. 서명 키는 업데이트 서버 밖에 두고 서버 키만큼 지킵니다.
+- **배포물에 서명이 없습니다.** 서버의 DEB 와 RPM 은 GitHub 릴리스와 CI 산출물로 내고, 서명한 apt 나 dnf 저장소는 없습니다. Windows MSI 는 코드 서명을 하지 않아 SmartScreen 경고가 뜹니다. Windows 자동 업데이트는 매니페스트의 서명으로 무엇을 설치할지 정하므로 업데이트 서버를 차지해도 서명 키 없이는 설치시키지 못하지만, 설치되는 MSI 자체는 서명되지 않은 파일입니다. 서명 키는 업데이트 서버 밖에 두고 서버 키만큼 지킵니다.
 
 ## Windows 클라이언트
 
