@@ -486,13 +486,15 @@ def main():
     # 파일에 없던 키를 None 으로 둔 것은 바뀐 것이 아니다. 꼭 있어야 하는 키는 기본값으로라도 적는다.
     changes = {k: v for k, v in changes.items() if v is not None or k in file_env}
     dns_changed = (want["dns.server"], want["dns.domain"]) != (current["dns.server"], current["dns.domain"])
-    dns_toggled = (want["dns.server"] is None) != (dns_lines is None)
+    # 서버는 dns.conf 가 있을 때만 -d 로 받으므로 파일이 생기거나 없어질 때만 다시 띄운다. 주석뿐인 파일은
+    # 서버에게도 DNS 를 끈 것이라, 끄라는 값과 같으면 지우지 않는다.
+    dns_toggled = dns_changed and (want["dns.server"] is None) != (dns_lines is None)
 
     done = []
     if changes:
         write_atomic(ENV_FILE, edit_env(env_lines, changes))
         done.append("server.env: " + ", ".join("%s=%s" % (k, "(지움)" if v is None else v) for k, v in changes.items()))
-    if dns_changed or dns_toggled:
+    if dns_changed:
         if want["dns.server"] is None:
             os.unlink(DNS_FILE)
             done.append("dns.conf: 지움 (내부 DNS 끔)")

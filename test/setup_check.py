@@ -237,6 +237,13 @@ def main():
     expect("dns server changed: reload, not restart", w.changes(), ["reload ztgate.service"])
     w.run("--yes", "--dns-server", "none", "--dns-domain", "none")
     expect("dns off: dns.conf removed and restarted", (w.exists("dns.conf"), w.changes()), (False, ["restart ztgate.service"]))
+    with open(os.path.join(w.etc, "dns.conf"), "w") as f:
+        f.write("# server 10.101.0.53\n# domain corp.example\n")
+    code, out, _ = w.run("--yes")
+    expect("dns.conf with comments only: kept, no restart", (code, w.exists("dns.conf"), w.changes()), (0, True, []))
+    w.run("--yes", "--dns-server", "10.101.0.53", "--dns-domain", "corp.example")
+    expect("...then dns on: the file the server already reads, reload", w.changes(), ["reload ztgate.service"])
+    w.run("--yes", "--dns-server", "none", "--dns-domain", "none")
     w.run("--yes", "--tcp-port", "none", "--forward-out", "none")
     lines = w.read().splitlines()
     expect("none comments the line out where it was", (lines[4], lines[6]), ("# FORWARD_OUT=eth0", "# TCP_PORT=9443"))
