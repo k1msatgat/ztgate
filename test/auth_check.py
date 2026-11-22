@@ -1109,6 +1109,47 @@ def tcp_tests(path):
     return srv
 
 
+def tcp_fd_tests(path):
+    """-t: 인증 없는 TCP 연결이 fd 한도를 다 쓰면 기기 목록 다시 읽기, 상태 소켓까지 실패하고 듣는 소켓이
+    epoll 을 계속 깨운다. 한도를 128 로 낮춘 서버에 연결 200 개를 열어 본다."""
+    import resource
+    tcp_port = PORT + 444
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard))
+    try:
+        srv = Server(path, opts=["-t", str(tcp_port)])
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    socks = []
+    try:
+        for _ in range(200):
+            socks.append(socket.create_connection(("127.0.0.1", tcp_port), timeout=2))
+        time.sleep(0.5)
+
+        def cpu():
+            with open("/proc/%d/stat" % srv.proc.pid) as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+            return int(fields[11]) + int(fields[12])
+        start = cpu()
+        time.sleep(1.0)
+        expect("tcp fds: the server is not spinning (cpu ticks in 1s < 30)", cpu() - start < 30, True)
+
+        before = len(srv.text())
+        srv.reload()
+        new = srv.text()[before:]
+        expect("tcp fds: the device list still reloads", ("device: reloaded" in new, "reload failed" in new), (True, False))
+        try:
+            ok = "sessions" in srv.status()
+        except (OSError, ValueError):
+            ok = False
+        expect("tcp fds: the status socket still answers", ok, True)
+    finally:
+        for s in socks:
+            s.close()
+        srv.stop()
+    return srv
+
+
 def flow_tests(path):
     """-F: 서버 쪽에서 클라이언트로 먼저 거는 패킷은 버리고, 클라이언트가 연 흐름의 답만 들이는가.
 
@@ -2404,6 +2445,7 @@ def main():
         logs.append(tag_tests(path).text())
         logs.append(flow_tests(path).text())
         logs.append(tcp_tests(path).text())
+        logs.append(tcp_fd_tests(path).text())
         logs.append(rate_limit_tests(path).text())
 
         # 기기 여러 대. 터널 대역을 /16 으로 넓혀 1000 대의 주소가 들어가게 한다.

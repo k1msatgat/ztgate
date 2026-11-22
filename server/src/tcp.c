@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "common.h"
@@ -16,6 +17,7 @@
 
 #define FRAME_HDR	2
 #define FD_MAP		65536	/* 이보다 큰 fd 의 연결은 받지 않는다 */
+#define FD_RESERVE	64	/* TCP 연결이 쓰지 않고 남겨 두는 fd (설정 파일, 잠금 파일, 상태 소켓, 감사 로그) */
 
 typedef struct conn {
 	pthread_mutex_t lock;	/* fd, gen, wbuf 를 지킨다 (쓰기는 어느 워커든 한다) */
@@ -34,13 +36,21 @@ static int16_t fd_conn[FD_MAP];
 static int ready;
 static int ep = -1;	/* 연결을 건 epoll (워커 0). 쓰기가 막히면 다른 워커가 EPOLLOUT 을 건다 */
 static int nconn;
+static int conn_max = TCP_CONN_MAX;	/* fd 한도에 맞춰 init 이 줄인다 */
 
 static void init(void)
 {
+	struct rlimit rl;
 	int i;
 
 	if (ready) {
 		return;
+	}
+	/* 인증 없는 연결이 fd 를 다 쓰면 다시 읽기의 fopen, 등록의 잠금 파일, 상태 소켓의 accept 가 모두
+	 * EMFILE 로 실패한다. 기기를 지워도 적용되지 않는다. 연결 수를 fd 한도보다 FD_RESERVE 만큼 적게 둔다. */
+	if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY &&
+			rl.rlim_cur < (rlim_t)TCP_CONN_MAX + FD_RESERVE) {
+		conn_max = rl.rlim_cur > FD_RESERVE ? (int)(rl.rlim_cur - FD_RESERVE) : 0;
 	}
 	for (i = 0; i < TCP_CONN_MAX; i++) {
 		pthread_mutex_init(&conns[i].lock, NULL);
@@ -125,9 +135,9 @@ void tcp_accept(int epfd, int lfd)
 		if (fd < 0) {
 			return;
 		}
-		for (i = 0; i < TCP_CONN_MAX && conns[i].fd >= 0; i++) {
+		for (i = 0; i < conn_max && conns[i].fd >= 0; i++) {
 		}
-		if (i == TCP_CONN_MAX || fd >= FD_MAP) {
+		if (i == conn_max || fd >= FD_MAP) {
 			close(fd);
 			continue;
 		}

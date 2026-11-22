@@ -40,6 +40,10 @@ RestartPreventExitStatus=1
 # 있는 줄은 서버가 스스로 1초에 20줄로 묶는다 (LOG_LIMITED).
 LogRateLimitIntervalSec=0
 
+# -t 의 TCP 연결(최대 4096, server/include/tcp.h)과 설정 파일, 상태 소켓이 함께 쓸 fd. systemd 의
+# 기본 soft 한도 1024 로는 연결이 먼저 fd 를 다 써서 다시 읽기와 등록이 실패한다.
+LimitNOFILE=8192
+
 # 서버가 받는 힘은 tun 을 여는 것(CAP_NET_ADMIN)과 443 같은 낮은 TCP 포트를 여는 것
 # (CAP_NET_BIND_SERVICE, -t) 뿐이다.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
