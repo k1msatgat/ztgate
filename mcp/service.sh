@@ -69,7 +69,7 @@ EOF
 
 case "${1:-}" in
 run)
-	# 상태 소켓은 RuntimeDirectory(/run/ztgate, root 전용) 안에 둔다. ztgate_ctl 이 읽는다.
+	# 상태 소켓은 RuntimeDirectory(/run/ztgate, ztgate 소유 700) 안에 둔다. ztgate_ctl 이 읽는다.
 	# -n / -m 은 아래 tun-up 이 tun 에 붙이는 값과 같아야 한다. 서버가 그대로 클라이언트에
 	# 내려 준다.
 	# -e: 등록 코드의 대기 목록. 서버가 그 코드로 온 기기를 devices.conf 에 직접 올린다.

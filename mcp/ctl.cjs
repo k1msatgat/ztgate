@@ -1,9 +1,10 @@
 #!/usr/bin/node
-/* ztgate_ctl — MCP 서버가 sudo 로 부르는 유일한 프로그램.
+/* ztgate_ctl — MCP 서버가 sudo 로 부르는 서버 관리 프로그램.
  *
- * MCP 서버(server.js)는 일반 계정으로 돌고 권한이 필요한 일은 전부 여기로 넘긴다.
- * sudoers 는 이 파일 하나만, 인자 없이 부르는 것만 허용한다. 그래서 MCP 쪽이 뚫려도
- * 할 수 있는 일은 아래 COMMANDS 에 있는 것이 전부다.
+ * MCP 서버(server.js)는 일반 계정으로 돌고 권한이 필요한 일은 여기와 배포기(mcp/deploy.cjs, ztgate-deploy)로
+ * 넘긴다. sudoers 는 이 둘을 인자 없이 부르는 것만 허용한다(mcp/install.sh). 그래서 MCP 쪽이 뚫려도 서버를
+ * 다루는 일은 아래 COMMANDS 에 있는 것이 전부다. 배포기는 허용된 ref 의 커밋을 root 로 빌드해 깔 수 있다
+ * (docs/decisions/0014-deploy-from-remote.md).
  *
  * 요청은 argv 가 아니라 stdin 의 JSON 한 덩어리로 받는다. 기기 키가 들어오는데
  * argv 는 ps 와 sudo 로그에 남는다.
@@ -779,7 +780,7 @@ function unit() {
 		}
 	}
 	if (p.LoadState !== 'loaded') {
-		fail(`${UNIT} is not installed (run mcp/install.sh)`);
+		fail(`${UNIT} is not installed (install the ztgate-server package)`);
 	}
 
 	p.running = p.ActiveState === 'active';
