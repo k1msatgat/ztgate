@@ -1,7 +1,6 @@
 #include <windows.h>
 #include <winhttp.h>
 #include <bcrypt.h>
-#include <sddl.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +9,7 @@
 
 #include "update.h"
 #include "crypt.h"
+#include "secdir.h"
 #include "json.h"
 
 #pragma comment(lib, "winhttp.lib")
@@ -235,27 +235,18 @@ static void mark_tried(const char *version)
 /* %ProgramData%\ztgate\update — SYSTEM 과 관리자만. 사용자가 받은 MSI 를 바꿔치기하지 못하게. */
 static int update_dir(wchar_t *dir, size_t cap)
 {
-	SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, FALSE };
 	wchar_t base[MAX_PATH];
-	int ok;
 
 	if (!GetEnvironmentVariableW(L"ProgramData", base, MAX_PATH)) {
 		return -1;
 	}
+	/* 위 폴더도 맞춘다. 사용자가 소유한 위 폴더에서는 update 를 치우고 다른 것을 둘 수 있다. */
 	swprintf(dir, cap, L"%ls\\ztgate", base);
-	CreateDirectoryW(dir, NULL);
-	swprintf(dir, cap, L"%ls\\ztgate\\update", base);
-	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
-				SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
+	if (secdir_make(dir, SECDIR_BASE_SDDL) < 0) {
 		return -1;
 	}
-	ok = CreateDirectoryW(dir, &sa) || GetLastError() == ERROR_ALREADY_EXISTS;
-	if (ok) {
-		/* 이미 있던 폴더의 권한도 맞춘다 (누가 먼저 만들어 두었을 수 있다). */
-		SetFileSecurityW(dir, DACL_SECURITY_INFORMATION, sa.lpSecurityDescriptor);
-	}
-	LocalFree(sa.lpSecurityDescriptor);
-	return ok ? 0 : -1;
+	swprintf(dir, cap, L"%ls\\ztgate\\update", base);
+	return secdir_make(dir, L"O:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
 }
 
 /* 맨 바깥 객체의 문자열 값. 없으면 -1. */

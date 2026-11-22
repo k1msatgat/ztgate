@@ -1,18 +1,14 @@
 #include <windows.h>
-#include <sddl.h>
 #include <dbghelp.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 
 #include "filelog.h"
+#include "secdir.h"
 
 #define LOG_MAX_BYTES	(1024 * 1024)
 #define LOG_KEEP	3	/* service.1.log .. service.3.log */
-
-/* SYSTEM 과 관리자는 모두, 사용자는 읽기만. P 는 위 폴더(ProgramData)의 권한을 물려받지 않는다는 뜻 —
- * ProgramData 는 사용자에게 파일을 만들 권한을 주므로 물려받으면 누구나 로그를 바꿔 놓을 수 있다. */
-#define DIR_SDDL L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FRFX;;;BU)"
 
 static CRITICAL_SECTION lock;
 static int lock_ready;
@@ -20,22 +16,6 @@ static HANDLE file = INVALID_HANDLE_VALUE;
 static wchar_t log_dir[MAX_PATH];
 static wchar_t dump_dir[MAX_PATH];
 static wchar_t log_path[MAX_PATH];
-
-static void make_dir(const wchar_t *path)
-{
-	SECURITY_ATTRIBUTES sa;
-	PSECURITY_DESCRIPTOR sd = NULL;
-
-	memset(&sa, 0, sizeof(sa));
-	sa.nLength = sizeof(sa);
-	if (ConvertStringSecurityDescriptorToSecurityDescriptorW(DIR_SDDL, SDDL_REVISION_1, &sd, NULL)) {
-		sa.lpSecurityDescriptor = sd;
-	}
-	CreateDirectoryW(path, sd != NULL ? &sa : NULL);
-	if (sd != NULL) {
-		LocalFree(sd);
-	}
-}
 
 static void open_file(void)
 {
@@ -76,11 +56,19 @@ void filelog_open(void)
 	if (!ExpandEnvironmentStringsW(L"%ProgramData%\\ztgate", base, MAX_PATH)) {
 		return;
 	}
-	make_dir(base);
+	/* 맞추지 못한 폴더에는 쓰지 않는다. 정션이면 SYSTEM 의 쓰기와 돌리기(지우기, 옮기기)가 다른 곳으로 간다. */
+	if (secdir_make(base, SECDIR_BASE_SDDL) < 0) {
+		return;
+	}
 	swprintf(log_dir, MAX_PATH, L"%ls\\logs", base);
 	swprintf(dump_dir, MAX_PATH, L"%ls\\dumps", base);
-	make_dir(log_dir);
-	make_dir(dump_dir);
+	if (secdir_make(dump_dir, SECDIR_BASE_SDDL) < 0) {
+		dump_dir[0] = L'\0';
+	}
+	if (secdir_make(log_dir, SECDIR_BASE_SDDL) < 0) {
+		log_dir[0] = L'\0';
+		return;
+	}
 	swprintf(log_path, MAX_PATH, L"%ls\\service.log", log_dir);
 
 	EnterCriticalSection(&lock);

@@ -114,6 +114,7 @@
     <ClCompile Include="..\core\wfp.c" />
     <ClCompile Include="..\core\policy.c" />
     <ClCompile Include="..\core\crypt.c" />
+    <ClCompile Include="..\core\secdir.c" />
     <ClCompile Include="..\core\device.c" />
     <ClCompile Include="..\core\preset.c" />
     <ClCompile Include="..\core\ipc.c" />
@@ -125,6 +126,7 @@
     <ClInclude Include="..\core\tunnel.h" />
     <ClInclude Include="..\core\posture.h" />
     <ClInclude Include="..\core\update.h" />
+    <ClInclude Include="..\core\secdir.h" />
     <ClInclude Include="..\core\tpm.h" />
     <ClInclude Include="..\core\dpop.h" />
     <ClInclude Include="..\core\wfp.h" />
