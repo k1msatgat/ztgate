@@ -2645,29 +2645,30 @@ void CMainDlg::OnDestroy()
 	 * 서비스에서 떨어질 뿐이다. 다시 켜면 열려 있는 터널에 그대로 붙는다.
 	 *
 	 * 순서가 중요하다.
-	 *  1) destroy 가 서비스에서 떨어지고 읽는 스레드가 끝날 때까지 기다린다. 이 시점
+	 *  1) 로그인 워커를 먼저 끝낸다. 워커는 토큰을 청할 때 세션으로 서비스에 DPoP 증명을
+	 *     받는다 (LoginConfig 의 dpop). 세션을 먼저 해제하면 해제된 세션을 쓴다.
+	 *  2) destroy 가 서비스에서 떨어지고 읽는 스레드가 끝날 때까지 기다린다. 이 시점
 	 *     이후로는 새 PostMessage 가 생기지 않는다.
-	 *  2) 그 뒤에 큐에 남아 있는 WM_VPN_LOG 의 버퍼를 해제한다. 창이 사라지면
+	 *  3) 그 뒤에 큐에 남아 있는 WM_VPN_LOG 의 버퍼를 해제한다. 창이 사라지면
 	 *     이 메시지들은 처리되지 않으므로 여기서 치우지 않으면 그대로 샌다.
 	 * ESC / Enter 로 닫을 때는 WM_CLOSE 없이 바로 WM_DESTROY 가 오므로
 	 * 이 처리를 OnClose 가 아니라 여기에 둔다. */
-	vpn_session_destroy(m_session);
-	m_session = nullptr;
-	vpn_session_drain(GetSafeHwnd());
-
-	/* 로그인 워커를 그만두게 한다. 브라우저를 기다리는 중이면 0.25초 안에, 갱신 중이면
-	 * IdP 의 응답(길면 10초)을 기다린다. 그 안에 끝나지 않으면 핸들을 남겨 둔다 — 워커가
-	 * 아직 쓰고 있다. */
 	WTSUnRegisterSessionNotification(GetSafeHwnd());
 
 	/* 갱신 중이면 끝날 때까지 기다린다 (IdP 가 refresh token 을 바꿔 주는 중일 수 있고, 그 새
 	 * 것을 저장하지 못하면 다음에 켤 때 브라우저로 다시 로그인해야 한다). 요청 둘이 각자 10초
-	 * 안에 끝나므로 넉넉히 25초. 브라우저 로그인은 cancel 로 곧 끝난다. */
+	 * 안에 끝나므로 넉넉히 25초. 브라우저 로그인은 cancel 로 곧 끝난다. 그 안에 끝나지 않으면
+	 * 핸들도 세션도 남겨 둔다 — 워커가 아직 쓰고 있고, 프로세스가 곧 끝난다. */
+	bool login_running = false;
+
 	if (m_login_thread) {
 		SetEvent(m_login_cancel);
 		if (WaitForSingleObject(m_login_thread, m_login_interactive ? 3000 : 25000) == WAIT_OBJECT_0) {
 			CloseHandle(m_login_thread);
 			CloseHandle(m_login_cancel);
+		}
+		else {
+			login_running = true;
 		}
 		m_login_thread = nullptr;
 		m_login_cancel = nullptr;
@@ -2676,6 +2677,12 @@ void CMainDlg::OnDestroy()
 		CloseHandle(m_login_cancel);
 		m_login_cancel = nullptr;
 	}
+
+	if (!login_running) {
+		vpn_session_destroy(m_session);
+	}
+	m_session = nullptr;
+	vpn_session_drain(GetSafeHwnd());
 	{
 		MSG msg;
 
