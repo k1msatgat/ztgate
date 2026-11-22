@@ -29,7 +29,7 @@ if os.environ.get("FAKE_FAIL"):
 DEV = "ab" * 16
 answers = {
     "status": {"ok": True, "running": True, "registered_devices": 2, "acl": {"rules": 3},
-               "counters": {"handshake_ok": 1284, "deny_posture": 1, "acl_denied": 4},
+               "counters": {"handshake_ok": 1284, "deny_posture": 1, "deny_tun_ip": 2, "acl_denied": 4},
                "sessions": [{"tunnel_ip": "10.0.0.3", "device_id": DEV, "endpoint": "198.51.100.7:4500",
                              "age_sec": 3720, "rx_bytes": 2048, "tx_bytes": 4096, "tags": ["eng"],
                              "posture": {"firewall": "on", "antivirus": "on", "disk": "off"},
@@ -84,6 +84,7 @@ def main():
     expect("status: exits 0", code, 0)
     expect("status: the session row", all(w in out for w in ("10.0.0.3", "alice", "198.51.100.7:4500", "1시간 2분")), True)
     expect("status: counters on one line", "핸드셰이크 1,284" in out and "ACL 차단 4" in out, True)
+    expect("status: the reasons add up to the denied count", "거절 3" in out and "포스처 1 · 터널 주소 2" in out, True)
     expect("status: no colour when stdout is not a terminal", "\033[" in out, False)
 
     code, out, _ = run("--color", "always", "status")

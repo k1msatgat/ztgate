@@ -150,8 +150,9 @@ def show_status(r, paint):
              ("ACL 차단", paint("warn", num(cnt.get("acl_denied", 0))) if cnt.get("acl_denied") else "0")]
     print("  " + paint("dim", " · ").join("%s %s" % (paint("dim", k), v) for k, v in facts))
     if denied:
-        print("  " + paint("dim", "거절 사유: 모르는 기기 %s · 인증 %s · 포스처 %s" % (
-            num(cnt.get("deny_unknown_device", 0)), num(cnt.get("deny_bad_auth", 0)), num(cnt.get("deny_posture", 0)))))
+        print("  " + paint("dim", "거절 사유: 모르는 기기 %s · 인증 %s · 포스처 %s · 터널 주소 %s" % (
+            num(cnt.get("deny_unknown_device", 0)), num(cnt.get("deny_bad_auth", 0)), num(cnt.get("deny_posture", 0)),
+            num(cnt.get("deny_tun_ip", 0)))))
     print()
     if not sessions:
         if not r.get("sessions_error"):
