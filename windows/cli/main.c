@@ -433,8 +433,12 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "       %s enroll <invite-link> [--force]                 the same, from a ztgate://enroll?... link\n", argv[0]);
 		fprintf(stderr, "       %s enroll [--force]                             print an id and key to register by hand\n", argv[0]);
 		fprintf(stderr, "       %s device\n", argv[0]);
+		fprintf(stderr, "       %s tpm-selftest                                  TPM ECDH against the software one\n", argv[0]);
+		fprintf(stderr, "       %s dpop-proof <token>                            a LOGIN DPoP proof with this user's key\n", argv[0]);
 		fprintf(stderr, " e.g. %s ztgate vpn.example.com 9000\n", argv[0]);
 		fprintf(stderr, " the tunnel address and the routes come from the server\n");
+		fprintf(stderr, " enroll and device use this user's own identity (HKCU), not the service's that the GUI\n");
+		fprintf(stderr, " uses; for that one see `vpn_service ctl status`\n");
 		return 1;
 	}
 
