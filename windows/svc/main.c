@@ -2092,10 +2092,11 @@ static int ctl(int argc, wchar_t **argv)
 usage:
 	fprintf(stderr, "usage: vpn_service ctl status [seconds]\n");
 	fprintf(stderr, "       vpn_service ctl watch [seconds]                       status and the log\n");
-	fprintf(stderr, "       vpn_service ctl connect <adapter-name> <server-ip> <port>\n");
+	fprintf(stderr, "       vpn_service ctl connect <adapter-name> <servers> <port>\n");
 	fprintf(stderr, "       vpn_service ctl disconnect\n");
-	fprintf(stderr, "       vpn_service ctl enroll <server-ip> <port> <code>\n");
+	fprintf(stderr, "       vpn_service ctl enroll <servers> <port> <code>\n");
 	fprintf(stderr, "       vpn_service ctl login <token-file> [seconds]          logged in while this runs\n");
+	fprintf(stderr, "<servers> is a DNS name or an IP, or up to four of them separated by commas.\n");
 
 	return 1;
 }
