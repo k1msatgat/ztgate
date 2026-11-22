@@ -516,7 +516,9 @@ static void worker_stop_and_wait(void)
  *   그 밖 (네트워크 너머, 서비스 계정, 익명)  접근 없음
  *
  * 이름 있는 파이프는 기본으로 다른 PC 에서도 열 수 있다. PIPE_REJECT_REMOTE_CLIENTS 로
- * 그 길을 닫고, 접근 목록에서도 대화형 로그온(IU)만 들인다. */
+ * 그 길을 닫고, 접근 목록에서도 대화형 로그온(IU)만 들인다.
+ *
+ * 소유자는 SYSTEM 으로 적는다(O:SY). 붙는 쪽(ipc_open)은 그것을 보고 서비스의 파이프인지 가린다. */
 static HANDLE pipe_create(void)
 {
 	SECURITY_ATTRIBUTES sa;
@@ -526,7 +528,7 @@ static HANDLE pipe_create(void)
 	sa.nLength = sizeof(sa);
 
 	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
-				L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", SDDL_REVISION_1,
+				L"O:SYD:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)", SDDL_REVISION_1,
 				&sa.lpSecurityDescriptor, NULL)) {
 		return INVALID_HANDLE_VALUE;
 	}
@@ -1926,7 +1928,6 @@ static int ctl(int argc, wchar_t **argv)
 	OVERLAPPED ov;
 	HANDLE h;
 	ULONGLONG deadline;
-	DWORD mode = PIPE_READMODE_MESSAGE;
 	DWORD n;
 	DWORD seconds = 3;
 	int verbose = 0;
@@ -1936,15 +1937,14 @@ static int ctl(int argc, wchar_t **argv)
 		goto usage;
 	}
 
-	h = CreateFileW(IPC_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
-			FILE_FLAG_OVERLAPPED, NULL);
+	h = ipc_open();
 	if (h == INVALID_HANDLE_VALUE) {
 		fprintf(stderr, "cannot reach the service (%lu)%s\n", GetLastError(),
 				GetLastError() == ERROR_FILE_NOT_FOUND ? ": it is not running" :
-				GetLastError() == ERROR_PIPE_BUSY ? ": another control program (the GUI?) is connected" : "");
+				GetLastError() == ERROR_PIPE_BUSY ? ": another control program (the GUI?) is connected" :
+				GetLastError() == ERROR_INVALID_OWNER ? ": the pipe does not belong to the service" : "");
 		return 1;
 	}
-	SetNamedPipeHandleState(h, &mode, NULL, NULL);
 
 	hello.version = IPC_VERSION;
 	hello.packet_size = (uint32_t)sizeof(tunnel_packet_t);

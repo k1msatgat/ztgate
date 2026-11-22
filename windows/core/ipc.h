@@ -175,6 +175,12 @@ typedef struct ipc_error {
 int ipc_send(HANDLE pipe, uint32_t type, const void *body, uint32_t len,
 		DWORD timeout_ms, HANDLE cancel);
 
+/* 서비스의 파이프에 붙는다 (overlapped, 메시지 모드). 서비스가 내려간 사이 다른 프로세스가 같은
+ * 이름으로 파이프를 만들어 두면 토큰과 등록 코드가 그쪽으로 간다. 그래서 파이프의 소유자가 SYSTEM 이나
+ * Administrators 인지 본다 — 관리자 권한이 없는 프로세스는 소유자를 그렇게 둘 수 없다. 아니면
+ * INVALID_HANDLE_VALUE 와 ERROR_INVALID_OWNER. 그 밖의 실패는 CreateFileW 의 GetLastError 그대로. */
+HANDLE ipc_open(void);
+
 #ifdef __cplusplus
 }
 #endif

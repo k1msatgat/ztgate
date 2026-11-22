@@ -2,6 +2,8 @@
 
 #include "ipc.h"
 
+#include <aclapi.h>
+
 int ipc_send(HANDLE pipe, uint32_t type, const void *body, uint32_t len,
 		DWORD timeout_ms, HANDLE cancel)
 {
@@ -64,4 +66,39 @@ out:
 	SecureZeroMemory(msg, sizeof(msg));	/* 등록 코드나 키가 지나갔을 수 있다 */
 
 	return ret;
+}
+
+static int owned_by_system(HANDLE h)
+{
+	PSECURITY_DESCRIPTOR sd = NULL;
+	PSID owner = NULL;
+	int ok;
+
+	if (GetSecurityInfo(h, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, NULL, NULL, NULL, &sd) !=
+			ERROR_SUCCESS) {
+		return 0;
+	}
+	ok = owner && (IsWellKnownSid(owner, WinLocalSystemSid) || IsWellKnownSid(owner, WinBuiltinAdministratorsSid));
+	LocalFree(sd);
+	return ok;
+}
+
+HANDLE ipc_open(void)
+{
+	DWORD mode = PIPE_READMODE_MESSAGE;
+	HANDLE h;
+
+	/* SECURITY_IDENTIFICATION: 상대가 서비스가 아니어도 이쪽 사용자로 행세(impersonation)하지 못한다. */
+	h = CreateFileW(IPC_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+			FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, NULL);
+	if (h == INVALID_HANDLE_VALUE) {
+		return h;
+	}
+	if (!owned_by_system(h)) {
+		CloseHandle(h);
+		SetLastError(ERROR_INVALID_OWNER);
+		return INVALID_HANDLE_VALUE;
+	}
+	SetNamedPipeHandleState(h, &mode, NULL, NULL);
+	return h;
 }

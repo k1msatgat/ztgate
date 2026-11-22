@@ -298,24 +298,21 @@ static int on_message(vpn_session_t *s, const uint8_t *msg, DWORD n)
 /* 서비스에 붙어 끊길 때까지 읽는다. 돌아오면 붙어 있지 않은 상태다. */
 static void attach(vpn_session_t *s)
 {
-	static const DWORD message_mode = PIPE_READMODE_MESSAGE;
 	uint8_t *msg;
 	ipc_hello_t hello;
 	OVERLAPPED ov;
 	HANDLE waits[2];
 	HANDLE h;
-	DWORD mode = message_mode;
 	DWORD n;
 	DWORD err;
 
-	h = CreateFileW(IPC_PIPE_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
-			FILE_FLAG_OVERLAPPED, NULL);
+	h = ipc_open();
 	if (h == INVALID_HANDLE_VALUE) {
-		/* 파이프가 없으면 서비스가 없는 것이고, 바쁘면 다른 프로그램이 붙어 있는 것이다. */
+		/* 파이프가 없거나 서비스의 것이 아니면 서비스가 없는 것이고, 바쁘면 다른 프로그램이 붙어
+		 * 있는 것이다. */
 		set_link(s, GetLastError() == ERROR_PIPE_BUSY ? VPN_REMOTE_BUSY : VPN_REMOTE_DOWN);
 		return;
 	}
-	SetNamedPipeHandleState(h, &mode, NULL, NULL);
 
 	msg = (uint8_t *)HeapAlloc(GetProcessHeap(), 0, IPC_MAX_MSG);
 	memset(&ov, 0, sizeof(ov));
