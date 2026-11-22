@@ -58,7 +58,7 @@
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
-      <!-- C 파일(tunnel.c / vpn_session.c / proto.c)과 C++ 파일이 섞여 있어
+      <!-- C 파일(vpn_remote.c / ipc.c / json.c)과 C++ 파일이 섞여 있어
            미리 컴파일된 헤더를 쓰지 않는다. PCH 는 언어마다 따로 만들어야 하고,
            C 파일이 pch.h(= MFC 헤더) 를 포함할 수는 없다. -->
       <PrecompiledHeader>NotUsing</PrecompiledHeader>

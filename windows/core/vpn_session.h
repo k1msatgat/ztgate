@@ -1,9 +1,8 @@
 #ifndef VPN_SESSION_H
 #define VPN_SESSION_H
 
-/* tunnel_run()은 끝날 때까지 돌아오지 않는 블로킹 함수라 GUI 스레드에서 부를 수 없다.
- * 이 계층이 워커 스레드를 하나 띄워 거기서 tunnel_run()을 돌리고, 워커 스레드에서
- * 올라오는 로그와 상태 변화를 PostMessage로 UI 스레드에 넘긴다.
+/* GUI 가 터널을 조종하는 인터페이스. 채우는 것은 vpn_remote.c 다 (서비스에 파이프로 붙는다).
+ * 로그와 상태 변화는 PostMessage 로 UI 스레드에 넘긴다.
  *
  * UI 프레임워크(MFC / 순수 Win32)에 의존하지 않도록 HWND만 알고 있다. */
 

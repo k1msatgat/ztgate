@@ -33,7 +33,6 @@ struct vpn_session {
 	uint32_t preset;	/* ipc_device.preset */
 	uint32_t preset_result;
 
-	/* 패킷 링버퍼. vpn_session.c 와 같은 방식이다. */
 	tunnel_packet_t *ring;
 	int ring_head;
 	int ring_count;
