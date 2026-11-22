@@ -883,8 +883,8 @@ function systemctl(verb) {
  * 답하면 폐기했다고 믿은 기기가 계속 붙어 있게 된다. */
 function reload() {
 	const u = unit();
-	const filter = [`_SYSTEMD_INVOCATION_ID=${u.InvocationID}`, '--grep', '^(device|acl): reload'];
-	let before, now, i, acl, dev, aclLive;
+	const filter = [`_SYSTEMD_INVOCATION_ID=${u.InvocationID}`, '--grep', '^(device|acl|enroll): reload'];
+	let before, now, i, acl, dev, enroll, aclLive;
 
 	if (!u.running) {
 		return { reloaded: false, note: 'server is not running; the new files are read at the next start' };
@@ -911,6 +911,12 @@ function reload() {
 
 	if (dev.msg.includes('failed')) {
 		fail('server rejected the device file and kept the previous list');
+	}
+	/* 서버는 "enroll:" 줄을 "device:" 줄보다 먼저 찍는다. 거부된 대기 목록의 코드는 쓸 수 없고, 다음 시작에서
+	 * 서버가 뜨지 않는다. */
+	enroll = now.find((e) => e.msg.startsWith('enroll:'));
+	if (enroll && enroll.msg.includes('failed')) {
+		fail('server rejected the enrollment list and kept the previous one');
 	}
 	if (acl && !acl.msg.includes('failed')) {
 		fs.writeFileSync(ACL_APPLIED, aclHash() + '\n');
