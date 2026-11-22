@@ -86,6 +86,7 @@ typedef struct client {
 	/* TCP 로 붙는다 (-T <port>). UDP 가 막힌 곳을 위한 것이다. 연결이 끊기면 다시 열고 핸드셰이크한다. */
 	int tcp_port;
 	int transport_down;		/* TCP 연결이 끊겼다 */
+	uint64_t reopen_at_ms;		/* 다시 열기에 실패했으면 이때까지 다시 열지 않는다 */
 	server_addr_t server;		/* 지금 붙는 서버. 다시 열 때 쓴다 */
 
 	/* 서버 여럿 (run 10.0.0.10,10.0.0.11 9000). 지금 서버가 답하지 않으면 다음 서버로 넘어간다.
@@ -429,11 +430,17 @@ static int pump_udp(client_t *c, int32_t tun_fd, uint8_t *packet, size_t cap)
 	}
 	if (wire < 0) {
 		if (c->session.tcp) {
-			/* 연결이 끊겼다. 다음 틱에 다시 열고 핸드셰이크한다 (open_transport). */
-			if (!c->transport_down) {
-				printf("[tcp] connection to the server closed\n");
+			/* 연결이 끊겼다. 다음 틱에 다시 열고 핸드셰이크한다 (open_transport). 끊긴 소켓은
+			 * 계속 읽을 수 있는 상태로 남아 epoll_wait 를 쉬지 않고 깨우므로 지금 빼고 닫는다. */
+			printf("[tcp] connection to the server closed\n");
+			if (c->epfd >= 0) {
+				epoll_ctl(c->epfd, EPOLL_CTL_DEL, c->session.sock, NULL);
 			}
+			close(c->session.sock);
+			c->session.sock = -1;
+			c->session.rlen = 0;
 			c->transport_down = 1;
+			c->reopen_at_ms = 0;
 			return 0;
 		}
 		perror("recv");
@@ -756,7 +763,8 @@ static int run(client_t *c, const char *ifname)
 		 *    기다리지 않고 바로 다시 물어본다.
 		 * 거절된 상태에서도 첫 번째 조건이 그대로 걸려, 포스처가 그대로여도 30초마다 다시
 		 * 물어본다. 서버 쪽 정책이 풀렸을 수 있다. */
-		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress || c->server_closed || c->transport_down ||
+		if (now - c->last_rx_ms > SERVER_TIMEOUT_MSEC || c->readdress || c->server_closed ||
+				(c->transport_down && now >= c->reopen_at_ms) ||
 				(c->denied && changed)) {
 			if (c->denied) {
 				printf("[HS] retry after deny\n");
@@ -766,6 +774,9 @@ static int run(client_t *c, const char *ifname)
 			}
 			else if (c->readdress) {
 				printf("[HS] re-handshake for the new tunnel address\n");
+			}
+			else if (c->transport_down) {
+				printf("[HS] reopening the tcp connection\n");
 			}
 			else {
 				printf("[HS] no rx from server for %ds, re-handshake\n", SERVER_TIMEOUT_SEC);
@@ -779,7 +790,8 @@ static int run(client_t *c, const char *ifname)
 				c->transport_down = 1;
 				next_server(c);
 				now = get_current_time_ms();
-				c->last_rx_ms = now - SERVER_TIMEOUT_MSEC + 5000;	/* 5초 뒤 다시 */
+				c->reopen_at_ms = now + 5000;
+				c->last_rx_ms = now;
 				c->last_ka_ms = now;
 				continue;
 			}

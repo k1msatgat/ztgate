@@ -396,6 +396,25 @@ CLI_PID=$!
 check "tcp: with udp blocked the client connects over tcp" wait_for 10 log_has "$WORK/client-tcp.log" "] connected"
 check "tcp: ping $SRV_TUN through the tunnel over tcp" ping_ok "$SRV_TUN"
 check "tcp: the server sees it as a tcp session" log_has "$SLOG" "(tcp) idx="
+# 서버 장비는 살아 있는데 TCP 포트가 RST 로 닫힌 경우(vpn_server 가 재시작하는 중). 연결이 끊기고 다시 열기도 곧바로
+# 실패한다. 그동안 5초마다 한 번만 다시 열어야 한다. ping 이 터널로 나가는 순간 RST 를 받는다.
+nft -f - <<EOF
+table inet e2e_tcprst {
+	chain input {
+		type filter hook input priority 0; policy accept;
+		tcp dport $TCP_PORT reject with tcp reset
+	}
+}
+EOF
+in_cli ping -c 1 -W 1 "$SRV_TUN" > /dev/null 2>&1
+check "tcp: the client notices the connection was reset" \
+	wait_for 5 log_has "$WORK/client-tcp.log" "[tcp] connection to the server closed"
+sleep 6
+check "tcp: while the port refuses, the client reconnects every 5s instead of spinning" \
+	sh -c "[ \$(grep -c 'connect (tcp)' '$WORK/client-tcp.log') -le 3 ]"
+nft delete table inet e2e_tcprst
+check "tcp: once the port takes connections again the client is back" \
+	wait_for 10 sh -c "[ \$(grep -c '] connected' '$WORK/client-tcp.log') -ge 2 ]"
 in_cli nft delete table inet e2e_noudp
 
 echo "== 8. server key pinning"
