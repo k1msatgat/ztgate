@@ -10,6 +10,6 @@ RUN dnf -y -q module enable nodejs:20 \
 		procps-ng findutils diffutils hostname \
 	&& dnf clean all \
 	&& useradd -m zt \
-	&& echo 'zt ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/zt
+	&& printf '%s\n' 'Defaults:zt !pam_acct_mgmt' 'zt ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/zt
 STOPSIGNAL SIGRTMIN+3
 CMD ["/usr/sbin/init"]
