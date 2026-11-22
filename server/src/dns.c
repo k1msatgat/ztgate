@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 
 #include "dns.h"
+#include "policy.h"
 
 /* 쓰는 것. 다시 읽다 실패하면 그대로 남는다. */
 static net_config_t live;
@@ -29,6 +30,10 @@ int dns_load(const char *path)
 		char *hash = strchr(line, '#');
 
 		lineno++;
+		if (!CONF_LINE_WHOLE(line, fp)) {
+			fprintf(stderr, "dns: line %d: longer than %zu characters\n", lineno, sizeof(line) - 2);
+			goto fail;
+		}
 		if (hash != NULL) {
 			*hash = '\0';
 		}

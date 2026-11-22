@@ -1233,6 +1233,16 @@ def dns_tests(path):
         expect("dns: broken files are refused, the last good one stays",
                (srv.text().count("dns: reload failed"), refreshed()), (3, "10.0.0.3/24 mtu 1400 routes - dns corp.example@10.0.0.53"))
 
+        # 버퍼(256)보다 긴 주석 줄. 잘린 뒷부분이 다음 줄로 읽히면 주석 안의 서버가 더해진다.
+        with open(dns_path, "w") as f:
+            f.write("server 10.0.0.53\ndomain corp.example\n#" + "x" * 254 + "server 10.0.0.99\n")
+        before = len(srv.text())
+        srv.reload()
+        new = srv.text()[before:]
+        expect("dns: a line longer than the buffer is refused",
+               ("dns: reload failed" in new and "longer than" in new, refreshed()),
+               (True, "10.0.0.3/24 mtu 1400 routes - dns corp.example@10.0.0.53"))
+
         with open(dns_path, "w") as f:
             f.write("server 10.0.0.53\n")
         srv.reload()
@@ -2256,6 +2266,20 @@ def login_tests(srv, acl_path, idp_dir):
     expect("login: 8 signing keys and then an encryption key", "idp: reloaded, 8 signing keys" in srv.text()[before:], True)
     with open(jwks_path, "w") as f:
         f.write(saved)
+
+    # 한 줄이 버퍼보다 길면 잘린 뒷부분이 다음 줄로 읽혔다. 주석 안의 글이 설정이 된다.
+    conf_path = os.path.join(idp_dir, "idp.conf")
+    conf_saved = open(conf_path).read()
+    with open(conf_path, "w") as f:
+        f.write("#" + "x" * 510 + "leeway 999\n" + conf_saved)
+    before = len(srv.text())
+    srv.reload()
+    new = srv.text()[before:]
+    expect("login: an idp.conf line longer than the buffer is refused",
+           ("idp: reload failed" in new, "longer than" in new), (True, True))
+    with open(conf_path, "w") as f:
+        f.write(conf_saved)
+    srv.reload()
 
     # ACL 파일의 사용자 조건도 틀리면 받지 않는다.
     for name, text, want in [

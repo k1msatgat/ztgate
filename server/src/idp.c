@@ -10,6 +10,7 @@
 
 #include "idp.h"
 #include "json.h"
+#include "policy.h"
 #include "proto.h"
 
 #define IDP_MAX_KEYS	8
@@ -371,6 +372,10 @@ int idp_load(const char *path)
 
 	while (fgets(line, sizeof(line), fp) != NULL) {
 		lineno++;
+		if (!CONF_LINE_WHOLE(line, fp)) {
+			fprintf(stderr, "idp: line %d: longer than %zu characters\n", lineno, sizeof(line) - 2);
+			goto fail;
+		}
 		hash = strchr(line, '#');
 		if (hash != NULL) {
 			*hash = '\0';
