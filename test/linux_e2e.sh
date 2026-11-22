@@ -380,6 +380,8 @@ check "connector: its nft table is removed when it stops" \
 check "connector: with the connector gone, its network is unreachable again" ping_fails "$RESOURCE"
 
 echo "== 7. tcp"
+check "tcp: -T refuses a port that is not 1..65535" \
+	sh -c "! '$CLIENT' -T 443x posture && ! '$CLIENT' -T 0 posture && ! '$CLIENT' -T 70000 posture && '$CLIENT' -T 9443 posture"
 # UDP 가 막힌 네트워크: 클라이언트 쪽에서 서버로 가는 UDP 를 버리고, 같은 기기로 TCP(-T) 로 다시 붙는다.
 kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 in_cli nft -f - <<EOF

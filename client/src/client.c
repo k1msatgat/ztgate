@@ -1092,7 +1092,17 @@ int main(int argc, char *argv[])
 			case 'k': ident_path = optarg; break;
 			case 'i': ifname = optarg; break;
 			case 't': client.token_path = optarg; break;
-			case 'T': client.tcp_port = atoi(optarg); break;
+			case 'T': {
+				char *end;
+				long p = strtol(optarg, &end, 10);
+
+				if (*end != '\0' || p <= 0 || p > 65535) {
+					fprintf(stderr, "invalid tcp port : %s\n", optarg);
+					return 1;
+				}
+				client.tcp_port = (int)p;
+				break;
+			}
 			case 'v': client.verbose = 1; break;
 			case 'f': force = 1; break;
 			default: usage(argv[0]); return 1;
