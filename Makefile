@@ -1,7 +1,7 @@
 CC	= gcc
 CFLAGS	= -Wall -Wextra -g -O2
 
-# Hardening for a root, network-facing daemon: stack canaries, stack-clash probes, CET,
+# Hardening for a network-facing daemon: stack canaries, stack-clash probes, CET,
 # PIE, full RELRO, non-executable stack, and _FORTIFY_SOURCE when optimising. Added with
 # `override` so `make CFLAGS=...` (CI, Docker, packages) keeps it. Off under sanitizers,
 # and `make HARDEN=0` turns it off. tools/check_hardening.sh checks the result.
@@ -155,7 +155,7 @@ test:
 
 help:
 	@echo "targets:"
-	@echo "  all        lib + client + server (default)"
+	@echo "  all        lib + client + server + tools (default)"
 	@echo "  lib        $(LIB)"
 	@echo "  client     $(CLIENT_BIN)"
 	@echo "  server     $(SERVER_BIN)"
