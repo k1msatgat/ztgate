@@ -625,15 +625,9 @@ void CMainDlg::Enroll(const CString &prefill)
 		result = vpn_remote_enroll(m_session, servers, port, code);
 	}
 
-	const bool saved = true;	/* 저장은 서비스가 했다. 못 했으면 result 가 OK 가 아니다 */
-
+	/* 신원 저장은 서비스가 한다. 못 했으면 result 가 TUNNEL_ENROLL_ERROR 다. */
 	switch (result) {
 	case TUNNEL_ENROLL_OK:
-		if (!saved) {
-			AfxMessageBox(_T("서버에는 등록됐지만 이 PC 에 신원을 저장하지 못했습니다.\n\n")
-					_T("관리자에게 그 기기를 지우고 새 코드를 달라고 하세요."), MB_ICONERROR);
-			return;
-		}
 		break;
 	case TUNNEL_ENROLL_BAD_CODE:
 		AfxMessageBox(_T("등록 코드가 아닙니다. 글자와 숫자 25자입니다."), MB_ICONWARNING);
