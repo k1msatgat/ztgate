@@ -48,7 +48,7 @@ Result Probe()
 		}
 		body.append(buf, got);
 	}
-	res = status == 200 && body.compare(0, sizeof(kExpect) - 1, kExpect) == 0 ? ONLINE : CAPTIVE;
+	res = status == 200 && body == kExpect ? ONLINE : CAPTIVE;
 
 out:
 	if (r) WinHttpCloseHandle(r);
