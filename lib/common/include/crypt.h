@@ -63,7 +63,8 @@ typedef struct crypt_ecdh crypt_ecdh_t;
 /* 새 키 쌍을 만들고 공개키를 pub 에 적는다. 실패하면 NULL. */
 crypt_ecdh_t *crypt_ecdh_new(uint8_t pub[VPN_PUB_LEN]);
 
-/* 주어진 키 쌍을 그대로 쓴다. 표준 벡터로 확인할 때만 쓴다. */
+/* 주어진 키 쌍을 그대로 쓴다. 표준 벡터와 서버 고정 키(server/src/serverkey.c)에 쓴다. priv 와 pub 이
+ * 같은 쌍인지는 보지 않는다 — 부르는 쪽이 확인한다. */
 crypt_ecdh_t *crypt_ecdh_import(const uint8_t priv[VPN_PRIV_LEN],
 		const uint8_t pub[VPN_PUB_LEN]);
 
