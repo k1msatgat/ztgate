@@ -6,7 +6,7 @@
 #   packaging/build.sh connector-deb|connector-rpm [out-dir]
 #                                         ztgate-connector (먼저 make client). 의존은 libssl, nftables
 #
-# 먼저 make server 로 빌드해 둔다. 버전은 CHANGELOG 와 같게 VERSION 으로 준다 (기본 0.9.2).
+# 먼저 make server 로 빌드해 둔다. 버전은 환경 변수 VERSION 으로 준다 (기본은 저장소 맨 위의 VERSION 파일).
 # 의존: libssl (OpenSSL 3 의 libcrypto), iproute2(ip), nftables(서버 뒤로 내보낼 때), python3(도구).
 # node 는 ztgate_ctl 에만 필요해 권장으로 둔다.
 #
