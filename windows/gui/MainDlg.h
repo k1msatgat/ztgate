@@ -221,7 +221,6 @@ private:
 	bool m_enrolling = false;	/* 등록 창이나 그 뒤의 안내가 떠 있다 */
 	ULONGLONG m_invite_at = 0;	/* m_invite 가 서비스를 기다리기 시작한 때, 0 이면 기다리지 않는다 */
 
-	uint32_t m_session_idx;		/* 지금 세션, 없으면 0 */
 	CString m_tun_text;		/* 서버가 배정한 터널 주소. 같은 값으로 다시 그리지 않으려고 기억한다 */
 
 	/* 연결 설정 (레지스트리에 둔다). 설정 창에서만 바뀐다. */

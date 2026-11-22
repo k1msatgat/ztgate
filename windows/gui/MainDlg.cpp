@@ -29,7 +29,6 @@ CMainDlg::CMainDlg(CWnd *parent)
 	, m_connected_at(0)
 	, m_deny_reason(0)
 	, m_posture_ticks(0)
-	, m_session_idx(0)
 	, m_link(VPN_REMOTE_DOWN)
 	, m_stopping(false)
 	, m_diag(m_store, m_logLines)
@@ -464,7 +463,6 @@ void CMainDlg::OnConnect()
 
 	/* 지난 연결의 판정과 보고 값은 새 연결과 무관하다. */
 	m_deny_reason = 0;
-	m_session_idx = 0;
 
 	if (vpn_session_start(m_session, &cfg) < 0) {
 		AppendLog(_T("[gui] 워커 스레드를 만들 수 없습니다"));
@@ -1599,7 +1597,6 @@ void CMainDlg::TrackAuth(const tunnel_packet_t &p)
 	}
 	else if (p.msg_type == MSG_TYPE_RES_HANDSHAKE) {
 		m_deny_reason = 0;
-		m_session_idx = p.session_idx;
 	}
 }
 
@@ -1728,7 +1725,6 @@ void CMainDlg::SetUiState(tunnel_state_t state)
 	}
 	else if (state == TUNNEL_STATE_STOPPED) {
 		m_connected_at = 0;
-		m_session_idx = 0;
 		m_stopping = false;
 	}
 
