@@ -57,7 +57,7 @@ extern "C" {
  *   S -> C  RES_HANDSHAKE  pub_s(64) | 암호화된 net_config | tag(16)     헤더의 session_idx 가 세션 번호
  *        또는 DENY          reason(1) | mac(32)          헤더의 session_idx 는 0
  *
- * AUTH 의 mac 은 HMAC-SHA256(기기 키, 헤더부터 mac 앞까지 112B) 이다. 서버가 매번 새로
+ * AUTH 의 mac 은 HMAC-SHA256(기기 키, 헤더부터 mac 앞까지 128B, AUTH_SIGNED_LEN) 이다. 서버가 매번 새로
  * 뽑은 nonce 가 들어가므로 예전 AUTH 를 녹화해 다시 보내도 통과하지 못한다.
  *
  * 기기 ID 와 포스처는 평문으로 다니지 않는다 (v9). 평문 ID 는 그 기기가 어느 망에서 언제
@@ -240,9 +240,9 @@ typedef enum ENROLL_STATUS {
  *   C -> S  LOGIN   세션 패킷. 암호문 = 토큰 (ASCII, header.payload.signature)
  *   S -> C  LOGIN   세션 패킷. 암호문 = status(1) | expires(8) | 사용자 이름
  *
- * 토큰을 핸드셰이크에 싣지 않고 세션이 열린 뒤에 보낸다. 핸드셰이크의 AUTH 는 암호화되지
- * 않으므로 거기에 실으면 토큰이 그대로 보이고, 토큰은 가진 사람이 곧 그 사용자인
- * 증표다. 세션 패킷은 서버만 열 수 있고, 수락의 tag 로 상대가 진짜 서버임도 이미 확인했다.
+ * 토큰을 핸드셰이크에 싣지 않고 세션이 열린 뒤에 보낸다. AUTH 의 감싼 부분은 확인되지 않은
+ * server_pub 으로 감싸므로 사이에 끼어 공개키를 바꿔 끼우는 쪽에게는 보이고, 토큰은 가진 사람이
+ * 곧 그 사용자인 증표다. 세션 패킷은 서버만 열 수 있고, 수락의 tag 로 상대가 진짜 서버임도 이미 확인했다.
  *
  * 로그인하지 않아도 세션은 열린다. 기기만으로 갈 수 있는 곳(사용자 조건이 없는 ACL
  * 규칙)은 그대로 가고, user= / group= 이 걸린 규칙만 맞지 않는다. 토큰이 만료되면 서버는
