@@ -24,6 +24,24 @@ void acl_init(void)
 	nrules = 0;
 }
 
+/* 10진수만 받는다. atoi 는 "l6" 을 0 으로, "80,443" 을 80 으로 읽어, 오타 하나가 /0 이나
+ * 모든 프로토콜처럼 넓은 규칙이 된다. */
+static int parse_num(const char *s, long max, int *out)
+{
+	char *end;
+	long v;
+
+	if (*s < '0' || *s > '9') {
+		return -1;
+	}
+	v = strtol(s, &end, 10);
+	if (*end != '\0' || v > max) {
+		return -1;
+	}
+	*out = (int)v;
+	return 0;
+}
+
 static int parse_cidr(const char *s, struct in_addr *addr, struct in_addr *mask)
 {
 	char buf[64];
@@ -45,8 +63,7 @@ static int parse_cidr(const char *s, struct in_addr *addr, struct in_addr *mask)
 	slash = strchr(buf, '/');
 	if (slash != NULL) {
 		*slash = '\0';
-		bits = atoi(slash + 1);
-		if (bits < 0 || bits > 32) return -1;
+		if (parse_num(slash + 1, 32, &bits) < 0) return -1;
 	} else {
 		bits = 32;
 	}
@@ -74,8 +91,8 @@ static int parse_proto(const char *s, unsigned char *proto)
 	else if (strcmp(s, "tcp")  == 0) *proto = 6;
 	else if (strcmp(s, "udp")  == 0) *proto = 17;
 	else {
-		int v = atoi(s);
-		if (v < 0 || v > 255) return -1;
+		int v;
+		if (parse_num(s, 255, &v) < 0) return -1;
 		*proto = (unsigned char)v;
 	}
 	return 0;
@@ -99,13 +116,13 @@ static int parse_port(const char *s, unsigned short *lo, unsigned short *hi)
 	dash = strchr(buf, '-');
 	if (dash != NULL) {
 		*dash = '\0';
-		a = atoi(buf);
-		b = atoi(dash + 1);
+		if (parse_num(buf, 65535, &a) < 0 || parse_num(dash + 1, 65535, &b) < 0) return -1;
 	} else {
-		a = b = atoi(buf);
+		if (parse_num(buf, 65535, &a) < 0) return -1;
+		b = a;
 	}
 
-	if (a < 0 || a > 65535 || b < 0 || b > 65535 || a > b) return -1;
+	if (a > b) return -1;
 
 	*lo = (unsigned short)a;
 	*hi = (unsigned short)b;

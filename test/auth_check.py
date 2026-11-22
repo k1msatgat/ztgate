@@ -1608,15 +1608,27 @@ def acl_loader_tests(dev_path):
         ("acl: requirement on a deny rule", "any any any any deny firewall=on", "only for allow rules"),
         ("acl: misspelled requirement", "any any any any allow firewal=on", "unknown requirement 'firewal=on'"),
         ("acl: line with a missing field", "10.0.0.0/24 10.0.0.1 tcp deny\nany any any any allow", "expected <src>"),
+        # atoi 로 읽으면 /0, 모든 프로토콜, 80 이 되어 넓은 allow 로 받아들여진다.
+        ("acl: prefix with a letter (/l6)", "10.0.0.0/24 10.20.0.0/l6 tcp 443 allow", "parse error at line 1"),
+        ("acl: prefix left empty", "10.0.0.0/24 10.20.0.0/ tcp 443 allow", "parse error at line 1"),
+        ("acl: misspelled protocol (tpc)", "10.0.0.0/24 10.20.0.0/16 tpc 443 allow", "parse error at line 1"),
+        ("acl: port list (80,443)", "10.0.0.0/24 10.20.0.0/16 tcp 80,443 allow", "parse error at line 1"),
+        ("acl: port range with a typo (1000-2ooo)", "10.0.0.0/24 10.20.0.0/16 tcp 1000-2ooo allow", "parse error at line 1"),
     ]
     for name, text, want in cases:
         fd, path = tempfile.mkstemp(prefix="acl.", suffix=".conf")
         with os.fdopen(fd, "w") as f:
             f.write(text + "\n")
-        p = subprocess.run([SERVER, str(PORT), dev_path, path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        # 파일을 받아들이면 서버는 끝나지 않고 뜬다. 기다리다 멈추지 않게 시간을 둔다.
+        try:
+            p = subprocess.run([SERVER, str(PORT), dev_path, path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               timeout=5)
+            code, out = p.returncode, p.stdout
+        except subprocess.TimeoutExpired:
+            code, out = "started", b""
         os.unlink(path)
-        ok = p.returncode != 0 and want.encode() in p.stdout
-        print("%-4s %-52s %s" % ("ok" if ok else "FAIL", name, "refused to start" if ok else "exit=%d" % p.returncode))
+        ok = code != 0 and code != "started" and want.encode() in out
+        print("%-4s %-52s %s" % ("ok" if ok else "FAIL", name, "refused to start" if ok else "exit=%s" % code))
         failed += not ok
 
 
