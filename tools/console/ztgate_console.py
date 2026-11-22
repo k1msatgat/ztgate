@@ -67,11 +67,17 @@ CTL_ERRORS = [
     (r"no device with this id", "이 ID 의 기기가 없습니다. 이미 지워졌을 수 있습니다."),
     (r"no pending enrollment with this id", "이 등록 코드가 없습니다. 이미 쓰였거나 만료됐을 수 있습니다."),
     (r"label must be", "이름은 영문, 숫자, 빈칸, _ . - 로 1~32자여야 합니다."),
+    (r"requirements, tags and connector ranges are too long for one enrollment \((\d+) characters, max (\d+)\)",
+     "조건, 태그, 커넥터 대역을 합친 길이가 너무 깁니다 ({0}자, 최대 {1}자)."),
     (r"too many rules \(max (\d+)\)", "규칙이 너무 많습니다 (최대 {0}개)."),
+    (r"rule (\d+): too long for one ACL line \((\d+) characters, max (\d+)\)",
+     "{n}번째 규칙이 한 줄로 너무 깁니다 ({1}자, 최대 {2}자). 사용자, 그룹, 태그를 여러 규칙으로 나눠 주세요."),
     (r"rule (\d+): (.+)", "{n}번째 규칙이 맞지 않습니다: {1}"),
     (r"sent SIGHUP but the server did not report a reload", "3초 안에 다시 읽었다는 기록이 없습니다."),
     (r"server rejected the device file", "서버가 기기 파일을 받아들이지 않고 이전 목록을 씁니다."),
     (r"server rejected the ACL file", "서버가 ACL 파일을 받아들이지 않고 이전 규칙을 씁니다."),
+    (r"server rejected the enrollment list", "서버가 등록 대기 목록을 받아들이지 않고 이전 목록을 씁니다."),
+    (r"(\S+) is not a regular file", "{0} 가 일반 파일이 아닙니다 (링크, FIFO, 하드 링크). 서버 장비를 점검해 주세요."),
 ]
 CTL_ERRORS = [(re.compile(rx), text) for rx, text in CTL_ERRORS]
 

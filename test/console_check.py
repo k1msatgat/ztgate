@@ -239,6 +239,17 @@ def main():
         expect("enroll create refused: in Korean, the form keeps what was typed",
                (st, "기다리는 등록 코드가 너무 많습니다 (최대 256개)" in body, 'value="  kim  "' in body, 'value="30"' in body),
                (400, True, True, True))
+        answer(enroll_create={"ok": False, "error": "requirements, tags and connector ranges are too long for one "
+                                                     "enrollment (300 characters, max 255)"})
+        st, _, body = req("POST", "/enroll/create", {"csrf": csrf, "label": "kim"}, cookie=sid)
+        expect("enroll create too long: in Korean", "합친 길이가 너무 깁니다 (300자, 최대 255자)" in body, True)
+        answer(acl_set={"ok": False, "error": "rule 2: too long for one ACL line (600 characters, max 510); split its "
+                                              "users, groups or tags over more rules"})
+        st, _, body = req("POST", "/acl/set", {"csrf": csrf, "rules": "any any any any allow"}, cookie=sid)
+        expect("acl rule too long: in Korean, numbered from 1", "3번째 규칙이 한 줄로 너무 깁니다 (600자, 최대 510자)" in body, True)
+        answer(device_update={"ok": False, "error": "/etc/ztgate/devices.conf is not a regular file"})
+        st, _, body = req("POST", "/devices/update", dict(dev, tunnel_ip="10.0.0.3"), cookie=sid)
+        expect("a file that is not regular: in Korean", "/etc/ztgate/devices.conf 가 일반 파일이 아닙니다" in body, True)
         answer(enroll_create={"ok": False, "error": "something new went wrong"}, enroll_list={"ok": False, "error": "boom"})
         st, _, body = req("POST", "/enroll/create", {"csrf": csrf, "label": " kim ", "tunnel_ip": " 10.0.0.7 "}, cookie=sid)
         expect("enroll create: label and tunnel_ip are trimmed",
