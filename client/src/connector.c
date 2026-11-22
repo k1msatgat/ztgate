@@ -130,12 +130,15 @@ int connector_up(const char *tun_if, const char *lan_if, struct in_addr tun_net,
 		"}\n",
 		tun_if, lan_if, lan_if, tun_if, lan_if, tun_if, net, prefix, lan_if);
 
-	fd = open(IP_FORWARD, O_RDONLY | O_CLOEXEC);
-	if (fd < 0 || read(fd, &saved_forward, 1) != 1) {
-		saved_forward = '0';
-	}
-	if (fd >= 0) {
-		close(fd);
+	/* 다시 부르면(터널 대역이 바뀌었을 때) 전달은 이미 1 이다. 그때 읽으면 끝날 때 되돌릴 값을 잃는다. */
+	if (!active) {
+		fd = open(IP_FORWARD, O_RDONLY | O_CLOEXEC);
+		if (fd < 0 || read(fd, &saved_forward, 1) != 1) {
+			saved_forward = '0';
+		}
+		if (fd >= 0) {
+			close(fd);
+		}
 	}
 
 	if (write_forward('1') < 0) {

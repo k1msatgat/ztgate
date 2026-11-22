@@ -502,6 +502,25 @@ check "dpop: with the device key the server accepts it" \
 	wait_for 10 log_has "$WORK/client-dpop2.log" "[login] logged in as alice"
 kill "$CLI_PID"; wait "$CLI_PID" 2>/dev/null; CLI_PID=
 
+echo "== 12. connector after the tunnel prefix changes"
+# 서버를 -n 16 으로 다시 띄우면 커넥터는 DISCONNECT 를 받고 다시 핸드셰이크해 /16 을 받는다. NAT 규칙도 그 대역을
+# 따라가야 /24 밖의 터널 주소에서 온 패킷이 출발지를 바꿔 내부망으로 나간다. 서버를 다시 띄우므로 맨 끝에 둔다.
+in_con sh -c 'echo 0 > /proc/sys/net/ipv4/ip_forward'
+nsenter -t "$NS2_PID" -n --preserve-credentials "$CLIENT" -k "$WORK/connector" -i ztgate1 connector 192.0.3.1 "$PORT" v-lan \
+	> "$WORK/connector-prefix.log" 2>&1 &
+CON_PID=$!
+check "prefix: connector connected with /24" wait_for 10 log_has "$WORK/connector-prefix.log" "[connector] forwarding 10.0.0.0/24"
+kill "$SRV_PID"; wait "$SRV_PID" 2>/dev/null
+stdbuf -oL "$SERVER" -v -k "$WORK/server.key" -n 16 "$PORT" "$DEVICES" "$ACL" >> "$SLOG" 2>&1 &
+SRV_PID=$!
+check "prefix: the connector reconnects and takes /16" \
+	wait_for 40 sh -c "[ \$(grep -c '] connected' '$WORK/connector-prefix.log') -ge 2 ]"
+check "prefix: its NAT rule follows the new tunnel network" \
+	sh -c "nsenter -t $NS2_PID -n --preserve-credentials nft list table ip ztgate_connector | grep -q 'ip saddr 10.0.0.0/16'"
+kill "$CON_PID"; wait "$CON_PID" 2>/dev/null; CON_PID=
+check "prefix: ip_forward goes back to 0 after the rules were applied twice" \
+	test "$(in_con cat /proc/sys/net/ipv4/ip_forward)" = 0
+
 echo
 if [ "$failed" -eq 0 ]; then
 	echo "all passed"

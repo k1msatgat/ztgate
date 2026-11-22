@@ -205,6 +205,16 @@ static int apply_session_config(client_t *c)
 	return 0;
 }
 
+/* 커넥터의 NAT 규칙(connector.h)을 지금 tun 에 넣은 터널 대역으로 건다. 대역이 바뀌면 다시 부른다. */
+static int connector_apply(client_t *c)
+{
+	struct in_addr net;
+	uint8_t p = c->net.applied.prefix_len;
+
+	net.s_addr = c->net.applied.tun_ip & htonl(0xFFFFFFFFu << (32 - p));
+	return connector_up(c->net.ifname, c->lan_if, net, p);
+}
+
 static int handshake(client_t *c)
 {
 	c->last_posture_ms = get_current_time_ms();
@@ -707,14 +717,8 @@ static int run(client_t *c, const char *ifname)
 
 	/* 커넥터: 서버가 보내 준 내부망 행 패킷을 lan 으로 내보낼 준비. 터널 대역은 서버가 준
 	 * 주소에서 안다. */
-	if (c->lan_if != NULL) {
-		struct in_addr net;
-		uint8_t p = c->net.applied.prefix_len;
-
-		net.s_addr = c->net.applied.tun_ip & htonl(0xFFFFFFFFu << (32 - p));
-		if (connector_up(c->net.ifname, c->lan_if, net, p) < 0) {
-			goto out;
-		}
+	if (c->lan_if != NULL && connector_apply(c) < 0) {
+		goto out;
 	}
 
 	epfd = epoll_create1(EPOLL_CLOEXEC);
@@ -796,8 +800,15 @@ static int run(client_t *c, const char *ifname)
 				continue;
 			}
 			switch ((hs = handshake(c))) {
-				case HS_OK:
+				case HS_OK: {
+					uint32_t old_ip = c->net.applied.tun_ip;
+					uint8_t old_prefix = c->net.applied.prefix_len;
+
 					if (apply_session_config(c) < 0) {
+						goto out;
+					}
+					if (c->lan_if != NULL && (c->net.applied.tun_ip != old_ip ||
+							c->net.applied.prefix_len != old_prefix) && connector_apply(c) < 0) {
 						goto out;
 					}
 					c->denied = 0;
@@ -807,6 +818,7 @@ static int run(client_t *c, const char *ifname)
 					c->last_login_ms = 0;
 					c->user_expires = 0;
 					break;
+				}
 				case HS_DENIED:
 					c->denied = 1;
 					break;
