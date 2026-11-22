@@ -61,8 +61,10 @@ jobs:
       # 같은 시험을 워커 셋(-w 3)으로. 잠금이 빠진 곳이 있으면 판정이 어긋나거나 세션이 섞인다.
       - name: Protocol checks and end-to-end with 3 workers
         run: |
-          sudo ZTGATE_WORKERS=3 python3 test/auth_check.py
-          sudo ZTGATE_WORKERS=3 test/linux_e2e.sh
+          set -o pipefail
+          fail() { grep -E "^FAIL|Traceback|rror" "$1" | head -20 | sed "s/^/::error title=$1::/"; exit 1; }
+          sudo ZTGATE_WORKERS=3 python3 test/auth_check.py 2>&1 | tee auth3.log || fail auth3.log
+          sudo ZTGATE_WORKERS=3 test/linux_e2e.sh 2>&1 | tee e2e3.log || fail e2e3.log
 
       # 웹 콘솔: 가짜 ztgate_ctl 앞에서 로그인, 세션 / CSRF, 화면, 바꾸는 요청이 무엇으로 가는지.
       - name: Web console (test/console_check.py)
