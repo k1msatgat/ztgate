@@ -1183,14 +1183,18 @@ async function installAndCheck({ req, be, from, target, wasRunning, emit, finish
 		sessionsBefore: wasRunning ? await sessionCount() : null,
 		installedAt: 0,
 	};
+	/* 바뀌었는지는 패키지 DB 의 판 문자열로 본다. 출발점이 foreign 이면 반쯤 깔린 새 판("<판> (half-configured)")도
+	 * 같은 foreign 이라 상태 이름으로는 가를 수 없다. */
 	const put = (kept) => {
+		const before = be.installedVersion();
 		ctx.installedAt = Math.floor(Date.now() / 1000) * 1000;
 		const r = be.install(`${PACKAGES}/${kept.file}`);
 		appendLog(`${JOBS}/${req.id}/log`, `$ ${be.ext} install ${kept.file} (exit status ${r.status})\n${r.stdout || ''}${r.stderr || ''}`);
+		const moved = be.installedVersion() !== before;
 		if (wasRunning) {
 			ensureRestarted(ctx.installedAt);
 		}
-		return r;
+		return { r, moved };
 	};
 	const isNow = (kept) => {
 		const i = installed(be);
@@ -1209,8 +1213,8 @@ async function installAndCheck({ req, be, from, target, wasRunning, emit, finish
 	fs.mkdirSync(path.dirname(WINDOW), { recursive: true, mode: 0o755 });
 	fs.writeFileSync(WINDOW, JSON.stringify({ job: req.id }) + '\n');
 	try {
-		const r = put(target);
-		changed = from.state === 'kept' ? !isNow(from.kept) : installed(be).state !== from.state;
+		const { r, moved } = put(target);
+		changed = moved;
 		if (isNow(target)) {
 			emit('installed', { package: target.commit });
 			const check = await healthCheck(target, ctx);
@@ -1223,7 +1227,8 @@ async function installAndCheck({ req, be, from, target, wasRunning, emit, finish
 		}
 
 		if (from.state !== 'kept') {
-			return finish('broken', { error: 'the target failed its check and there is no kept package to go back to', note: brokenNext(backup) });
+			const what = isNow(target) ? 'the target failed its check' : `${be.ext === 'rpm' ? 'rpm -U' : 'dpkg -i'} left the target half installed (exit status ${r.status}, now ${be.installedVersion()})`;
+			return finish('broken', { error: `${what} and there is no kept package to go back to`, note: brokenNext(backup) });
 		}
 		emit('reverting', { to: from.kept.commit });
 		put(from.kept);
