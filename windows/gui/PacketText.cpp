@@ -224,7 +224,7 @@ CString DetailText(const tunnel_packet_t &p)
 		/* AUTH 의 포스처는 서버 공개키로 감싸 가고(v9, 아래는 감싸기 전의 값) 기기 키의 mac 이 덮는다. KEEPALIVE 의 것은 세션 키로
 		 * 감싸여 오가고 끝에 GCM tag 가 붙는다 (아래 16진수는 푼 모습). */
 		if (p.msg_type == MSG_TYPE_AUTH) {
-			s += _T("             (평문. 뒤의 32바이트는 기기 키로 만든 mac, HMAC-SHA256)\r\n");
+			s += _T("             (위 값은 감싸기 전. 와이어에서는 기기 ID 와 함께 일회용 ECDH 키로 AES-256-GCM 으로 감싸 tag 16바이트가 붙고, 그 뒤 32바이트는 기기 키의 HMAC-SHA256)\r\n");
 		}
 		else {
 			s += _T("             (와이어에서는 세션 키로 암호화, 뒤에 GCM tag 16바이트)\r\n");
