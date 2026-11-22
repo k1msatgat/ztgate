@@ -405,9 +405,63 @@ function sha256(data) {
 	return crypto.createHash('sha256').update(data).digest('hex');
 }
 
+/* /etc/ztgate 와 /var/log/ztgate 는 서버 계정(ztgate) 소유이고 sticky 비트가 없다. 서버를 차지한 쪽은 그 안의 이름을
+ * 심볼릭 링크나 FIFO 로 바꿔 둘 수 있고, root 인 여기서 경로를 따라가면 링크 대상을 읽거나 덧붙인다 (mcp/ctl.cjs 의
+ * openOwned 와 같은 까닭). 그 안의 파일은 O_NOFOLLOW | O_NONBLOCK 으로 열고 일반 파일인지 fd 로 본다. */
+function openOwned(file, flags) {
+	const { O_NOFOLLOW, O_NONBLOCK } = fs.constants;
+	const fd = fs.openSync(file, flags | O_NOFOLLOW | O_NONBLOCK, 0o600);
+	const st = fs.fstatSync(fd);
+
+	if (!st.isFile() || st.nlink > 1) {
+		fs.closeSync(fd);
+		fail(`${file} is not a regular file`);
+	}
+
+	return fd;
+}
+
+function readOwned(file) {
+	const fd = openOwned(file, fs.constants.O_RDONLY);
+
+	try {
+		return fs.readFileSync(fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function appendOwned(file, text) {
+	const { O_WRONLY, O_CREAT, O_APPEND } = fs.constants;
+	const fd = openOwned(file, O_WRONLY | O_CREAT | O_APPEND);
+
+	try {
+		fs.writeFileSync(fd, text);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
 function sha256File(file) {
 	try {
 		return sha256(fs.readFileSync(file));
+	} catch (e) {
+		return null;
+	}
+}
+
+function serverKeySha() {
+	try {
+		return sha256(readOwned(SERVER_KEY));
+	} catch (e) {
+		return null;
+	}
+}
+
+/* ztgate_ctl 의 syncPrimary 와 같다. 표시가 없거나 일반 파일이 아니면 주 서버로 본다. */
+function syncPrimary() {
+	try {
+		return readOwned(SYNC_MARK).toString().trim();
 	} catch (e) {
 		return null;
 	}
@@ -807,7 +861,7 @@ function build(conf, id, r, be, log) {
 
 function serverPort() {
 	try {
-		const m = /^\s*PORT=["']?(\d+)/m.exec(fs.readFileSync(SERVER_ENV, 'utf8'));
+		const m = /^\s*PORT=["']?(\d+)/m.exec(readOwned(SERVER_ENV).toString());
 		return m ? Number(m[1]) : 9000;
 	} catch (e) {
 		return 9000;
@@ -946,7 +1000,7 @@ async function healthCheck(kept, ctx) {
 		add('udp', v !== null, v ? `answers on udp/${serverPort()}, protocol ${v.min}..${v.max}` : `no VERSION answer on udp/${serverPort()}`);
 	}
 	if (ctx.serverKeySha) {
-		const key = sha256File(SERVER_KEY);
+		const key = serverKeySha();
 		add('server_key', key === ctx.serverKeySha, key === ctx.serverKeySha ? 'unchanged' : `${SERVER_KEY} changed`);
 	}
 
@@ -965,7 +1019,7 @@ function audit(e) {
 	const line = { time: now().replace(/\.\d+Z$/, 'Z'), ...e };
 
 	try {
-		fs.appendFileSync(AUDIT_FILE, JSON.stringify(line) + '\n', { mode: 0o600 });
+		appendOwned(AUDIT_FILE, JSON.stringify(line) + '\n');
 	} catch (err) {
 		process.stderr.write(`ztgate-deploy: cannot write the audit log: ${err.code || err.name}\n`);
 	}
@@ -1125,7 +1179,7 @@ function errorText(e) {
 async function installAndCheck({ req, be, from, target, wasRunning, emit, finish }) {
 	const ctx = {
 		wasRunning,
-		serverKeySha: sha256File(SERVER_KEY),
+		serverKeySha: serverKeySha(),
 		sessionsBefore: wasRunning ? await sessionCount() : null,
 		installedAt: 0,
 	};
@@ -1371,7 +1425,7 @@ async function status(a) {
 		})),
 		...(conf ? { remote: conf.repo, allowed: { branches: conf.branches, tags: conf.tags }, signed_only: fs.existsSync(SIGNERS_FILE) }
 			: { enabled: false, why }),
-		sync_primary: fs.existsSync(SYNC_MARK) ? fs.readFileSync(SYNC_MARK, 'utf8').trim() : null,
+		sync_primary: syncPrimary(),
 	};
 }
 
@@ -1452,4 +1506,5 @@ if (require.main === module) {
 module.exports = {
 	parseConf, wantRef, globMatch, refAllowed, refnameAllowed, refspecs, parseProtocol, protocolRisk, snapshotOf,
 	versionOf, NEXT, OUTCOMES, REQUESTS, step, initialView, reduceJob, previousOf, pruneList, settle, DeployError,
+	readOwned, appendOwned,
 };

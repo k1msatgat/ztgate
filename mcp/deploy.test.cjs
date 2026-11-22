@@ -191,3 +191,29 @@ test('service check: a restart, a failed unit, the old process, or no steady sta
 	const flapping = Array.from({ length: 61 }, (_, s) => sample(s, { pid: 100 + s }));
 	assert.equal(d.settle(flapping, T0, 15, 60).state, 'fail');
 });
+
+/* /etc/ztgate 와 /var/log/ztgate 는 서버 계정 소유다. 그 안의 이름이 링크나 FIFO 로 바뀌어 있어도 root 인 배포기가
+ * 따라가 남의 파일을 읽거나 덧붙이지 않는다. */
+test('files in the server account\'s folders: links and FIFOs are not followed', { skip: process.platform === 'win32' }, () => {
+	const fs = require('node:fs');
+	const os = require('node:os');
+	const { spawnSync } = require('node:child_process');
+	const dir = fs.mkdtempSync(`${os.tmpdir()}/deploy-test-`);
+	const victim = `${dir}/victim`;
+
+	try {
+		fs.writeFileSync(victim, 'secret\n');
+		fs.symlinkSync(victim, `${dir}/audit.log`);
+		fs.symlinkSync(victim, `${dir}/.sync-primary`);
+		assert.throws(() => d.appendOwned(`${dir}/audit.log`, 'x\n'), { code: 'ELOOP' });
+		assert.throws(() => d.readOwned(`${dir}/.sync-primary`), { code: 'ELOOP' });
+		assert.equal(fs.readFileSync(victim, 'utf8'), 'secret\n');
+		assert.equal(spawnSync('mkfifo', [`${dir}/fifo`]).status, 0);
+		assert.throws(() => d.readOwned(`${dir}/fifo`), /not a regular file/);
+		d.appendOwned(`${dir}/plain`, 'a\n');
+		d.appendOwned(`${dir}/plain`, 'b\n');
+		assert.equal(d.readOwned(`${dir}/plain`).toString(), 'a\nb\n');
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
