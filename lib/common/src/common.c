@@ -49,26 +49,3 @@ int tun_alloc(char *dev)
 	strcpy(dev, ifr.ifr_name);
 	return fd;
 }
-
-void hex_dump(const unsigned char *buf, int len)
-{
-	int i, j;
-
-	for (i=0;i < len; i += 16){
-		printf("%04x  ", i);
-
-		for (j = 0; j<16;j++){
-			if (i + j< len) printf("%02x ", buf[i + j]);
-			else		printf("  ");
-			if (j ==7) printf(" ");
-		}
-
-		printf("|");
-		for (j =0;j < 16 && i + j < len; j++){
-			unsigned char c = buf[i + j];
-			printf("%c", (c >= 0x20 && c < 0x7f) ? c : '.');
-		}
-
-		printf("|\n");
-	}
-}

@@ -8,7 +8,6 @@
 #include "proto.h"
 
 int tun_alloc(char *dev);
-void hex_dump(const unsigned char *buf, int len);
 const char *ip_str(struct in_addr a, char *dst);
 
 /* 뒤로 가지 않는 시계의 초. 벽시계(time)는 관리자가 시간을 고치거나 NTP 가 맞추면
