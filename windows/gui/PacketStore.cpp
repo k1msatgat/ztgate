@@ -10,11 +10,11 @@ CPacketStore::CPacketStore()
 	m_all.reserve(PACKET_STORE_MAX);
 }
 
+/* 목록만 비운다. 집계는 남긴다 — 주 창의 "주고받은 데이터" 도 이 집계를 본다. */
 void CPacketStore::Clear()
 {
 	m_all.clear();
 	m_view.clear();
-	ZeroMemory(&m_stats, sizeof(m_stats));
 }
 
 void CPacketStore::CountRehandshake()
