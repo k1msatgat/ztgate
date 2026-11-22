@@ -35,7 +35,6 @@ static conn_t conns[TCP_CONN_MAX];
 static int16_t fd_conn[FD_MAP];
 static int ready;
 static int ep = -1;	/* 연결을 건 epoll (워커 0). 쓰기가 막히면 다른 워커가 EPOLLOUT 을 건다 */
-static int nconn;
 static int conn_max = TCP_CONN_MAX;	/* fd 한도에 맞춰 init 이 줄인다 */
 
 static void init(void)
@@ -115,7 +114,6 @@ static void conn_close(int epfd, int idx)
 		c->wbuf = NULL;
 		c->wlen = 0;
 		c->rlen = 0;
-		nconn--;
 	}
 	pthread_mutex_unlock(&c->lock);
 }
@@ -151,7 +149,6 @@ void tcp_accept(int epfd, int lfd)
 		conns[i].seen = mono_now();
 		pthread_mutex_unlock(&conns[i].lock);
 		fd_conn[fd] = (int16_t)i;
-		nconn++;
 
 		memset(&ev, 0, sizeof(ev));
 		ev.events = EPOLLIN;
@@ -474,9 +471,4 @@ const char *endpoint_str(const net_ep_t *ep_addr, char *dst, size_t cap)
 		snprintf(dst, cap, v4 ? "%s:%d" : "[%s]:%d", ib, ntohs(ep_addr->sin6_port));
 	}
 	return dst;
-}
-
-int tcp_conn_count(void)
-{
-	return nconn;
 }

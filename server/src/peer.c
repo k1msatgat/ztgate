@@ -171,11 +171,6 @@ peer_t *peer_register(struct in_addr inner, const uint8_t id[DEVICE_ID_LEN],
 
 	peer = peer_lookup(inner);
 	if (peer) {
-		if(memcmp(&peer->outer, outer, sizeof(*outer)) == 0 &&
-				memcmp(peer->device_id, id, DEVICE_ID_LEN) == 0){
-			peer->last_seen = mono_now();
-			return peer;
-		}
 		slot = (int32_t)(peer - peers);
 	} else {
 		for (i = 0; i < MAX_PEERS; i++){
@@ -285,22 +280,6 @@ const peer_t *peer_at(int i)
 	}
 
 	return &peers[i];
-}
-
-void peer_dump(void)
-{
-	char ib[INET_ADDRSTRLEN], ob[NET_EP_STRLEN];
-	int i;
-
-	printf("--- peer table ---\n");
-	for (i = 0; i < MAX_PEERS; i++) {
-		if (!peers[i].used) continue;
-		printf("  [%d] %-12s idx=%08x <- %s  (age %lds)\n", i,
-				ip4(peers[i].inner, ib), peers[i].session_idx,
-				endpoint_str(&peers[i].outer, ob, sizeof(ob)),
-				(long)(mono_now() - peers[i].last_seen));
-	}
-	printf("------------------\n");
 }
 
 

@@ -39,11 +39,6 @@ void enroll_init(void)
 	count = 0;
 }
 
-int enroll_count(void)
-{
-	return count;
-}
-
 static int hex_val(char c)
 {
 	if (c >= '0' && c <= '9') return c - '0';

@@ -107,7 +107,6 @@ int peer_drop_if(int (*due)(const peer_t *peer, void *arg),
 		void (*before)(peer_t *peer, void *arg), void *arg, const char *reason);
 peer_t *peer_lookup(struct in_addr inner);
 peer_t *peer_find_device(const uint8_t id[DEVICE_ID_LEN]);
-void peer_dump(void);
 
 /* slot i 의 세션. 비어 있으면 NULL. 상태를 내보낼 때 표를 훑는 데 쓴다. */
 const peer_t *peer_at(int i);

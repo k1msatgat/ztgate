@@ -37,9 +37,6 @@
  * 설정과 키가 그대로 남는다. */
 int idp_load(const char *path);
 
-/* idp_load 가 한 번이라도 성공했으면 1. */
-int idp_enabled(void);
-
 /* 토큰을 확인하고 사용자를 꺼낸다. proof 는 DPoP 증명 (없으면 NULL, proto.h 의 "DPoP"). now 는
  * 벽시계 초. login_status_t 를 돌려준다. */
 int idp_verify(const char *token, size_t len, const char *proof, size_t proof_len, int64_t now,

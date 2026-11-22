@@ -47,6 +47,4 @@ int enroll_complete(device_t *pending, const uint8_t id[DEVICE_ID_LEN],
 /* 감사 로그에 남길 이름. 없으면 빈 문자열. 글자, 숫자, 공백, _ . - 뿐이다. */
 const char *enroll_label(const device_t *pending);
 
-int enroll_count(void);
-
 #endif

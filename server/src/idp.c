@@ -466,11 +466,6 @@ fail:
 	return -1;
 }
 
-int idp_enabled(void)
-{
-	return loaded;
-}
-
 void idp_dump(void)
 {
 	int i;

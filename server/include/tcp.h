@@ -72,6 +72,4 @@ ssize_t net_recv(int sock, void *buf, size_t cap, net_ep_t *src, socklen_t *srcl
 /* 로그와 상태에 쓸 "주소:포트", "[v6 주소]:포트" 또는 "주소 (tcp)". dst 는 NET_EP_STRLEN 이상. */
 const char *endpoint_str(const net_ep_t *ep, char *dst, size_t cap);
 
-int tcp_conn_count(void);
-
 #endif
