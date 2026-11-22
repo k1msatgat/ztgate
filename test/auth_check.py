@@ -1673,6 +1673,40 @@ def jwks_refresh_tests(idp_dir):
     finally:
         srv.terminate()
         srv.wait()
+
+    # jwks_uri 가 https 만 받는 규칙 밖(여기서는 127.0.0.2 의 http)으로 돌려보내면 따라가지 않는다.
+    import http.server
+    import threading
+
+    class Redirecting(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/.well-known/openid-configuration":
+                body = json.dumps({"issuer": issuer, "jwks_uri": issuer + "/jwks"}).encode()
+            elif self.path == "/jwks":
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.2:%d/keys" % port)
+                self.end_headers()
+                return
+            else:
+                body = json.dumps(want).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("", port), Redirecting)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        with open(path, "w") as f:
+            json.dump(stale, f)
+        code, out, now = run()
+        expect("jwks refresh: a redirect to plain http elsewhere is not followed", (code, now == stale), (1, True))
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
         subprocess.run(["rm", "-rf", work])
 
 

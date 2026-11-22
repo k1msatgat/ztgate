@@ -55,11 +55,21 @@ def allowed(url):
     return u.scheme == "https" or (u.scheme == "http" and u.hostname in ("127.0.0.1", "localhost"))
 
 
+class SameRules(urllib.request.HTTPRedirectHandler):
+    """urlopen 은 https 에서 http 로의 리다이렉트도 따라간다. 그 구간의 중간자가 JWKS 를 바꿔 넣을 수 있다."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not allowed(newurl):
+            raise ValueError("refusing the redirect to %s (https only, http only for 127.0.0.1)" % newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def get_json(url):
     if not allowed(url):
         raise ValueError("refusing %s (https only, http only for 127.0.0.1)" % url)
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT, context=ssl.create_default_context()) as r:
+    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl.create_default_context()), SameRules)
+    with opener.open(req, timeout=TIMEOUT) as r:
         body = r.read(MAX_BYTES + 1)
     if len(body) > MAX_BYTES:
         raise ValueError("%s: larger than %d bytes" % (url, MAX_BYTES))
