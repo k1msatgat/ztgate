@@ -337,15 +337,30 @@ static int device_file_append(const char *path, const char *entry)
 		return -1;
 	}
 
+	/* 있던 내용을 다 옮기지 못하면 바꾸지 않는다. 그대로 rename 하면 기기 목록이 새 줄 하나가 되고,
+	 * 이어서 다시 읽을 때 다른 기기가 모두 목록에서 빠진다. 바로 앞에서 device_load 가 같은 파일을
+	 * 읽었으므로 열리지 않는 것은 오류다. */
 	in = fopen(path, "r");
-	if (in != NULL) {
-		while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-			fwrite(buf, 1, n, out);
-			last = buf[n - 1];
+	if (in == NULL) {
+		perror(path);
+		fclose(out);
+		unlink(tmp);
+		return -1;
+	}
+	while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+		if (fwrite(buf, 1, n, out) != n) {
+			break;
 		}
-		fclose(in);
+		last = buf[n - 1];
 	}
 	crypt_wipe(buf, sizeof(buf));	/* 다른 기기들의 키가 지나갔다 */
+	if (ferror(in) || ferror(out)) {
+		fclose(in);
+		fclose(out);
+		unlink(tmp);
+		return -1;
+	}
+	fclose(in);
 
 	if (last != '\n') {
 		fputc('\n', out);
