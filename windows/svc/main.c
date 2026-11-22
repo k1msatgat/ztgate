@@ -1408,6 +1408,41 @@ static DWORD update_tick(void)
 	return update_at > now ? (DWORD)(update_at - now) : 0;
 }
 
+/* 파이프가 없으면 만들어 본다. 다른 프로세스가 같은 이름을 먼저 차지했으면(FILE_FLAG_FIRST_PIPE_INSTANCE)
+ * 만들지 못한다. 그래도 서비스는 내려가지 않는다 — 내려가면 AlwaysOn 터널도 BlockWhenDown 차단도 없다.
+ * 그 이름이 풀릴 때까지 PIPE_RETRY_MSEC 마다 다시 해 본다. 다음까지 남은 ms (파이프가 있으면 INFINITE). */
+#define PIPE_RETRY_MSEC	5000
+
+static DWORD pipe_tick(void)
+{
+	static ULONGLONG retry_at_ms;
+	static int reported;
+	const ULONGLONG now = GetTickCount64();
+
+	if (pipe != INVALID_HANDLE_VALUE) {
+		return INFINITE;
+	}
+	if (now < retry_at_ms) {
+		return (DWORD)(retry_at_ms - now);
+	}
+	pipe = pipe_create();
+	if (pipe == INVALID_HANDLE_VALUE) {
+		if (!reported) {
+			slog("cannot create the control pipe (%lu), trying again every %d s",
+					GetLastError(), PIPE_RETRY_MSEC / 1000);
+			reported = 1;
+		}
+		retry_at_ms = now + PIPE_RETRY_MSEC;
+		return PIPE_RETRY_MSEC;
+	}
+	if (reported) {
+		slog("control pipe created");
+		reported = 0;
+	}
+	client_listen();
+	return INFINITE;
+}
+
 static void service_run(void)
 {
 	HANDLE waits[5];
@@ -1418,12 +1453,7 @@ static void service_run(void)
 	slog("started");
 	learned_load();
 
-	pipe = pipe_create();
-	if (pipe == INVALID_HANDLE_VALUE) {
-		slog("cannot create the control pipe: %lu", GetLastError());
-		return;
-	}
-	client_listen();
+	pipe_tick();
 
 	/* 지난번에 연결해 둔 채였으면 이어서 연결한다. */
 	if (recall()) {
@@ -1446,6 +1476,7 @@ static void service_run(void)
 
 	for (;;) {
 		DWORD pt = preset_tick();
+		DWORD pipet = pipe_tick();
 
 		nwaits = 0;
 		waits[nwaits++] = stop_all;
@@ -1459,6 +1490,7 @@ static void service_run(void)
 
 		timeout = update_tick();
 		timeout = pt < timeout ? pt : timeout;
+		timeout = pipet < timeout ? pipet : timeout;
 		if (retry_at != 0) {
 			DWORD r;
 
@@ -1474,7 +1506,7 @@ static void service_run(void)
 		}
 
 		if (w == WAIT_TIMEOUT && (retry_at == 0 || GetTickCount64() < retry_at)) {
-			continue;	/* 업데이트를 볼 때였다 (update_tick 이 다음 바퀴에 본다) */
+			continue;	/* 업데이트나 파이프를 볼 때였다 (update_tick, pipe_tick 이 다음 바퀴에 본다) */
 		}
 		if (w == WAIT_TIMEOUT) {
 			retry_at = 0;
@@ -1533,7 +1565,9 @@ static void service_run(void)
 	if (client_on) {
 		client_drop();
 	}
-	CloseHandle(pipe);
+	if (pipe != INVALID_HANDLE_VALUE) {
+		CloseHandle(pipe);
+	}
 	pipe = INVALID_HANDLE_VALUE;
 }
 
