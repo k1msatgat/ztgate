@@ -213,12 +213,6 @@ int tunnel_enroll(const tunnel_config_t *cfg, const char *code,
 		const uint8_t id[DEVICE_ID_LEN], uint8_t key[AUTH_KEY_LEN],
 		uint8_t server_pub[VPN_PUB_LEN_WIRE], const uint8_t *device_pub, HANDLE stop_event);
 
-/* 폐기 이유의 짧은 영문 이름.
- * 코어는 표시 문자열을 가지지 않는다 — 여기서 한국어를 돌려주면 char* 가 되어
- * UI 가 ANSI 코드페이지로 변환하면서 깨진다. 화면에 쓸 라벨은 UI 가 enum 을
- * 보고 와이드 문자열로 직접 고른다. 이 함수는 콘솔 로그용이다. */
-const char *tunnel_verdict_name(int verdict);
-
 /* 주소 하나: "203.0.113.10", "2001:db8::10", "[2001:db8::10]". 0 성공. */
 static __inline int tunnel_parse_addr(const wchar_t *s, tunnel_addr_t *out)
 {

@@ -905,25 +905,6 @@ static int deliverable_dst(const tunnel_t *t, const uint8_t *ip)
 }
 
 /* ---- packet events ------------------------------------------------------- */
-const char *tunnel_verdict_name(int verdict)
-{
-	switch (verdict) {
-	case TUNNEL_PASS:		return "pass";
-	case TUNNEL_DROP_NON_IPV4:	return "non-IPv4";
-	case TUNNEL_DROP_NON_UNICAST:	return "non-unicast";
-	case TUNNEL_DROP_TOO_LONG:	return "too long";
-	case TUNNEL_DROP_NOT_SERVER:	return "not from server";
-	case TUNNEL_DROP_BAD_HEADER:	return "bad header";
-	case TUNNEL_DROP_WRONG_SESSION:	return "wrong session";
-	case TUNNEL_DROP_UNKNOWN_TYPE:	return "unknown type";
-	case TUNNEL_DROP_IO_ERROR:	return "io error";
-	case TUNNEL_DROP_DENIED:	return "access denied";
-	case TUNNEL_DROP_BAD_TAG:	return "tag does not match";
-	case TUNNEL_DROP_REPLAY:	return "counter already seen";
-	default:			return "?";
-	}
-}
-
 static void pkt_init(const tunnel_t *t, tunnel_packet_t *p, int dir, int verdict)
 {
 	memset(p, 0, sizeof(*p));
