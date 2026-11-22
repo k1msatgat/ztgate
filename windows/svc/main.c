@@ -1380,6 +1380,11 @@ static DWORD update_tick(void)
 		update_last = now;
 		update_thread = CreateThread(NULL, 0, update_main, NULL, 0, NULL);
 	}
+	/* 확인이 도는 동안은 때가 지나도 새로 띄우지 않으니 기다릴 것이 없다. 끝나면 update_main 이
+	 * notify 를 울려 여기를 다시 부른다. */
+	if (update_thread) {
+		return INFINITE;
+	}
 	return update_at > now ? (DWORD)(update_at - now) : 0;
 }
 
