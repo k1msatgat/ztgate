@@ -1184,14 +1184,15 @@ async function installAndCheck({ req, be, from, target, wasRunning, emit, finish
 		installedAt: 0,
 	};
 	/* 바뀌었는지는 패키지 DB 의 판 문자열로 본다. 출발점이 foreign 이면 반쯤 깔린 새 판("<판> (half-configured)")도
-	 * 같은 foreign 이라 상태 이름으로는 가를 수 없다. */
+	 * 같은 foreign 이라 상태 이름으로는 가를 수 없다. 패키지 관리자가 거절해 아무것도 바뀌지 않았으면 서버도 다시
+	 * 띄우지 않는다. 붙어 있던 세션을 끊을 까닭이 없다. */
 	const put = (kept) => {
 		const before = be.installedVersion();
 		ctx.installedAt = Math.floor(Date.now() / 1000) * 1000;
 		const r = be.install(`${PACKAGES}/${kept.file}`);
 		appendLog(`${JOBS}/${req.id}/log`, `$ ${be.ext} install ${kept.file} (exit status ${r.status})\n${r.stdout || ''}${r.stderr || ''}`);
 		const moved = be.installedVersion() !== before;
-		if (wasRunning) {
+		if (wasRunning && moved) {
 			ensureRestarted(ctx.installedAt);
 		}
 		return { r, moved };
