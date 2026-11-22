@@ -275,6 +275,7 @@ static char *read_file(const char *path, size_t max, size_t *len)
 static int load_jwks(const char *path, idp_conf_t *c)
 {
 	static json_tok_t t[JWKS_TOKENS];
+	idp_key_t key;
 	char *s;
 	size_t len;
 	int keys, i, k, r;
@@ -296,17 +297,21 @@ static int load_jwks(const char *path, idp_conf_t *c)
 			fprintf(stderr, "idp: %s: keys[%d] is not an object\n", path, k);
 			goto out;
 		}
-		if (c->n_keys >= IDP_MAX_KEYS) {
-			fprintf(stderr, "idp: %s: more than %d signing keys\n", path, IDP_MAX_KEYS);
-			goto out;
-		}
-
-		memset(&c->keys[c->n_keys], 0, sizeof(c->keys[0]));
-		r = parse_jwk(s, t, i, &c->keys[c->n_keys]);
+		/* 상한은 쓸 키만 센다. 암호화 키(use=enc)나 다른 alg 의 키는 parse_jwk 가 0 으로 건너뛴다. */
+		memset(&key, 0, sizeof(key));
+		r = parse_jwk(s, t, i, &key);
 		if (r < 0) {
 			goto out;
 		}
-		c->n_keys += r;
+		if (r == 0) {
+			continue;
+		}
+		if (c->n_keys >= IDP_MAX_KEYS) {
+			EVP_PKEY_free(key.pkey);
+			fprintf(stderr, "idp: %s: more than %d signing keys\n", path, IDP_MAX_KEYS);
+			goto out;
+		}
+		c->keys[c->n_keys++] = key;
 	}
 
 	/* 같은 kid 가 둘이면 토큰이 어느 키로 확인될지가 순서에 달린다. */

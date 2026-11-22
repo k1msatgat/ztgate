@@ -2247,6 +2247,16 @@ def login_tests(srv, acl_path, idp_dir):
     with open(jwks_path, "w") as f:
         f.write(saved)
 
+    # 서명 키 8개(상한) 뒤에 암호화 키가 하나 더 있는 묶음. 상한은 쓸 키만 센다.
+    base = json.loads(saved)["keys"][0]
+    with open(jwks_path, "w") as f:
+        json.dump({"keys": [dict(base, kid="k%d" % i) for i in range(8)] + [dict(base, kid="enc", use="enc")]}, f)
+    before = len(srv.text())
+    srv.reload()
+    expect("login: 8 signing keys and then an encryption key", "idp: reloaded, 8 signing keys" in srv.text()[before:], True)
+    with open(jwks_path, "w") as f:
+        f.write(saved)
+
     # ACL 파일의 사용자 조건도 틀리면 받지 않는다.
     for name, text, want in [
         ("acl: user condition on a deny rule", "any any any any deny user=alice", "only for allow rules"),
