@@ -81,7 +81,7 @@ jobs:
           node --check server.js
           node --check ctl.cjs
           node --check deploy.cjs
-          node --test deploy.test.cjs surface.test.cjs
+          node --test deploy.test.cjs surface.test.cjs ctl.test.cjs
 
   # 안내서 PDF(docs/guide/ztgate-guide.pdf)가 원본과 맞는지는 브라우저 없이 sha256 으로 본다.
   # 그다음 러너의 Chrome 으로 실제로 한 번 만들어 산출물로 올린다. PDF 는 장비마다 바이트가

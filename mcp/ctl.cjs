@@ -97,6 +97,19 @@ function isCidr(s) {
 	return bits === undefined || (/^\d{1,2}$/.test(bits) && Number(bits) <= 32);
 }
 
+/* X(32) | Y(32) 빅엔디언 hex (lib/common/include/crypt.h 의 VPN_PUB_LEN). JWK 로 들이면 OpenSSL 이 곡선 위의
+ * 점인지 본다. */
+function isP256Point(hex) {
+	const b64 = (h) => Buffer.from(h, 'hex').toString('base64url');
+
+	try {
+		crypto.createPublicKey({ key: { kty: 'EC', crv: 'P-256', x: b64(hex.slice(0, 64)), y: b64(hex.slice(64)) }, format: 'jwk' });
+		return true;
+	} catch (e) {
+		return false;
+	}
+}
+
 function isProto(s) {
 	return ['any', 'icmp', 'tcp', 'udp'].includes(s) ||
 		(typeof s === 'string' && /^\d{1,3}$/.test(s) && Number(s) <= 255);
@@ -1111,6 +1124,11 @@ const COMMANDS = {
 			fail('key must be 64 hex digits (a shared key) or p256:<128 hex digits> (a device public key)');
 		}
 		d.key = d.key.toLowerCase();
+		/* 서버는 곡선 위에 없는 점이 한 줄이라도 있으면 기기 목록 전체를 거부하고, 다음 시작에서는 뜨지 않는다
+		 * (server/src/device.c). 쓰기 전에 같은 검사를 한다. */
+		if (d.key.startsWith('p256:') && !isP256Point(d.key.slice(5))) {
+			fail('key is not a P-256 public key (p256:<X><Y>, 64 hex digits each, a point on the curve)');
+		}
 
 		if (!isIPv4(d.tunnel_ip)) {
 			fail('tunnel_ip must be an IPv4 address');
