@@ -1155,6 +1155,29 @@ def flow_tests(path):
         expect("stateful: another port of the same client is still closed", (describe(c.recv()), dropped() - before),
                ("no response", 1))
         expect("stateful: the status shows the open flows", srv.status()["flows"]["open"] >= 1, True)
+
+        # ICMP 오류는 안에 담긴 패킷(클라이언트가 보낸 것)으로 흐름을 찾는다. 받는 쪽이 그 흐름의 클라이언트여야 한다.
+        raw = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP)
+        raw.bind((outside_ip, 0))
+
+        def icmp_error(to):
+            quoted = struct.pack("!BBHHHBBH4s4s", 0x45, 0, 28, 1, 0, 64, 17, 0, TUN_IP,
+                                 socket.inet_aton(outside_ip)) + struct.pack("!HHHH", 40000, 7000, 8, 0)
+            icmp = struct.pack("!BBHI", 3, 3, 0, 0) + quoted
+            raw.sendto(icmp[:2] + struct.pack("!H", checksum(icmp)) + icmp[4:], (to, 0))
+
+        c2 = Client()
+        session(c2, strict_dev=True)
+        c2.drain()
+        icmp_error("10.0.0.3")
+        r = c.recv()
+        expect("stateful: an icmp error about the client's own flow is delivered",
+               bool(r and r[0] == DATA and r[2] and r[2][20] == 3), True)
+        before = dropped()
+        icmp_error("10.0.0.4")
+        expect("stateful: the same icmp error addressed to another client is not",
+               (describe(c2.recv()), dropped() - before), ("no response", 1))
+        raw.close()
     finally:
         outside.close()
         srv.stop()

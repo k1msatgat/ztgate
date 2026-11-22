@@ -197,8 +197,11 @@ int flow_inbound_ok(const uint8_t *ip, int len)
 		int inner_len = len - ihl - 8;
 		int inner_ihl = IP_IHL(inner);
 
-		/* 담긴 패킷은 앞부분만 있다. 포트까지(8바이트) 있으면 된다 — key 가 길이를 본다. */
-		if (inner_ihl >= IP_MIN_HDR && inner_len >= inner_ihl + 8) {
+		/* 담긴 패킷은 앞부분만 있다. 포트까지(8바이트) 있으면 된다 — key 가 길이를 본다.
+		 * 담긴 패킷을 보낸 클라이언트가 이 오류를 받는 쪽이어야 한다. 아니면 다른 클라이언트의
+		 * 흐름을 담아 아무 클라이언트에게나 ICMP 를 들여보낼 수 있다. */
+		if (inner_ihl >= IP_MIN_HDR && inner_len >= inner_ihl + 8 &&
+				memcmp(inner + IP_SRC_OFF, ip + IP_DST_OFF, IP_ADDR_LEN) == 0) {
 			uint8_t copy[60 + 8];
 			int n = inner_ihl + 8;
 
