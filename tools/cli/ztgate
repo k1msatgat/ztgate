@@ -168,9 +168,14 @@ def show_status(r, paint):
 
 
 def show_devices(r, st, paint):
-    online = {s.get("device_id") for s in st.get("sessions", [])} if st.get("ok") else set()
+    # 서버는 도는데 상태 소켓이 답하지 않으면(sessions_error) 누가 붙어 있는지 모른다. 모두 끊김으로 보이면 안 된다.
+    live = st.get("ok") and (not st.get("running") or "sessions" in st)
+    online = {s.get("device_id") for s in st.get("sessions", [])} if live else set()
     devs = r.get("devices", [])
-    print("%s  %s" % (paint("bold", "기기"), paint("dim", "%d대 · 연결 %d" % (len(devs), sum(d.get("id") in online for d in devs)))))
+    count = "연결 %d" % sum(d.get("id") in online for d in devs) if live else "연결 알 수 없음"
+    print("%s  %s" % (paint("bold", "기기"), paint("dim", "%d대 · %s" % (len(devs), count))))
+    if not live:
+        print("  " + paint("warn", "서버의 상태를 읽지 못해 어느 기기가 연결됐는지 알 수 없습니다."))
     print()
     if not devs:
         print("  " + paint("dim", "등록된 기기가 없습니다. ztgate enroll 로 기다리는 코드를 봅니다."))
@@ -179,7 +184,7 @@ def show_devices(r, st, paint):
     for d in devs:
         on = d.get("id") in online
         rows.append([(paint("ok", "●") if on else paint("dim", "○")) + " " + (d.get("label") or "(이름 없음)"),
-                     d.get("id") or "", d.get("tunnel_ip") or "", paint("ok", "연결됨") if on else paint("dim", "끊김"),
+                     d.get("id") or "", d.get("tunnel_ip") or "", (paint("ok", "연결됨") if on else paint("dim", "끊김")) if live else paint("dim", "알 수 없음"),
                      d.get("key_type") or "", req_text(d.get("requirements")) or "-",
                      " ".join("#" + t for t in d.get("tags", [])) or "-"])
     table(["  이름", "ID", "터널 주소", "상태", "키", "접속 조건", "태그"], rows, paint)

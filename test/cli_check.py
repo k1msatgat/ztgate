@@ -23,6 +23,9 @@ import json, sys, os
 req = json.load(sys.stdin)
 with open(os.environ["FAKE_LOG"], "a") as f:
     f.write(json.dumps(req) + "\n")
+if os.environ.get("FAKE_NO_SESSIONS") and req["cmd"] == "status":
+    print(json.dumps({"ok": True, "running": True, "sessions_error": "the server did not answer on its status socket"}))
+    sys.exit(0)
 if os.environ.get("FAKE_FAIL"):
     print(json.dumps({"ok": False, "error": "server is not running"}))
     sys.exit(0)
@@ -105,6 +108,11 @@ def main():
     expect("devices: the connected one is marked", "연결됨" in lines[0] and "끊김" in lines[1], True)
     expect("devices: Korean names keep the columns aligned",
            cells(lines[0][:lines[0].index("10.0.0.3")]) == cells(lines[1][:lines[1].index("10.0.0.5")]), True)
+
+    code, out, _ = run("devices", extra={"FAKE_NO_SESSIONS": "1"})
+    lines = [x for x in out.splitlines() if "laptop" in x or "노트북" in x]
+    expect("devices, status socket silent: neither shown as disconnected",
+           ["알 수 없음" in x and "끊김" not in x for x in lines] + ["연결 알 수 없음" in out], [True, True, True])
 
     code, out, _ = run("acl")
     expect("acl: rules with conditions", "firewall=on group=ops" in out and "deny" in out, True)
