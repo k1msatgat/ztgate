@@ -54,11 +54,15 @@ KEY=$(hmac "ztgate enroll key")
 EXPIRES=$(( $(date +%s) + TTL_MIN * 60 ))
 
 # 서버도 이 파일을 고친다 (쓰인 줄을 지운다). 서버처럼 옆에 새 파일을 쓰고 이름을 바꿔
-# 반쯤 쓰인 파일이 보이지 않게 한다.
+# 반쯤 쓰인 파일이 보이지 않게 한다. 읽고 바꾸는 사이에 서버가 끼면 서버가 지운 줄이 되살아나므로
+# 서버와 ztgate_ctl 이 잡는 잠금(같은 디렉터리의 .ztgate.lock, server/src/enroll.c)을 잡고 한다.
 umask 077
 tmp="$ENROLL.tmp.$$"
+exec 9>> "$(dirname "$ENROLL")/.ztgate.lock"
+flock -x -w 5 9 || { echo "$0: the enroll list is being changed by the server; try again" >&2; exit 1; }
 { [ -f "$ENROLL" ] && cat "$ENROLL"; printf '%s %s %s %s%s  # %s\n' "$ID" "$KEY" "$TUN_IP" "$EXPIRES" "$REQS" "$LABEL"; } > "$tmp"
 mv "$tmp" "$ENROLL"
+exec 9>&-
 
 pkill -HUP -x vpn_server 2>/dev/null || true
 
