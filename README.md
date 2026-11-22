@@ -276,10 +276,11 @@ sudo ./client/bin/vpn_client -t ~/.config/ztgate/token run <서버 IP> 9000
 **토큰을 기기에 묶기 (DPoP, RFC 9449).** 기기가 서명 키를 가지고, IdP 에 토큰을 청할 때 그 키로 만든 증명을 붙이면 IdP 는 그 키의 지문(`cnf.jkt`)을 적은 토큰을 줍니다. 클라이언트는 LOGIN 마다 같은 키로 새 증명(그 토큰의 해시, 시각, 한 번만 쓰는 값)을 토큰 뒤에 붙이고, 서버는 서명과 지문, 해시, 시각(앞뒤 2분), 재사용을 봅니다. 토큰 파일이 새어도 그 기기의 키 없이는 쓰이지 않습니다.
 
 ```bash
-client/ztgate_login --issuer ... --client-id ztgate --dpop-key /var/lib/ztgate/dpop.pem --keep
-sudo ./client/bin/vpn_client -D /var/lib/ztgate/dpop.pem -t ~/.config/ztgate/token run <서버 IP> 9000
+client/ztgate_login --issuer ... --client-id ztgate --dpop-key ~/.config/ztgate/dpop.pem --keep
+sudo ./client/bin/vpn_client -D ~/.config/ztgate/dpop.pem -t ~/.config/ztgate/token run <서버 IP> 9000
 ```
 
+- 키는 `ztgate_login` 을 돌리는 사용자의 폴더에 둡니다. `ztgate_login` 은 일반 사용자로 돌고, `/var/lib/ztgate` 는 root 만 들어갈 수 있어 거기 둔 키는 읽지도 만들지도 못합니다. `ztgate_login` 을 먼저 돌려 키를 만들면 root 로 도는 `vpn_client` 도 같은 파일을 읽습니다. 반대로 `vpn_client -D` 가 먼저 만든 키는 root 의 파일이 되어 `ztgate_login` 이 읽지 못합니다.
 - Windows 는 따로 할 것이 없습니다. 키는 서비스가 가지며(PC 의 키, TPM 이 있으면 TPM 안에, 내보낼 수 없음) LOGIN 증명도 서비스가 만들고, GUI 가 IdP 에 토큰을 청할 때는 서비스에 증명을 받아 DPoP 헤더로 싣습니다.
 - 서버의 `idp.conf` 에 `dpop required` 를 두면 묶이지 않은 토큰은 받지 않습니다 (기본은 `optional` 입니다. 묶인 토큰은 증명을 보고, 묶이지 않은 토큰도 받습니다).
 - IdP 가 DPoP 를 해야 합니다. Keycloak 26.0 은 `--features=dpop` 로 켜고(CI 가 이렇게 띄워 묶인 토큰과 서버의 판정을 확인합니다), IdP 가 DPoP 를 모르면 헤더를 무시하고 묶이지 않은 토큰을 줍니다.
