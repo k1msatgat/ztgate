@@ -66,8 +66,14 @@
          뜨자마자 코드를 본다. -->
     <CustomAction Id="Preset" FileKey="vpn_service.exe" Execute="deferred" Impersonate="no" Return="check"
                   HideTarget="yes" ExeCommand="preset &quot;[SERVER]&quot; &quot;[PORT]&quot; &quot;[CODE]&quot;" />
+    <!-- 쓰이지 않은 등록 코드는 진짜 제거일 때만 지운다. 서버 기본값(install)은 신원처럼 남긴다. Registry 표의
+         "제거할 때 키 삭제" 행은 업그레이드가 옛 판을 지울 때도 돌아, 서버에 닿지 못해 기다리던 코드까지 지웠다.
+         조건은 제거하는 쪽 판의 표에서 읽히므로 이 동작은 이 수정이 든 판에서 올라갈 때부터 듣는다. -->
+    <CustomAction Id="DropPreset" FileKey="vpn_service.exe" Execute="deferred" Impersonate="no" Return="ignore"
+                  ExeCommand="preset-drop" />
     <InstallExecuteSequence>
       <Custom Action="Preset" Before="StartServices"><![CDATA[(SERVER OR CODE) AND NOT REMOVE~="ALL"]]></Custom>
+      <Custom Action="DropPreset" Before="RemoveFiles"><![CDATA[REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE]]></Custom>
     </InstallExecuteSequence>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -91,8 +97,6 @@
                               ResetPeriodInDays="1" />
         </ServiceInstall>
         <ServiceControl Id="ServiceControl" Name="ztgate" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
-        <!-- 쓰이지 않은 등록 코드는 제거할 때 함께 지운다. 서버 기본값(install)은 신원처럼 남긴다. -->
-        <RemoveRegistryKey Id="PendingEnroll" Root="HKLM" Key="Software\ztgate\enroll" Action="removeOnUninstall" />
       </Component>
 
       <Component Id="Wintun" Guid="*" Win64="yes">

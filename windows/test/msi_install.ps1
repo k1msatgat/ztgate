@@ -85,6 +85,11 @@ else {
 	do { $s = Status } while (-not ($s -match 'install enrollment: waiting \(last result [1-9]') -and (Get-Date) -lt $deadline)
 	Check 'the service retries an unreachable server' ($s -match 'install enrollment: waiting \(last result [1-9]') $s
 	Check 'still not enrolled' ((DeviceId) -eq '')
+
+	# 자동 업데이트처럼 CODE 없이 같은 MSI 로 올린다. 옛 판을 지우는 동안에도 기다리던 코드는 남아야 한다.
+	$rc = Msiexec @('/i', "`"$Msi`"", '/qn', '/l*v', "`"$(Join-Path $logs 'upgrade.log')`"")
+	Check 'upgrade without CODE' ($rc -eq 0 -or $rc -eq 3010) "exit $rc"
+	Check 'an upgrade keeps the waiting code' (Test-Path 'HKLM:\SOFTWARE\ztgate\enroll')
 }
 
 # 복구는 SERVER 도 CODE 도 없이 돈다. 설정은 그대로, 지운 코드는 되살아나지 않는다.

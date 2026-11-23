@@ -2165,12 +2165,18 @@ int wmain(int argc, wchar_t **argv)
 	if (argc >= 2 && wcscmp(argv[1], L"preset") == 0) {
 		return preset_command(argc - 2, argv + 2);
 	}
+	/* MSI 가 진짜 제거일 때만 부른다 (ztgate.wxs 의 DropPreset). 업그레이드가 옛 판을 지울 때는 부르지 않아,
+	 * 서버에 닿지 못해 기다리던 코드가 새 판으로 이어진다. */
+	if (argc >= 2 && wcscmp(argv[1], L"preset-drop") == 0) {
+		preset_enroll_drop();
+		return 0;
+	}
 
 	/* 인자가 없다. 서비스 관리자가 띄운 것이면 여기서 서비스 스레드가 끝날 때까지 머문다.
 	 * 사람이 콘솔에서 그냥 실행했으면 관리자에 붙지 못하고 곧바로 돌아온다. */
 	if (!StartServiceCtrlDispatcherW(table)) {
 		if (GetLastError() == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-			fprintf(stderr, "usage: vpn_service install | uninstall | run | ctl ... | preset <server> <port> <code>\n");
+			fprintf(stderr, "usage: vpn_service install | uninstall | run | ctl ... | preset <server> <port> <code> | preset-drop\n");
 		}
 		return 1;
 	}

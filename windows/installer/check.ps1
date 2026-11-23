@@ -53,11 +53,19 @@ foreach ($r in (Query 'SELECT `Action`, `Condition`, `Sequence` FROM `InstallExe
 Check 'Preset before StartServices' ($seq.ContainsKey('Preset') -and [int]$seq['Preset'][2] -lt [int]$seq['StartServices'][2] -and [int]$seq['Preset'][2] -gt [int]$seq['InstallFiles'][2])
 Check 'Preset only when given, not on removal' ($seq.ContainsKey('Preset') -and $seq['Preset'][1] -eq '(SERVER OR CODE) AND NOT REMOVE~="ALL"') $seq['Preset'][1]
 
-# 이름이 "-" 이고 값이 없는 줄은 제거할 때 키를 통째로 지운다.
+# 쓰이지 않은 등록 코드는 진짜 제거일 때만 지운다. 업그레이드가 옛 판을 지우는 동안에는 그대로 둔다 (Registry 표의
+# "-" 행은 업그레이드에도 돌아 PRESET_WAITING 인 코드를 지웠다).
+$drop = Query 'SELECT `Action`, `Type`, `Source`, `Target` FROM `CustomAction` WHERE `Action` = ''DropPreset'''
+Check 'DropPreset runs vpn_service.exe preset-drop' ($drop.Count -eq 1 -and $drop[0][2] -eq 'vpn_service.exe' -and $drop[0][3] -eq 'preset-drop') ($drop | Out-String)
+if ($drop.Count -eq 1) {
+	$type = [int]$drop[0][1]
+	Check 'DropPreset is deferred, system' (($type -band 0x3F) -eq 18 -and ($type -band 0x800) -and ($type -band 0x400)) "type $type"
+}
+Check 'DropPreset only on a real removal, before RemoveFiles' ($seq.ContainsKey('DropPreset') -and $seq['DropPreset'][1] -eq 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE' -and [int]$seq['DropPreset'][2] -lt [int]$seq['RemoveFiles'][2]) ($seq['DropPreset'] | Out-String)
+
 $reg = Query 'SELECT `Key`, `Root`, `Name`, `Value` FROM `Registry`'
 $ours = @($reg | Where-Object { $_[0] -like 'Software\ztgate\*' })
-Check 'uninstall drops an unused code' (@($ours | Where-Object { $_[0] -eq 'Software\ztgate\enroll' -and $_[1] -eq '2' -and $_[2] -eq '-' -and $_[3] -eq '' }).Count -eq 1) ($ours | Out-String)
-Check 'no registry row writes settings' ($ours.Count -eq 1) ($ours | Out-String)
+Check 'no registry row writes or removes our keys' ($ours.Count -eq 0) ($ours | Out-String)
 
 $ctl = @{}
 foreach ($r in (Query 'SELECT `Control`, `Type`, `Property`, `Text` FROM `Control` WHERE `Dialog_` = ''ConnectDlg''')) { $ctl[$r[0]] = $r }
