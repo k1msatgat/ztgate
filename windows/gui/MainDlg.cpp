@@ -1794,7 +1794,13 @@ void CMainDlg::UpdateInfo()
 	rows[INFO_SERVER].value = m_server.IsEmpty() ? CString(_T("정해지지 않음")) : m_server + _T(" : ") + m_port;
 	rows[INFO_TUNNEL].value = m_tun_text.IsEmpty() ? CString(_T("연결하면 서버가 배정")) : m_tun_text;
 	/* 화살표(U+2191 / 2193)는 글꼴 대체로 컬러 이모지가 되어 혼자 튄다. 글자로 적는다. */
-	rows[INFO_TRAFFIC].value = _T("보냄 ") + BytesText(st.tx_bytes) + _T("   \x00b7   받음 ") + BytesText(st.rx_bytes);
+	/* 연결돼 있으면 서비스가 센 양을 쓴다. 이 창이 받은 패킷 사건만 세면 창을 다시 켤 때 0 부터 센다. */
+	uint64_t tx = st.tx_bytes, rx = st.rx_bytes;
+	if (!vpn_remote_traffic(m_session, &tx, &rx)) {
+		tx = st.tx_bytes;
+		rx = st.rx_bytes;
+	}
+	rows[INFO_TRAFFIC].value = _T("보냄 ") + BytesText(tx) + _T("   \x00b7   받음 ") + BytesText(rx);
 
 	/* ID 는 32자라 판에 다 들어가지 않는다. 앞 12자면 서버의 기기 목록에서 찾기에 충분하다.
 	 * 전체는 진단 창의 로그에 있다. */

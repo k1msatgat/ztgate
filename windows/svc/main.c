@@ -72,6 +72,9 @@ static int wanted;		/* 사용자가 연결을 원한다. 터널이 내려가도 
 static ULONGLONG retry_at;	/* 0 이 아니면 그때 다시 올린다 */
 static uint32_t state = TUNNEL_STATE_STOPPED;
 static ULONGLONG connected_at;	/* 처음 연결된 때 (GetTickCount64). 0 이면 연결되지 않았다 */
+static uint64_t conn_tx, conn_rx;	/* 이 연결에서 주고받은 바이트 (ipc_state.tx_bytes) */
+static uint64_t state_sent_tx, state_sent_rx;	/* 붙은 GUI 에 마지막으로 보낸 값 */
+static ULONGLONG state_sent_at;
 static int state_dirty;
 static posture_report_t sent_posture;	/* 터널이 서버에 마지막으로 보낸 것 (ipc_state.posture) */
 static int has_sent_posture;
@@ -185,6 +188,7 @@ static void set_state(uint32_t s)
 	if (s == TUNNEL_STATE_CONNECTED) {
 		if (connected_at == 0) {
 			connected_at = GetTickCount64();
+			conn_tx = conn_rx = 0;
 		}
 	}
 	else if (s == TUNNEL_STATE_STOPPED || s == TUNNEL_STATE_DENIED) {
@@ -277,6 +281,12 @@ static void on_packet(void *ctx, const tunnel_packet_t *p)
 	EnterCriticalSection(&lock);
 	packets[pkt_seq % PACKET_RING] = *p;
 	pkt_seq++;
+	if (p->dir == TUNNEL_DIR_RX) {
+		conn_rx += p->wire_len;
+	}
+	else if (p->verdict == TUNNEL_PASS) {
+		conn_tx += p->wire_len;
+	}
 	if (p->has_posture && (!has_sent_posture || memcmp(&p->posture, &sent_posture, sizeof(sent_posture)) != 0)) {
 		sent_posture = p->posture;
 		has_sent_posture = 1;
@@ -630,6 +640,9 @@ static int send_state(void)
 	s.connected_ms = connected_at ? GetTickCount64() - connected_at : 0;
 	s.has_posture = (uint32_t)has_sent_posture;
 	s.posture = sent_posture;
+	s.tx_bytes = state_sent_tx = conn_tx;
+	s.rx_bytes = state_sent_rx = conn_rx;
+	state_sent_at = GetTickCount64();
 	state_dirty = 0;
 	LeaveCriticalSection(&lock);
 	s.wanted = (uint32_t)wanted;
@@ -705,6 +718,16 @@ static int client_flush(void)
 	LeaveCriticalSection(&lock);
 	if (dirty && send_state() < 0) {
 		return -1;
+	}
+	/* 바이트만 바뀌었으면 1초에 한 번만 상태를 다시 보낸다. 패킷마다 보내면 상태 메시지가 패킷만큼 나간다.
+	 * 쉬는 동안의 마지막 몇 바이트는 다음 keepalive 때 실린다. */
+	if (!dirty && GetTickCount64() - state_sent_at >= 1000) {
+		EnterCriticalSection(&lock);
+		dirty = conn_tx != state_sent_tx || conn_rx != state_sent_rx;
+		LeaveCriticalSection(&lock);
+		if (dirty && send_state() < 0) {
+			return -1;
+		}
 	}
 
 	EnterCriticalSection(&lock);
@@ -1871,6 +1894,10 @@ static void ctl_print(const uint8_t *msg, DWORD n, int verbose)
 			printf(", connected for %llu:%02llu:%02llu", sec / 3600, (sec / 60) % 60, sec % 60);
 		}
 		printf("\n");
+		if (s.connected_ms) {
+			printf("traffic: sent %llu bytes, received %llu bytes\n", (unsigned long long)s.tx_bytes,
+					(unsigned long long)s.rx_bytes);
+		}
 		if (s.has_posture) {
 			printf("posture sent: build=%u firewall=%s antivirus=%s disk=%s\n", s.posture.os_build,
 					posture_name(s.posture.firewall), posture_name(s.posture.antivirus),

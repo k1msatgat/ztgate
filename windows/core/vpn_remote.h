@@ -44,6 +44,10 @@ int vpn_remote_link(const vpn_session_t *s);
  * 붙어 있지 않으면 0. 이 프로그램을 나중에 켜도 터널이 연결된 때부터 셀 수 있다. */
 ULONGLONG vpn_remote_connected_since(vpn_session_t *s);
 
+/* 서비스가 센, 이 연결에서 주고받은 바이트 (ipc_state.tx_bytes). 연결되어 있고 서비스에 붙어 있으면
+ * 1, 아니면 0 (그때 값은 쓰지 않는다). 이 프로그램을 나중에 켜도 연결된 때부터의 양이다. */
+int vpn_remote_traffic(vpn_session_t *s, uint64_t *tx, uint64_t *rx);
+
 /* 서비스 안에서 터널이 돌고 있는가 (연결 중, 연결됨, 다시 맺는 중, 거부된 채 기다리는 중). 서비스가
  * 다시 올리기를 기다리기만 하는 동안(vpn_remote_wanted)은 0 이다. */
 int vpn_remote_running(const vpn_session_t *s);

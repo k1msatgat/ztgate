@@ -28,6 +28,10 @@ struct vpn_session {
 	ULONGLONG connected_since;	/* 터널이 연결된 때 (이 PC 의 GetTickCount64). 0 이면 연결되지 않았다 */
 	int has_posture;	/* ipc_state.has_posture */
 	posture_report_t posture;
+	uint64_t tx_bytes;	/* ipc_state.tx_bytes: 이 연결에서 서비스가 센 양 */
+	uint64_t rx_bytes;
+	ipc_state_t last;	/* 마지막으로 받은 상태. 바이트만 바뀐 것은 화면에 알리지 않는다 */
+	int have_last;
 	int enrolled;
 	uint8_t device_id[DEVICE_ID_LEN];
 	uint32_t preset;	/* ipc_device.preset */
@@ -151,6 +155,23 @@ static void on_state(vpn_session_t *s, const uint8_t *body, uint32_t len)
 		return;
 	}
 	memcpy(&st, body, sizeof(st));
+
+	/* 서비스는 바이트가 바뀌면 1초에 한 번 상태를 다시 보낸다. 나머지가 같으면 값만 바꿔 둔다 —
+	 * 화면은 상태 메시지마다 전환을 처리하므로(다시 맺기 횟수 등) 같은 상태를 거듭 받으면 안 된다.
+	 * connected_ms 는 받을 때마다 늘어나므로 0 인지만 견준다. */
+	EnterCriticalSection(&s->lock);
+	s->tx_bytes = st.tx_bytes;
+	s->rx_bytes = st.rx_bytes;
+	if (s->have_last && st.state == s->last.state && st.wanted == s->last.wanted &&
+			st.running == s->last.running && (st.connected_ms == 0) == (s->last.connected_ms == 0) &&
+			st.has_posture == s->last.has_posture &&
+			memcmp(&st.posture, &s->last.posture, sizeof(st.posture)) == 0) {
+		LeaveCriticalSection(&s->lock);
+		return;
+	}
+	s->last = st;
+	s->have_last = 1;
+	LeaveCriticalSection(&s->lock);
 
 	active = st.state != TUNNEL_STATE_STOPPED || st.wanted;
 
@@ -377,6 +398,8 @@ out:
 	s->running = 0;
 	s->wanted = 0;
 	s->has_posture = 0;
+	s->have_last = 0;
+	s->tx_bytes = s->rx_bytes = 0;
 	memset(&s->login, 0, sizeof(s->login));	/* 서비스는 떨어진 GUI 의 토큰을 버린다 */
 	LeaveCriticalSection(&s->lock);
 	SetEvent(s->enroll_done);
@@ -587,6 +610,22 @@ ULONGLONG vpn_remote_connected_since(vpn_session_t *s)
 	LeaveCriticalSection(&s->lock);
 
 	return since;
+}
+
+int vpn_remote_traffic(vpn_session_t *s, uint64_t *tx, uint64_t *rx)
+{
+	int up;
+
+	if (!s) {
+		return 0;
+	}
+	EnterCriticalSection(&s->lock);
+	up = s->link == VPN_REMOTE_UP && s->connected_since != 0;
+	*tx = s->tx_bytes;
+	*rx = s->rx_bytes;
+	LeaveCriticalSection(&s->lock);
+
+	return up;
 }
 
 int vpn_remote_running(const vpn_session_t *s)
