@@ -996,12 +996,14 @@ def config_tests(srv, acl_path, dev_path):
     expect("acl changed: the routes are withdrawn",
            refreshed(idx), "10.0.0.3/24 mtu 1400 routes -")
 
-    # 관리자가 기기의 터널 주소를 바꿨다. 열린 세션은 새 주소를 통보받고, 다시
-    # 핸드셰이크하면 새 주소로 세션이 열린다. 예전 주소의 세션은 남지 않는다.
+    # 관리자가 기기의 터널 주소를 바꿨다. 다시 읽는 그 자리에서 열린 세션에 다시 핸드셰이크하라고
+    # 알리고 내린다. 예전 주소로 계속 보내는 클라이언트가 그 주소의 규칙을 쓰지 못하게.
     write_devices(dev_path, LINE1.replace("10.0.0.3", "10.0.0.7"), LINE2)
     srv.reload()
-    expect("device readdressed: the open session is told",
-           refreshed(idx), "10.0.0.7/24 mtu 1400 routes -")
+    r = c.recv()
+    expect("device readdressed: the open session is told to handshake again",
+           r and (r[0], r[1] == idx, r[2]), (DISCONNECT, True, bytes([3])))
+    expect("device readdressed: the old session no longer answers", refreshed(idx), "no response")
     session(c)
     expect("device readdressed: a new handshake gets the new address",
            c.config, "10.0.0.7/24 mtu 1400 routes -")

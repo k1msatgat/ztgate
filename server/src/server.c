@@ -553,8 +553,7 @@ static void deny_unlisted(peer_t *peer, void *arg)
 }
 
 /* 목록에는 있지만 세션을 연 뒤 키가 바뀐 기기. 세션은 열 때의 키로 뽑은 세션 키를 쓰므로, 샌 키를
- * 바꿔도 그 키로 연 세션은 수명까지 이어진다. 터널 주소가 바뀐 것은 여기서 보지 않는다 — 열린 세션은
- * keepalive 응답으로 새 주소를 받고 클라이언트가 스스로 다시 붙는다. */
+ * 바꿔도 그 키로 연 세션은 수명까지 이어진다. */
 static int key_changed(const peer_t *peer, void *arg)
 {
 	const device_t *dev;
@@ -568,16 +567,30 @@ static int key_changed(const peer_t *peer, void *arg)
 	return memcmp(h, peer->key_hash, sizeof(h)) != 0;
 }
 
+/* 목록에는 있지만 세션을 연 뒤 터널 주소가 바뀐 기기. 세션은 열 때의 주소(peer->inner)로 출발지를 보고
+ * ACL 을 판정하므로, keepalive 응답의 새 설정을 따르지 않는 클라이언트는 수명까지 옛 주소의 규칙을 쓴다. */
+static int readdressed(const peer_t *peer, void *arg)
+{
+	const device_t *dev;
+
+	(void)arg;
+	if (peer->enroll || (dev = device_find(peer->device_id)) == NULL) {
+		return 0;
+	}
+	return dev->tun_ip.s_addr != peer->inner.s_addr;
+}
+
 /* 기기 목록을 읽을 때마다 부른다. keepalive 에서만 지워진 기기를 걸러내면, keepalive 를 보내지
  * 않고 데이터만 보내는 쪽은 세션 수명까지 터널을 쓴다 — 데이터 패킷은 last_seen 을 갱신해 만료에도
- * 걸리지 않는다. 키가 바뀐 기기에는 다시 핸드셰이크하라고 알린다. 새 키를 받은 클라이언트는 곧바로
- * 다시 붙고, 옛 키를 쥔 쪽은 그 핸드셰이크에서 막힌다. */
+ * 걸리지 않는다. 키나 터널 주소가 바뀐 기기에는 다시 핸드셰이크하라고 알린다. 새 키를 받은 클라이언트는
+ * 곧바로 다시 붙고, 옛 키를 쥔 쪽은 그 핸드셰이크에서 막힌다. 주소가 바뀐 기기는 새 주소로 다시 열린다. */
 static void drop_stale(int32_t sock)
 {
 	disconnect_ctx_t ctx = { .sock = sock, .reason = DISCONNECT_REKEY, .now = mono_now() };
 
 	peer_drop_if(device_unlisted, deny_unlisted, &sock, "device_removed");
 	peer_drop_if(key_changed, send_disconnect, &ctx, "key_changed");
+	peer_drop_if(readdressed, send_disconnect, &ctx, "readdressed");
 }
 
 /* ---- 핸드셰이크의 nonce 와 기기 ID 감싸기 (proto.h, v9) ------------------------------- */
